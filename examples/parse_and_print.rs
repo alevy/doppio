@@ -1,0 +1,244 @@
+fn main() {
+    let (rest, output) = ledger::Journal::parse(LEDGER).unwrap();
+    println!("{} {rest}", output);
+}
+
+const LEDGER: &str = r#"
+; comments with one semicolon have grey fg, either for whole line or after
+; non-comment stuff
+
+; comments with two semicolons have yellow fg
+2018/07/22 payee  ;; but regular comment if after other stuff
+
+; a todo in a regular comment has a blue fg -
+; only the last todo on a line is the specially highlighted todo
+
+; top line
+2018/07/06 some payee           ; date has orange fg, payee has purple fg
+; payee is optional
+2018/07/23
+2019/10/19    ; comment with ommitted payee is actually the payee
+2019/10/19                      ; payee  ; comment
+2018/07/24 some payee
+2018/07/06 (1234) some payee    ; optional transaction # has yellow fg
+2018/07/06  payee               ; can have multiple spaces after date
+2018/07/06  (123)  payee        ; and with optional
+2018/07/06 (123)payee           ; space not required between trans # and payee
+2018/07/24 (123)
+; 2 spaces or a tab terminates a name, so "payee ;" is the payee here:
+2018/07/06 payee ;
+2018/07/06 xy ; z  ; two spaces termination makes this payee "xy ; z"
+2018/07/06 ! some payee         ; pending (!) has white fg
+2018/07/06 * some payee         ; cleared (*) has white fg
+2018/07/06 ! (abc) some payee   ; pending (!) with optional transaction #
+2018/07/06 * (xyz) some payee   ; cleared (*) with transaction #
+2018/07/06 (xyz) * some payee   ; valid but weird (payee = "* some payee")
+
+2018/07/06 !some payee          ; space is optional after !
+2018/07/06 *some payee          ; space is optional after *
+2018/07/06 !(abc) some payee    ; space is optional after !
+2018/07/06 *(abc) some payee    ; space is optional after *
+2018/07/06 !(abc)some payee     ; space is optional after ! and trans #
+2018/07/06 *(abc)some payee     ; space is optional after * and trans #
+2018/07/24 !
+2018/07/24 *
+; a tab character also terminates a payee name
+; https://www.ledger-cli.org/3.0/doc/ledger3.html#Transaction-notes-1
+2018/07/06 this is unfortunate	; comment
+  ! a: xyz      ; pending
+  * a: xyz      ; cleared
+   !a: xyz      ; space is optional between ! and account
+   *a: xyz      ; more below in edge cases...
+    e: parent: child: grandchild    ; expenses (e)
+    expenses: parent: child         ; first two account levels have yellow fg
+    e: parent
+    e: parent: child
+    e                               ; not scoping top level only
+    expenses      $5                ; you wouldn't want to do this for reasons
+    a: checking: bank name          ; assets (a)
+    assets: misc: etc: etc          ; first level (a/assets) has green fg
+                                    ; second level has cyan fg
+                                    ; rest have white fg
+    a: checking
+    a: checking: bank name
+    l: credit card: etc: etc        ; liabilities (l)
+    liabilities: credit card        ; first level (l/liabilities) has red fg
+                                    ; rest are same as with assets
+    l: credit card
+    l: credit card: etc
+    i: wages: gross pay             ; income (i)
+    income: wages: bonus            ; first two levels have green fg
+                                    ; rest have white fg
+    i: wages
+    i: wages: gross pay
+    equity: blah: blah              ; equity has white fg all the way
+    equity: blah
+    ; negative and positive dollar amounts
+    e: fu            $25            ; positive (normal) expense has orange fg
+    e: bar           $-25           ; negative expense has yellow fg
+    e: lic           ($25 + $10)    ; same for calculations
+    e: ious          ($-25 - $5)    ; maybe negative expense should be income
+    a: something    $25             ; money going into an asset has green fg
+    a: wicked       $-25            ; coming out has red fg
+    a: this way     ($25 * 2)       ; same for calculations
+    a: comes        ($-25 * 2)
+    l: bats         $25             ; money paid to liability has green fg
+    l: in           $-25            ; money added to liability has red fg
+    l: the          ($25 * 8)       ; same for calculations
+    l: belfry       ($-25 * 8)
+    a: money we have    $100        ; see how they are opposing forces?
+    l: money we owe     $-100
+    i: one          $-25            ; negative income green fg (this is good)
+    i: last         $25             ; positive income red fg (probably makes
+    i: drink        ($-25 * 10)     ; same for calculations
+    i: please       ($25 * 10)
+    equity: bar     $-25            ; negative equity green fg
+    equity: fu      $25             ; positive equity red fg
+
+2017/12/31 balance assignments
+    ; balance assignments will color the equal sign and the amount the
+    ; same as above; (balance assignments don't really seem applicable
+    ; to expenses and income but we get the highlighting for free)
+    l: fu: bar       = $-56.87
+    l: fu: bar       = $12
+    a: fubar         = $50
+    a: fubar         = $-50
+    e: fu: bar       = $50
+    e: fu: bar       = $-50
+    i: fu: bar       = $-50
+    i: fu: bar       = $50
+    ; works for commodities, too (with the commodity code having cyan fg,
+    ; same as in other commodity entries)
+    a: 401k: abc        = 20.555 abx
+
+2017/12/31 balance assertions
+    ; balance assertions have the usual colors on the left side
+    ; of the equal sign, and yellow fg numbers for the equal sign
+    ; and right side of the equal, regardless of sign or account
+    ; type
+    l: credit card: foo     $0 = $-56.87
+    l: credit card: foo    $10 = $-56.87
+    l: credit card: foo     $0 = $56.87
+    l: credit card: foo    $10 = $56.87
+    l: credit card: foo    $-0 = $-56.87
+    l: credit card: foo   $-10 = $-56.87
+    l: credit card: foo    $-0 = $56.87
+    l: credit card: foo   $-10 = $56.87
+    a: bank                 $0 = $50
+    a: bank                $10 = $50
+    a: bank                 $0 = $-50
+    a: bank                $10 = $-50
+    a: bank                $-0 = $50
+    a: bank               $-10 = $50
+    a: bank                $-0 = $-50
+    a: bank               $-10 = $-50
+    e: something           $10 = $10
+    e: something          $-10 = $10
+    e: something           $10 = $-10
+    e: something          $-10 = $-10
+    i: something          $-10 = $-20
+    i: something          $-10 = $20
+    i: something           $10 = $-20
+    i: something           $10 = $20
+    ; currently there are only rules and tests for a
+    ; commodity balance assertion like this
+    a: 401k: abc  10.000 abx @ $80.00 = 20.555 abx
+    a: 401k: abc  10.000 abx @ $80.00 = -20.555 abx
+
+; stock / mutual fund prices
+2017/10/01 opening balance
+    a: 401k: big co 500 idx    10.000 abcdx @   $80.00  ; num shares green fg
+                                                        ; commodity cyan fg
+                                                        ; @ pink fg
+                                                        ; amount yellow fg
+    ; negative shares sold/removed have red fg
+    a: 401k: big co 500 idx    -10.000 abcdx @   $80.00
+
+2017/11/03 def
+    a: sna: fu    -0.103 abcdx @   $80.65   ; usual
+    a: sna: fu    -0.103 abcdx@   $80.65    ; no space needed before @
+    a: sna: fu    -0.103 abcdx @$80.65      ; nor after @
+    a: sna: fu    -0.103 abcdx@$80.65       ; getting tight in here
+    a: sna: fu    -0.103abcdx@$80.65        ; really cramped but valid
+    ; metadata tags
+    ; tags without values
+    ; :the_tag: single tag          ; just the_tag higlighted, cyan fg
+    ; :one_tag:two_tag:             ; can chain tags, all highlighted cyan fg
+    ; abc :one:two:three: xyz       ; three chained tags
+    ; :one_tag: :two_tag:           ; only the first is recognized
+    ; :a_tag: key_tag: some value   ; only standalone a_tag counts
+    ; tags with values
+    ; key has cyan fg and no spaces
+    ; space is required after colon and everything after is part of the value
+    ; a_tag: a value
+    ;; value = "a value x: y"
+    ; a_tag: a value x: y
+    ; a_tag: a value :part:
+    ; abc a_tag: tag value          ; this isn't a valid tag
+    ; special payee metadata field (cyan: purple)
+    ; Payee: some person
+
+; misc
+
+; prices db line has a pink P
+P 2013/05/10 abcdx      $11.59
+
+; invalid lines have white fg and pink bg in sublime text monokai, but
+; vscode as of 2019/10/11 doesn't appear to support background colors;
+; we'll use red fg instead
+
+; tag keyword/directive has cyan fg, name of the tag has orange fg
+tag car
+tag xyz  ; this is invalid (can't have comment)
+; this is a valid tag but we'll highlight as invalid (i mean, come on!)
+tag abc;
+; this is not a valid tag because can't have have space in tag name
+tag abc ;
+
+; commodity keyword has cyan fg, name of the commodity has orange fg
+; sub-directives have pink fg, values have green fg, except for
+; "note" which has comment coloring
+commodity $
+;    format $ 1,000.00
+;    default
+;    note this is a note
+;    check something
+;    assert something
+
+commodity abcdx ; comments allowed on commodities, even w/ 1 space
+;    format 1,000.000
+;    note big co 500 idx
+
+; these are invalid
+commodity abcdx; ; is not valid
+commodity also not valid
+
+; payee directive has cyan fg and name of payee has purple fg
+payee name of same
+; we'll mark valid names with semicolons as invalid
+; technically valid "apple;"
+payee apple;
+; technically valid "apple ;"
+payee apple ;
+; technically valid "apple ; banana"
+payee apple ; banana
+; ledger will let you have two spaces like this but it's not a comment and it
+; will cause validation errors if used because in an entry, the payee name is
+; terminated after 2 spaces
+payee apple  ; banana
+; again two spaces isn't a good idea because of the two space termination
+payee abc  xyz
+
+; account directive has cyan fg and value has orange fg
+; this is only for equity/income/expenses/assets/liabilities, or more
+; specifically, if no spaces in the value
+; alias sub-directive has pink fg and value has green fg
+account assets
+;    alias a
+; assets with children has white fg, "one" has yellow fg, and rest white
+account assets: one: two: three
+; comments not allowed on account line, mark as invalid
+account assets: one: two: three  ;
+; same for others
+account liabilities
+"#;
