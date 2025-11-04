@@ -1,4 +1,4 @@
-use std::fmt::{Display, Write};
+use std::{collections::HashMap, fmt::{Display, Write}};
 
 use nom::{
     IResult, Parser,
@@ -13,7 +13,7 @@ use nom::{
 };
 
 use crate::{
-    Comment,
+    Comment, CommentBody,
     helpers::{amount, hard_stop},
 };
 
@@ -52,17 +52,50 @@ impl Display for TransactionState {
 
 #[derive(Clone, Debug)]
 pub struct Transaction {
-    pub year: u64,
-    pub month: u64,
-    pub date: u64,
+    pub year: i32,
+    pub month: u32,
+    pub date: u32,
     pub state: TransactionState,
     pub code: Option<String>,
     pub description: String,
-    pub note: Option<String>,
+    pub note: Option<CommentBody>,
     pub postings: Vec<Posting>,
 }
 
 impl Transaction {
+    pub fn tags(&self) -> Vec<String> {
+        self.postings.iter().filter_map(|posting| {
+            if let Posting::Comment(CommentBody::Tags(tags)) = posting {
+                Some(tags)
+            } else {
+                None
+            }
+        }).fold(vec![], |mut f, s| {
+            f.append(&mut s.clone());
+            f
+        })
+    }
+
+    pub fn value_of<S: AsRef<str>>(&self, key: S) -> Option<&String> {
+        self.postings.iter().find_map(|posting| {
+            if let Posting::Comment(CommentBody::Value(k, v)) = posting && k == key.as_ref() {
+                Some(v)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn metadata(&self) -> HashMap<&String, &String> {
+        self.postings.iter().filter_map(|posting| {
+            if let Posting::Comment(CommentBody::Value(k, v)) = posting {
+                Some((k, v))
+            } else {
+                None
+            }
+        }).collect()
+    }
+
     pub fn parse(input: &str) -> IResult<&str, Transaction> {
         // Date as Y-M-D or Y/M/D
         let (input, year) = map_res(digit1(), str::parse).parse(input)?;
@@ -153,10 +186,10 @@ pub enum Posting {
     Posting {
         account: String,
         amount: Option<String>,
-        note: Option<String>,
+        note: Option<CommentBody>,
         state: TransactionState,
     },
-    Comment(String),
+    Comment(CommentBody),
 }
 
 impl Posting {
@@ -229,7 +262,7 @@ impl Display for Posting {
                 if let Some(note) = note {
                     writeln!(f, "  ; {note}")
                 } else {
-                    Ok(())
+                    writeln!(f, "")
                 }
             }
         }
