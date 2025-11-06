@@ -81,7 +81,7 @@ impl Comment {
     }
 
     pub fn parse(input: &str) -> IResult<&str, Comment> {
-        let (input, o) = one_of(";#|*")(input)?;
+        let (input, o) = one_of(";#|*").parse_next(input)?;
         let kind = match o {
             ';' => CommentKind::Semicolon,
             '#' => CommentKind::Hash,
