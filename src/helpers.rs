@@ -2,12 +2,12 @@ use winnow::{
     IResult, Parser,
     bytes::{tag, take},
     character::{newline, space0},
-    combinator::{peek, value},
+    combinator::peek,
     multi::many1,
 };
 
 pub(crate) fn empty_line(input: &str) -> IResult<&str, ()> {
-    many1(space0.and(newline)).parse(input)
+    many1((space0, newline)).parse_next(input)
 }
 
 pub(crate) fn hard_stop(input: &str) -> IResult<&str, ()> {
@@ -19,7 +19,7 @@ pub(crate) fn hard_stop(input: &str) -> IResult<&str, ()> {
         // one tab
         tag("\t"),
     ))
-    .parse(input)?;
+    .parse_next(input)?;
     let (input, _) = space0(input)?;
     Ok((input, ()))
 }
@@ -29,13 +29,14 @@ type Amount = String;
 pub(crate) fn amount(mut input: &str) -> IResult<&str, Amount> {
     let mut amount = String::new();
     input = loop {
-        input = match peek(
-            value((), hard_stop.and(crate::comment::Comment::parse)).or(value((), newline)),
-        )
-        .parse(input)
+        input = match peek(winnow::branch::alt((
+            (hard_stop, crate::comment::Comment::parse).value(()),
+            newline.value(()),
+        )))
+        .parse_next(input)
         {
             Err(winnow::error::ErrMode::Backtrack(input)) => {
-                let (input, c) = take(1usize).parse(input.input)?;
+                let (input, c) = take(1usize).parse_next(input.input)?;
                 amount.push_str(c);
                 input
             }

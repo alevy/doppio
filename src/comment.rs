@@ -2,9 +2,8 @@ use std::fmt::{Display, Write};
 
 use winnow::{
     IResult, Parser,
-    bytes::{complete::take_till1, tag, take_till0},
-    character::complete::{alphanumeric1, newline, one_of, space0, space1},
-    combinator::map_res,
+    bytes::{one_of, tag, take_till0, take_till1},
+    character::{alphanumeric1, newline, space0, space1},
     multi::many1,
     sequence::separated_pair,
 };
@@ -46,44 +45,38 @@ pub struct Comment {
 
 impl Comment {
     fn comment(input: &str) -> IResult<&str, String> {
-        let (input, res) = map_res(take_till0(|c| c == '\n'), |s: &str| {
-            Ok::<String, ()>(s.into())
-        })
-        .parse(input)?;
+        let (input, res) = take_till0(|c| c == '\n')
+            .map_res(|s: &str| Ok::<String, ()>(s.into()))
+            .parse_next(input)?;
         Ok((input, res))
     }
 
     fn value(input: &str) -> IResult<&str, (&str, &str)> {
         separated_pair(
             take_till1(|c| " \t\n\r:".contains(c)),
-            tag(":").and(space1),
+            (tag(":"), (space1)),
             take_till0(|c| c == '\n'),
         )
-        .parse(input)
+        .parse_next(input)
     }
 
     fn tags(input: &str) -> IResult<&str, Vec<String>> {
-        let input = tag(":").parse(input)?.0;
+        let input = tag(":").parse_next(input)?.0;
 
-        many1(map_res(alphanumeric1::<&str, _>.and(tag(":")), |(r, _)| {
-            Ok::<String, ()>(r.into())
-        }))
-        .parse(input)
+        many1((alphanumeric1::<&str, _>, (tag(":"))).map_res(|(r, _)| Ok::<String, ()>(r.into())))
+            .parse_next(input)
     }
 
     fn comment_body(input: &str) -> IResult<&str, CommentBody> {
         let (input, _) = space0(input)?;
         let (input, res) = winnow::branch::alt((
-            map_res(Self::value, |c| {
-                Ok::<CommentBody, ()>(CommentBody::Value(c.0.into(), c.1.into()))
-            }),
-            map_res(Self::tags, |c| Ok::<CommentBody, ()>(CommentBody::Tags(c))),
-            map_res(Self::comment, |c| {
-                Ok::<CommentBody, ()>(CommentBody::Comment(c))
-            }),
+            Self::value
+                .map_res(|c| Ok::<CommentBody, ()>(CommentBody::Value(c.0.into(), c.1.into()))),
+            Self::tags.map_res(|c| Ok::<CommentBody, ()>(CommentBody::Tags(c))),
+            Self::comment.map_res(|c| Ok::<CommentBody, ()>(CommentBody::Comment(c))),
         ))
-        .parse(input)?;
-        let (input, _) = newline.parse(input)?;
+        .parse_next(input)?;
+        let (input, _) = newline.parse_next(input)?;
         Ok((input, res))
     }
 
@@ -97,10 +90,9 @@ impl Comment {
             _ => unreachable!(),
         };
         let (input, _) = space0(input)?;
-        map_res(Self::comment_body, |comment| {
-            Ok::<Comment, ()>(Comment { kind, comment })
-        })
-        .parse(input)
+        Self::comment_body
+            .map_res(|comment| Ok::<Comment, ()>(Comment { kind, comment }))
+            .parse_next(input)
     }
 }
 

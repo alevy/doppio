@@ -1,7 +1,9 @@
 use std::fmt::Display;
 
 use winnow::{
-    combinator::{eof, map_res}, multi::{many0, many_till, many_till0}, IResult, Parser
+    IResult, Parser,
+    combinator::eof,
+    multi::{many_till0, many0},
 };
 
 pub mod comment;
@@ -34,19 +36,13 @@ impl Display for JournalNode {
 
 impl JournalNode {
     pub fn parse(input: &str) -> IResult<&str, JournalNode> {
-        let (input, _): (_, ()) = many0(helpers::empty_line).parse(input)?;
+        let (input, _): (_, ()) = many0(helpers::empty_line).parse_next(input)?;
         winnow::branch::alt((
-            map_res(Comment::parse, |c| {
-                Ok::<JournalNode, ()>(JournalNode::Comment(c))
-            }),
-            map_res(Transaction::parse, |c| {
-                Ok::<JournalNode, ()>(JournalNode::Transaction(c))
-            }),
-            map_res(Command::parse, |c| {
-                Ok::<JournalNode, ()>(JournalNode::Command(c))
-            }),
+            Comment::parse.map_res(|c| Ok::<JournalNode, ()>(JournalNode::Comment(c))),
+            Transaction::parse.map_res(|c| Ok::<JournalNode, ()>(JournalNode::Transaction(c))),
+            Command::parse.map_res(|c| Ok::<JournalNode, ()>(JournalNode::Command(c))),
         ))
-        .parse(input)
+        .parse_next(input)
     }
 }
 
@@ -55,10 +51,11 @@ pub struct Journal(pub Vec<JournalNode>);
 
 impl Journal {
     pub fn parse(input: &str) -> IResult<&str, Journal> {
-        many_till0(JournalNode::parse, eof).map_res(|(nodes, _): (Vec<JournalNode>, &str)| {
-            Ok::<Journal, ()>(Journal(nodes.into_iter().collect()))
-        })
-        .parse_next(input)
+        many_till0(JournalNode::parse, eof)
+            .map_res(|(nodes, _): (Vec<JournalNode>, &str)| {
+                Ok::<Journal, ()>(Journal(nodes.into_iter().collect()))
+            })
+            .parse_next(input)
     }
 
     pub fn add_txn(&mut self, txn: Transaction) {

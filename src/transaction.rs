@@ -4,7 +4,12 @@ use std::{
 };
 
 use winnow::{
-    bytes::{one_of, tag, take, take_till1}, character::{newline, space0, space1}, combinator::{map_res, opt, peek, value}, multi::many0, sequence::{delimited, tuple}, IResult, Parser
+    IResult, Parser,
+    bytes::{one_of, tag, take, take_till1},
+    character::{newline, space0, space1},
+    combinator::{opt, peek},
+    multi::many0,
+    sequence::delimited,
 };
 
 use crate::{
@@ -22,14 +27,15 @@ pub enum TransactionState {
 impl TransactionState {
     pub fn parse(input: &str) -> IResult<&str, TransactionState> {
         // State is optionally '*' or '!'
-        let (input, state) = opt(one_of("*!")).map_res(|c| {
-            Ok::<TransactionState, ()>(match c {
-                Some('*') => TransactionState::Cleared,
-                Some('!') => TransactionState::Pending,
-                _ => TransactionState::Uncleared,
+        let (input, state) = opt(one_of("*!"))
+            .map_res(|c| {
+                Ok::<TransactionState, ()>(match c {
+                    Some('*') => TransactionState::Cleared,
+                    Some('!') => TransactionState::Pending,
+                    _ => TransactionState::Uncleared,
+                })
             })
-        })
-        .parse(input)?;
+            .parse_next(input)?;
         let input = space0(input)?.0;
         Ok((input, state))
     }
@@ -101,7 +107,14 @@ impl Transaction {
         // Date as Y-M-D or Y/M/D
         let (input, date) = chrono::NaiveDate::parse_and_remainder(input, "%Y-%m-%d")
             .or_else(|_| chrono::NaiveDate::parse_and_remainder(input, "%Y/%m/%d"))
-            .map_or_else(|_| Err(winnow::error::ErrMode::Backtrack(winnow::error::Error::new(input, winnow::error::ErrorKind::Fail))), |(d, i)| Ok((i, d)))?;
+            .map_or_else(
+                |_| {
+                    Err(winnow::error::ErrMode::Backtrack(
+                        winnow::error::Error::new(input, winnow::error::ErrorKind::Fail),
+                    ))
+                },
+                |(d, i)| Ok((i, d)),
+            )?;
 
         let (input, _) = space0(input)?;
 
@@ -109,7 +122,7 @@ impl Transaction {
         let (input, state) = TransactionState::parse(input)?;
 
         let (input, code) =
-            opt(delimited(tag("("), take_till1(|c| c == ')'), tag(")"))).parse(input)?;
+            opt(delimited(tag("("), take_till1(|c| c == ')'), tag(")"))).parse_next(input)?;
 
         let input = space0(input)?.0;
 
@@ -119,8 +132,9 @@ impl Transaction {
         input = loop {
             input = match peek(winnow::branch::alt((
                 (hard_stop, tag(";")).value(()),
-                (newline.value(()))
-            ))).parse_next(input)
+                (newline.value(())),
+            )))
+            .parse_next(input)
             {
                 Err(winnow::error::ErrMode::Backtrack(input)) => {
                     let (input, c) = take(1usize).parse_next(input.input)?;
@@ -133,12 +147,12 @@ impl Transaction {
         };
 
         // note
-        let (mut input, note) = opt(hard_stop.and(Comment::parse)).parse(input)?;
+        let (mut input, note) = opt((hard_stop, Comment::parse)).parse_next(input)?;
         if note.is_none() {
             (input, _) = newline(input)?;
         }
 
-        let (input, postings) = many0(Posting::parse).parse(input)?;
+        let (input, postings) = many0(Posting::parse).parse_next(input)?;
 
         Ok((
             input,
@@ -202,9 +216,11 @@ impl Posting {
 
             let mut account = String::new();
             input = loop {
-                input = match peek(hard_stop.or(value((), newline))).parse(input) {
+                input = match peek(winnow::branch::alt((hard_stop, newline.value(()))))
+                    .parse_next(input)
+                {
                     Err(winnow::error::ErrMode::Backtrack(input)) => {
-                        let (input, c) = take(1usize).parse(input.input)?;
+                        let (input, c) = take(1usize).parse_next(input.input)?;
                         account.push_str(c);
                         input
                     }
@@ -213,10 +229,10 @@ impl Posting {
                 };
             };
 
-            let (input, amount) = opt(hard_stop.and(amount)).parse(input)?;
+            let (input, amount) = opt((hard_stop, amount)).parse_next(input)?;
             let amount = amount.map(|a| a.1);
 
-            let (mut input, note) = opt(hard_stop.and(Comment::parse)).parse(input)?;
+            let (mut input, note) = opt((hard_stop, Comment::parse)).parse_next(input)?;
 
             if note.is_none() {
                 (input, _) = newline(input)?;
@@ -234,12 +250,10 @@ impl Posting {
 
         winnow::branch::alt((
             // TODO parse comments into tags etc
-            Comment::parse.map_res(|c| {
-                Ok::<Posting, ()>(Posting::Comment(c.comment))
-            }),
+            Comment::parse.map_res(|c| Ok::<Posting, ()>(Posting::Comment(c.comment))),
             posting_helper,
         ))
-        .parse(input)
+        .parse_next(input)
     }
 }
 
