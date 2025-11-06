@@ -1,6 +1,7 @@
 fn main() {
-    let (rest, output) = ledger::Journal::parse(LEDGER).unwrap();
-    println!("{} {rest}", output);
+    let mut input = LEDGER;
+    let output = ledger::Journal::parse(&mut input).unwrap();
+    println!("{}", output);
 }
 
 const LEDGER: &str = r#"

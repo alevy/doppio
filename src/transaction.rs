@@ -4,10 +4,7 @@ use std::{
 };
 
 use winnow::{
-    IResult, Parser,
-    ascii::{newline, space0, space1},
-    combinator::{alt, delimited, opt, peek, repeat},
-    token::{one_of, tag, take, take_till1},
+    ascii::{newline, space0, space1}, combinator::{alt, delimited, opt, peek, repeat}, error::ContextError, token::{one_of, tag, take, take_till1}, IResult, PResult, Parser
 };
 
 use crate::{
@@ -23,19 +20,18 @@ pub enum TransactionState {
 }
 
 impl TransactionState {
-    pub fn parse(input: &str) -> IResult<&str, TransactionState> {
+    pub fn parse(input: &mut &str) -> PResult<TransactionState> {
         // State is optionally '*' or '!'
-        let (input, state) = opt(one_of("*!"))
-            .try_map(|c| {
-                Ok::<TransactionState, ()>(match c {
+        let state = opt(one_of(b"*!"))
+            .map(|c| match c {
                     Some('*') => TransactionState::Cleared,
                     Some('!') => TransactionState::Pending,
                     _ => TransactionState::Uncleared,
-                })
-            })
+                }
+            )
             .parse_next(input)?;
-        let input = space0(input)?.0;
-        Ok((input, state))
+        space0(input)?;
+        Ok(state)
     }
 }
 
@@ -101,56 +97,52 @@ impl Transaction {
             .collect()
     }
 
-    pub fn parse(input: &str) -> IResult<&str, Transaction> {
+    pub fn parse(input: &mut &str) -> PResult<Transaction> {
         // Date as Y-M-D or Y/M/D
-        let (input, date) = chrono::NaiveDate::parse_and_remainder(input, "%Y-%m-%d")
-            .or_else(|_| chrono::NaiveDate::parse_and_remainder(input, "%Y/%m/%d"))
+        let date = chrono::NaiveDate::parse_and_remainder(*input, "%Y-%m-%d")
+            .or_else(|_| chrono::NaiveDate::parse_and_remainder(*input, "%Y/%m/%d"))
             .map_or_else(
-                |_| {
-                    Err(winnow::error::ErrMode::Backtrack(
-                        winnow::error::Error::new(input, winnow::error::ErrorKind::Fail),
-                    ))
-                },
-                |(d, i)| Ok((i, d)),
+                |_| Err(winnow::error::ErrMode::Backtrack(ContextError::new())),
+                |(d, i)| {
+                    *input = i;
+                    Ok(d)
+                }
             )?;
 
-        let (input, _) = space0(input)?;
+        space0(input)?;
 
         // State is optionally '*' or '!'
-        let (input, state) = TransactionState::parse(input)?;
+        let state = TransactionState::parse(input)?;
 
-        let (input, code) =
+        let code =
             opt(delimited(tag("("), take_till1(|c| c == ')'), tag(")"))).parse_next(input)?;
 
-        let input = space0(input)?.0;
+        space0(input)?;
 
         // description
-        let mut input = input;
         let mut description = String::new();
-        input = loop {
-            input = match peek(alt(((hard_stop, tag(";")).value(()), (newline.value(())))))
+        loop {
+            match peek(alt(((hard_stop, tag(";")).value(()), (newline.value(())))))
                 .parse_next(input)
             {
-                Err(winnow::error::ErrMode::Backtrack(input)) => {
-                    let (input, c) = take(1usize).parse_next(input.input)?;
+                Err(winnow::error::ErrMode::Backtrack(_)) => {
+                    let c = take(1usize).parse_next(input)?;
                     description.push_str(c);
-                    input
                 }
                 Err(e) => return Err(e),
-                Ok((input, _)) => break input,
+                Ok(_) => break,
             };
         };
 
         // note
-        let (mut input, note) = opt((hard_stop, Comment::parse)).parse_next(input)?;
+        let note = opt((hard_stop, Comment::parse)).parse_next(input)?;
         if note.is_none() {
-            (input, _) = newline(input)?;
+            newline(input)?;
         }
 
-        let (input, postings) = repeat(.., Posting::parse).parse_next(input)?;
+        let postings = repeat(.., Posting::parse).parse_next(input)?;
 
-        Ok((
-            input,
+        Ok(
             Transaction {
                 date,
                 state,
@@ -159,7 +151,7 @@ impl Transaction {
                 note: note.map(|n| n.1.comment),
                 postings,
             },
-        ))
+        )
     }
 }
 
@@ -201,49 +193,44 @@ pub enum Posting {
 }
 
 impl Posting {
-    pub fn parse(input: &str) -> IResult<&str, Posting> {
-        let (input, _) = space1(input)?;
+    pub fn parse(input: &mut &str) -> PResult<Posting> {
+        space1(input)?;
 
-        fn posting_helper(mut input: &str) -> IResult<&str, Posting> {
+        fn posting_helper(input: &mut &str) -> PResult<Posting> {
             // State is optionally '*' or '!'
-            let state;
-            (input, state) = TransactionState::parse(input)?;
+            let state = TransactionState::parse(input)?;
 
             let mut account = String::new();
-            input = loop {
-                input = match peek(alt((hard_stop, newline.value(())))).parse_next(input) {
-                    Err(winnow::error::ErrMode::Backtrack(input)) => {
-                        let (input, c) = take(1usize).parse_next(input.input)?;
+            loop {
+                match peek(alt((hard_stop, newline.value(())))).parse_next(input) {
+                    Err(winnow::error::ErrMode::Backtrack(_)) => {
+                        let c = take(1usize).parse_next(input)?;
                         account.push_str(c);
-                        input
                     }
                     Err(e) => return Err(e),
-                    Ok((input, _)) => break input,
+                    Ok(_) => break,
                 };
             };
 
-            let (input, amount) = opt((hard_stop, amount)).parse_next(input)?;
-            let amount = amount.map(|a| a.1);
+            let amount = opt((hard_stop, amount).map(|a| a.1)).parse_next(input)?;
 
-            let (mut input, note) = opt((hard_stop, Comment::parse)).parse_next(input)?;
+            let note = opt((hard_stop, Comment::parse)).parse_next(input)?;
 
             if note.is_none() {
-                (input, _) = newline(input)?;
+                newline(input)?;
             }
-            Ok((
-                input,
-                Posting::Posting {
+            Ok(Posting::Posting {
                     account,
                     amount,
                     state,
                     note: note.map(|n| n.1.comment),
                 },
-            ))
+            )
         }
 
         alt((
             // TODO parse comments into tags etc
-            Comment::parse.try_map(|c| Ok::<Posting, ()>(Posting::Comment(c.comment))),
+            Comment::parse.map(|c| Posting::Comment(c.comment)),
             posting_helper,
         ))
         .parse_next(input)

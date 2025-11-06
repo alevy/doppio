@@ -2,6 +2,7 @@ use std::{collections::HashMap, fmt::Display};
 
 use winnow::combinator::alt;
 use winnow::token::one_of;
+use winnow::PResult;
 use winnow::{
     IResult, Parser,
     ascii::{newline, space0, space1},
@@ -23,80 +24,80 @@ pub enum Command {
 }
 
 impl Command {
-    fn include(input: &str) -> IResult<&str, Command> {
-        let (input, _) = tag("include").parse_next(input)?;
-        let (input, _) = space0(input)?;
+    fn include(input: &mut &str) -> PResult<Command> {
+        tag("include").parse_next(input)?;
+        space0(input)?;
 
-        let (input, res) = take_till0(|c| c == '\n').parse_next(input)?;
-        let (input, _) = newline.parse_next(input)?;
-        Ok((input, Command::Include(res.into())))
+        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        newline.parse_next(input)?;
+        Ok(Command::Include(res.into()))
     }
 
-    fn price(input: &str) -> IResult<&str, Command> {
-        let (input, _) = tag("P").parse_next(input)?;
-        let (input, _) = space0(input)?;
+    fn price(input: &mut &str) -> PResult<Command> {
+        tag("P").parse_next(input)?;
+        space0(input)?;
 
-        let (input, res) = take_till0(|c| c == '\n').parse_next(input)?;
-        let (input, _) = newline.parse_next(input)?;
-        Ok((input, Command::Price(res.into())))
+        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        newline.parse_next(input)?;
+        Ok(Command::Price(res.into()))
     }
 
-    fn account(input: &str) -> IResult<&str, Command> {
-        let (input, _) = tag("account").parse_next(input)?;
-        let (input, _) = space0(input)?;
+    fn sub_directive(input: &mut &str) -> PResult<(String, String)> {
+        space1(input)?;
+        let key: &str = alt((tag("note"),)).parse_next(input)?;
+        space1(input)?;
+        let value: &str = take_till0(|c| c == '\n').parse_next(input)?;
 
-        let (input, res) = take_till0(|c| c == '\n').parse_next(input)?;
-        let (input, _) = newline.parse_next(input)?;
+        Ok((key.to_string(), value.to_string()))
+    }
 
-        let (input, mut sub_directives): (&str, Vec<(String, String)>) = repeat(.., |input| {
-            let (input, _) = space1(input)?;
-            let (input, key): (&str, &str) = alt((tag("note"),)).parse_next(input)?;
-            let (input, _) = space1(input)?;
-            let (input, value) = take_till0(|c| c == '\n').parse_next(input)?;
+    fn account(input: &mut &str) -> PResult<Command> {
+        tag("account").parse_next(input)?;
+        space0(input)?;
 
-            Ok((input, (key.to_string(), value.to_string())))
-        })
+        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        newline.parse_next(input)?;
+
+        let mut sub_directives: Vec<(String, String)> = repeat(.., Self::sub_directive)
         .parse_next(input)?;
 
-        Ok((
-            input,
-            Command::Account {
+        Ok(Command::Account {
                 name: res.into(),
                 sub_directives: sub_directives.drain(..).collect(),
             },
-        ))
+        )
     }
 
-    fn payee(input: &str) -> IResult<&str, Command> {
-        let (input, _) = tag("payee").parse_next(input)?;
-        let (input, _) = space0(input)?;
+    fn payee(input: &mut &str) -> PResult<Command> {
+        tag("payee").parse_next(input)?;
+        space0(input)?;
 
-        let (input, res) = take_till0(|c| c == '\n').parse_next(input)?;
-        let (input, _) = newline.parse_next(input)?;
-        Ok((input, Command::Payee(res.into())))
+        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        newline.parse_next(input)?;
+        Ok(Command::Payee(res.into()))
     }
 
-    fn commodity(input: &str) -> IResult<&str, Command> {
-        let (input, _) = tag("commodity").parse_next(input)?;
-        let (input, _) = space0(input)?;
+    fn commodity(input: &mut &str) -> PResult<Command> {
+        tag("commodity").parse_next(input)?;
+        space0(input)?;
 
-        let (input, res) = take_till0(|c| c == '\n').parse_next(input)?;
-        let (input, _) = newline.parse_next(input)?;
-        Ok((input, Command::Commodity(res.into())))
+        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        newline.parse_next(input)?;
+        Ok(Command::Commodity(res.into()))
     }
 
-    fn tag(input: &str) -> IResult<&str, Command> {
-        let (input, _) = tag("tag").parse_next(input)?;
-        let (input, _) = space0(input)?;
+    fn tag(input: &mut &str) -> PResult<Command> {
+        tag("tag").parse_next(input)?;
+        space0(input)?;
 
-        let (input, res) = take_till0(|c| c == '\n').parse_next(input)?;
-        let (input, _) = newline.parse_next(input)?;
-        Ok((input, Command::Tag(res.into())))
+        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        newline.parse_next(input)?;
+        Ok(Command::Tag(res.into()))
     }
 
-    pub fn parse(input: &str) -> IResult<&str, Command> {
+    pub fn parse(input: &mut &str) -> PResult<Command> {
         // Preceding command lines with ! or @ is deprecated
-        let (input, _) = opt(one_of("!@")).parse_next(input)?;
+        opt(one_of(b"!@")).parse_next(input)?;
         alt((
             Self::include,
             Self::price,

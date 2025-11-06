@@ -1,16 +1,13 @@
 use winnow::{
-    IResult, Parser,
-    ascii::{newline, space0},
-    combinator::{alt, peek, repeat},
-    token::{tag, take},
+    ascii::{newline, space0}, combinator::{alt, peek, repeat}, token::{tag, take}, PResult, Parser
 };
 
-pub(crate) fn empty_line(input: &str) -> IResult<&str, ()> {
+pub(crate) fn empty_line(input: &mut &str) -> PResult<()> {
     repeat(1.., (space0, newline)).parse_next(input)
 }
 
-pub(crate) fn hard_stop(input: &str) -> IResult<&str, ()> {
-    let (input, _) = alt((
+pub(crate) fn hard_stop(input: &mut &str) -> PResult<()> {
+    alt((
         // two spaces
         tag("  "),
         // a space and a tab
@@ -19,29 +16,28 @@ pub(crate) fn hard_stop(input: &str) -> IResult<&str, ()> {
         tag("\t"),
     ))
     .parse_next(input)?;
-    let (input, _) = space0(input)?;
-    Ok((input, ()))
+    space0(input)?;
+    Ok(())
 }
 
 type Amount = String;
 
-pub(crate) fn amount(mut input: &str) -> IResult<&str, Amount> {
+pub(crate) fn amount(input: &mut &str) -> PResult<Amount> {
     let mut amount = String::new();
-    input = loop {
-        input = match peek(alt((
+    loop {
+        match peek(alt((
             (hard_stop, crate::comment::Comment::parse).value(()),
             newline.value(()),
         )))
         .parse_next(input)
         {
-            Err(winnow::error::ErrMode::Backtrack(input)) => {
-                let (input, c) = take(1usize).parse_next(input.input)?;
+            Err(winnow::error::ErrMode::Backtrack(_)) => {
+                let c = take(1usize).parse_next(input)?;
                 amount.push_str(c);
-                input
             }
             Err(e) => return Err(e),
-            Ok((input, _)) => break input,
+            Ok(_) => break,
         };
     };
-    Ok((input, amount))
+    Ok(amount)
 }

@@ -1,10 +1,7 @@
 use std::fmt::{Display, Write};
 
 use winnow::{
-    IResult, Parser,
-    ascii::{alphanumeric1, newline, space0, space1},
-    combinator::{alt, repeat, separated_pair},
-    token::{one_of, tag, take_till0, take_till1},
+    ascii::{alphanumeric1, newline, space0, space1}, combinator::{alt, repeat, separated_pair}, token::{one_of, tag, take_till, take_till0, take_till1}, IResult, PResult, Parser
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -43,47 +40,47 @@ pub struct Comment {
 }
 
 impl Comment {
-    fn comment(input: &str) -> IResult<&str, String> {
-        let (input, res) = take_till0(|c| c == '\n')
-            .try_map(|s: &str| Ok::<String, ()>(s.into()))
+    fn comment(input: &mut &str) -> PResult<String> {
+        let res = take_till(0.., |c| c == '\n')
+            .map(|s: &str| s.into())
             .parse_next(input)?;
-        Ok((input, res))
+        Ok(res)
     }
 
-    fn value(input: &str) -> IResult<&str, (&str, &str)> {
+    fn value(input: &mut &str) -> PResult<(String, String)> {
         separated_pair(
-            take_till1(|c| " \t\n\r:".contains(c)),
+            take_till1(|c| " \t\n\r:".contains(c)).map(Into::into),
             (tag(":"), (space1)),
-            take_till0(|c| c == '\n'),
+            take_till0(|c| c == '\n').map(Into::into),
         )
         .parse_next(input)
     }
 
-    fn tags(input: &str) -> IResult<&str, Vec<String>> {
-        let input = tag(":").parse_next(input)?.0;
+    fn tags(input: &mut &str) -> PResult<Vec<String>> {
+        tag(":").parse_next(input)?;
 
         repeat(
             1..,
-            (alphanumeric1::<&str, _>, (tag(":"))).try_map(|(r, _)| Ok::<String, ()>(r.into())),
+            (alphanumeric1.map(String::from), tag(":")).map(|r| r.0),
         )
         .parse_next(input)
     }
 
-    fn comment_body(input: &str) -> IResult<&str, CommentBody> {
-        let (input, _) = space0(input)?;
-        let (input, res) = alt((
+    fn comment_body(input: &mut &str) -> PResult<CommentBody> {
+        space0(input)?;
+        let res = alt((
             Self::value
-                .try_map(|c| Ok::<CommentBody, ()>(CommentBody::Value(c.0.into(), c.1.into()))),
-            Self::tags.try_map(|c| Ok::<CommentBody, ()>(CommentBody::Tags(c))),
-            Self::comment.try_map(|c| Ok::<CommentBody, ()>(CommentBody::Comment(c))),
+                .map(|c| CommentBody::Value(c.0.into(), c.1.into())),
+            Self::tags.map(|c| CommentBody::Tags(c)),
+            Self::comment.map(|c| CommentBody::Comment(c)),
         ))
         .parse_next(input)?;
-        let (input, _) = newline.parse_next(input)?;
-        Ok((input, res))
+        newline.parse_next(input)?;
+        Ok(res)
     }
 
-    pub fn parse(input: &str) -> IResult<&str, Comment> {
-        let (input, o) = one_of(";#|*").parse_next(input)?;
+    pub fn parse(input: &mut &str) -> PResult<Comment> {
+        let o = one_of(b";#|*").parse_next(input)?;
         let kind = match o {
             ';' => CommentKind::Semicolon,
             '#' => CommentKind::Hash,
@@ -91,9 +88,9 @@ impl Comment {
             '*' => CommentKind::Asterisk,
             _ => unreachable!(),
         };
-        let (input, _) = space0(input)?;
+        space0(input)?;
         Self::comment_body
-            .try_map(|comment| Ok::<Comment, ()>(Comment { kind, comment }))
+            .map(|comment| Comment { kind, comment })
             .parse_next(input)
     }
 }
