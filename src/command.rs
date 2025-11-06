@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
-use winnow::PResult;
+use winnow::ModalResult;
 use winnow::combinator::alt;
 use winnow::token::{literal, one_of};
 use winnow::{
@@ -24,7 +24,7 @@ pub enum Command {
 }
 
 impl Command {
-    fn include(input: &mut &str) -> PResult<Command> {
+    fn include(input: &mut &str) -> ModalResult<Command> {
         literal("include").parse_next(input)?;
         space0(input)?;
 
@@ -33,7 +33,7 @@ impl Command {
         Ok(Command::Include(res.into()))
     }
 
-    fn price(input: &mut &str) -> PResult<Command> {
+    fn price(input: &mut &str) -> ModalResult<Command> {
         literal("P").parse_next(input)?;
         space0(input)?;
 
@@ -42,7 +42,7 @@ impl Command {
         Ok(Command::Price(res.into()))
     }
 
-    fn sub_directive(input: &mut &str) -> PResult<(String, String)> {
+    fn sub_directive(input: &mut &str) -> ModalResult<(String, String)> {
         space1(input)?;
         let key: &str = alt((literal("note"),)).parse_next(input)?;
         space1(input)?;
@@ -51,7 +51,7 @@ impl Command {
         Ok((key.to_string(), value.to_string()))
     }
 
-    fn account(input: &mut &str) -> PResult<Command> {
+    fn account(input: &mut &str) -> ModalResult<Command> {
         literal("account").parse_next(input)?;
         space0(input)?;
 
@@ -67,7 +67,7 @@ impl Command {
         })
     }
 
-    fn payee(input: &mut &str) -> PResult<Command> {
+    fn payee(input: &mut &str) -> ModalResult<Command> {
         literal("payee").parse_next(input)?;
         space0(input)?;
 
@@ -76,7 +76,7 @@ impl Command {
         Ok(Command::Payee(res.into()))
     }
 
-    fn commodity(input: &mut &str) -> PResult<Command> {
+    fn commodity(input: &mut &str) -> ModalResult<Command> {
         literal("commodity").parse_next(input)?;
         space0(input)?;
 
@@ -85,7 +85,7 @@ impl Command {
         Ok(Command::Commodity(res.into()))
     }
 
-    fn tag(input: &mut &str) -> PResult<Command> {
+    fn tag(input: &mut &str) -> ModalResult<Command> {
         literal("tag").parse_next(input)?;
         space0(input)?;
 
@@ -94,7 +94,7 @@ impl Command {
         Ok(Command::Literal(res.into()))
     }
 
-    pub fn parse(input: &mut &str) -> PResult<Command> {
+    pub fn parse(input: &mut &str) -> ModalResult<Command> {
         // Preceding command lines with ! or @ is deprecated
         opt(one_of(b"!@")).parse_next(input)?;
         alt((

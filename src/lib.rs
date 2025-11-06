@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use winnow::{
-    PResult, Parser,
+    ModalResult, Parser,
     combinator::{alt, eof, repeat, repeat_till},
 };
 
@@ -34,7 +34,7 @@ impl Display for JournalNode {
 }
 
 impl JournalNode {
-    pub fn parse(input: &mut &str) -> PResult<JournalNode> {
+    pub fn parse(input: &mut &str) -> ModalResult<JournalNode> {
         let () = repeat(.., helpers::empty_line).parse_next(input)?;
         alt((
             Comment::parse.map(JournalNode::Comment),
@@ -49,7 +49,7 @@ impl JournalNode {
 pub struct Journal(pub Vec<JournalNode>);
 
 impl Journal {
-    pub fn parse(input: &mut &str) -> PResult<Journal> {
+    pub fn parse(input: &mut &str) -> ModalResult<Journal> {
         repeat_till(0.., JournalNode::parse, eof)
             .map(|(nodes, _): (Vec<JournalNode>, &str)| Journal(nodes.into_iter().collect()))
             .parse_next(input)

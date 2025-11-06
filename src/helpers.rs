@@ -1,15 +1,15 @@
 use winnow::{
-    PResult, Parser,
+    ModalResult, Parser,
     ascii::{newline, space0},
     combinator::{alt, peek, repeat},
     token::{literal, take},
 };
 
-pub(crate) fn empty_line(input: &mut &str) -> PResult<()> {
+pub(crate) fn empty_line(input: &mut &str) -> ModalResult<()> {
     repeat(1.., (space0, newline)).parse_next(input)
 }
 
-pub(crate) fn hard_stop(input: &mut &str) -> PResult<()> {
+pub(crate) fn hard_stop(input: &mut &str) -> ModalResult<()> {
     alt((
         // two spaces
         literal("  "),
@@ -25,7 +25,7 @@ pub(crate) fn hard_stop(input: &mut &str) -> PResult<()> {
 
 type Amount = String;
 
-pub(crate) fn amount(input: &mut &str) -> PResult<Amount> {
+pub(crate) fn amount(input: &mut &str) -> ModalResult<Amount> {
     let mut amount = String::new();
     loop {
         match peek(alt((

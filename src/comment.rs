@@ -1,7 +1,7 @@
 use std::fmt::{Display, Write};
 
 use winnow::{
-    PResult, Parser,
+    ModalResult, Parser,
     ascii::{alphanumeric1, newline, space0, space1},
     combinator::{alt, repeat, separated_pair},
     token::{literal, one_of, take_till},
@@ -43,14 +43,14 @@ pub struct Comment {
 }
 
 impl Comment {
-    fn comment(input: &mut &str) -> PResult<String> {
+    fn comment(input: &mut &str) -> ModalResult<String> {
         let res = take_till(0.., |c| c == '\n')
             .map(|s: &str| s.into())
             .parse_next(input)?;
         Ok(res)
     }
 
-    fn value(input: &mut &str) -> PResult<(String, String)> {
+    fn value(input: &mut &str) -> ModalResult<(String, String)> {
         separated_pair(
             take_till(1.., |c| " \t\n\r:".contains(c)).map(Into::into),
             (literal(":"), (space1)),
@@ -59,7 +59,7 @@ impl Comment {
         .parse_next(input)
     }
 
-    fn tags(input: &mut &str) -> PResult<Vec<String>> {
+    fn tags(input: &mut &str) -> ModalResult<Vec<String>> {
         literal(":").parse_next(input)?;
 
         repeat(
@@ -69,7 +69,7 @@ impl Comment {
         .parse_next(input)
     }
 
-    fn comment_body(input: &mut &str) -> PResult<CommentBody> {
+    fn comment_body(input: &mut &str) -> ModalResult<CommentBody> {
         space0(input)?;
         let res = alt((
             Self::value.map(|c| CommentBody::Value(c.0, c.1)),
@@ -81,7 +81,7 @@ impl Comment {
         Ok(res)
     }
 
-    pub fn parse(input: &mut &str) -> PResult<Comment> {
+    pub fn parse(input: &mut &str) -> ModalResult<Comment> {
         let o = one_of(b";#|*").parse_next(input)?;
         let kind = match o {
             ';' => CommentKind::Semicolon,

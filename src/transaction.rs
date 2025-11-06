@@ -4,7 +4,7 @@ use std::{
 };
 
 use winnow::{
-    PResult, Parser,
+    ModalResult, Parser,
     ascii::{newline, space0, space1},
     combinator::{alt, delimited, opt, peek, repeat},
     error::ContextError,
@@ -24,7 +24,7 @@ pub enum TransactionState {
 }
 
 impl TransactionState {
-    pub fn parse(input: &mut &str) -> PResult<TransactionState> {
+    pub fn parse(input: &mut &str) -> ModalResult<TransactionState> {
         // State is optionally '*' or '!'
         let state = opt(one_of(b"*!"))
             .map(|c| match c {
@@ -100,7 +100,7 @@ impl Transaction {
             .collect()
     }
 
-    pub fn parse(input: &mut &str) -> PResult<Transaction> {
+    pub fn parse(input: &mut &str) -> ModalResult<Transaction> {
         // Date as Y-M-D or Y/M/D
         let date = chrono::NaiveDate::parse_and_remainder(input, "%Y-%m-%d")
             .or_else(|_| chrono::NaiveDate::parse_and_remainder(input, "%Y/%m/%d"))
@@ -201,10 +201,10 @@ pub enum Posting {
 }
 
 impl Posting {
-    pub fn parse(input: &mut &str) -> PResult<Posting> {
+    pub fn parse(input: &mut &str) -> ModalResult<Posting> {
         space1(input)?;
 
-        fn posting_helper(input: &mut &str) -> PResult<Posting> {
+        fn posting_helper(input: &mut &str) -> ModalResult<Posting> {
             // State is optionally '*' or '!'
             let state = TransactionState::parse(input)?;
 
