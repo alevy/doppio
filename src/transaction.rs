@@ -1,11 +1,13 @@
-use std::{collections::HashMap, fmt::{Display, Write}};
+use std::{
+    collections::HashMap,
+    fmt::{Display, Write},
+};
 
 use nom::{
     IResult, Parser,
     bytes::{tag, take, take_till1},
     character::{
         complete::{newline, one_of, space0, space1},
-        digit1,
     },
     combinator::{map_res, opt, peek, value},
     multi::many0,
@@ -52,9 +54,7 @@ impl Display for TransactionState {
 
 #[derive(Clone, Debug)]
 pub struct Transaction {
-    pub year: i32,
-    pub month: u32,
-    pub date: u32,
+    pub date: chrono::NaiveDate,
     pub state: TransactionState,
     pub code: Option<String>,
     pub description: String,
@@ -64,21 +64,26 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn tags(&self) -> Vec<String> {
-        self.postings.iter().filter_map(|posting| {
-            if let Posting::Comment(CommentBody::Tags(tags)) = posting {
-                Some(tags)
-            } else {
-                None
-            }
-        }).fold(vec![], |mut f, s| {
-            f.append(&mut s.clone());
-            f
-        })
+        self.postings
+            .iter()
+            .filter_map(|posting| {
+                if let Posting::Comment(CommentBody::Tags(tags)) = posting {
+                    Some(tags)
+                } else {
+                    None
+                }
+            })
+            .fold(vec![], |mut f, s| {
+                f.append(&mut s.clone());
+                f
+            })
     }
 
     pub fn value_of<S: AsRef<str>>(&self, key: S) -> Option<&String> {
         self.postings.iter().find_map(|posting| {
-            if let Posting::Comment(CommentBody::Value(k, v)) = posting && k == key.as_ref() {
+            if let Posting::Comment(CommentBody::Value(k, v)) = posting
+                && k == key.as_ref()
+            {
                 Some(v)
             } else {
                 None
@@ -87,22 +92,23 @@ impl Transaction {
     }
 
     pub fn metadata(&self) -> HashMap<&String, &String> {
-        self.postings.iter().filter_map(|posting| {
-            if let Posting::Comment(CommentBody::Value(k, v)) = posting {
-                Some((k, v))
-            } else {
-                None
-            }
-        }).collect()
+        self.postings
+            .iter()
+            .filter_map(|posting| {
+                if let Posting::Comment(CommentBody::Value(k, v)) = posting {
+                    Some((k, v))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn parse(input: &str) -> IResult<&str, Transaction> {
         // Date as Y-M-D or Y/M/D
-        let (input, year) = map_res(digit1(), str::parse).parse(input)?;
-        let (input, _) = one_of("/-")(input)?;
-        let (input, month) = map_res(digit1(), str::parse).parse(input)?;
-        let (input, _) = one_of("/-")(input)?;
-        let (input, date) = map_res(digit1(), str::parse).parse(input)?;
+        let (input, date) = chrono::NaiveDate::parse_and_remainder(input, "%Y-%m-%d")
+            .or_else(|_| chrono::NaiveDate::parse_and_remainder(input, "%Y/%m/%d"))
+            .map_or_else(|_| Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Fail))), |(d, i)| Ok((i, d)))?;
 
         let (input, _) = space0(input)?;
 
@@ -142,8 +148,6 @@ impl Transaction {
         Ok((
             input,
             Transaction {
-                year,
-                month,
                 date,
                 state,
                 code: code.map(Into::into),
@@ -157,7 +161,7 @@ impl Transaction {
 
 impl Display for Transaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}-{:02}-{:02} ", self.year, self.month, self.date)?;
+        self.date.format("%Y-%m-%d").write_to(f)?;
 
         write!(f, "{}", self.state)?;
 

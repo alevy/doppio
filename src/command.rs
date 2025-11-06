@@ -1,17 +1,17 @@
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display};
 
 use nom::{
-    IResult, Parser,
-    bytes::{tag, take_till},
-    character::complete::{newline, one_of, space0},
-    combinator::opt,
+    bytes::{tag, take_till}, character::complete::{newline, one_of, space0, space1}, combinator::opt, multi::many0, IResult, Parser
 };
 
 #[derive(Clone, Debug)]
 pub enum Command {
     Include(String),
     Price(String),
-    Account(String),
+    Account {
+        name: String,
+        sub_directives: HashMap<String, String>,
+    },
     Payee(String),
     Commodity(String),
     Tag(String),
@@ -42,7 +42,23 @@ impl Command {
 
         let (input, res) = take_till(|c| c == '\n').parse(input)?;
         let (input, _) = newline.parse(input)?;
-        Ok((input, Command::Account(res.into())))
+
+        let (input, mut sub_directives) = many0(|input| {
+            let (input, _) = space1(input)?;
+            let (input, key): (&str, &str) = nom::branch::alt((
+                tag("note"),
+            )).parse(input)?;
+            let (input, _) = space1(input)?;
+            let (input, value) = take_till(|c| c == '\n').parse(input)?;
+
+            Ok((input, (key.to_string(), value.to_string())))
+        }).parse(input)?;
+
+
+        Ok((input, Command::Account {
+            name: res.into(),
+            sub_directives: sub_directives.drain(..).collect(),
+        }))
     }
 
     fn payee(input: &str) -> IResult<&str, Command> {
@@ -92,7 +108,13 @@ impl Display for Command {
         match self {
             Command::Include(path) => writeln!(f, "include {path}"),
             Command::Price(p) => writeln!(f, "P {p}"),
-            Command::Account(a) => writeln!(f, "account {a}"),
+            Command::Account { name, sub_directives } => {
+                writeln!(f, "account {name}")?;
+                for (key, value) in sub_directives {
+                    writeln!(f, "{key} {value}")?;
+                }
+                Ok(())
+            },
             Command::Payee(p) => writeln!(f, "payee {p}"),
             Command::Commodity(c) => writeln!(f, "commodity {c}"),
             Command::Tag(t) => writeln!(f, "tag {t}"),

@@ -1,9 +1,7 @@
-use std::fmt::{Display, Write};
+use std::fmt::Display;
 
 use nom::{
-    IResult, Parser,
-    combinator::{eof, map_res},
-    multi::many_till,
+    combinator::{eof, map_res}, multi::{many0, many_till}, IResult, Parser
 };
 
 pub mod comment;
@@ -22,7 +20,6 @@ pub enum JournalNode {
     Comment(Comment),
     Command(Command),
     Transaction(Transaction),
-    EmptyLine,
 }
 
 impl Display for JournalNode {
@@ -31,13 +28,13 @@ impl Display for JournalNode {
             Self::Comment(comment) => comment.fmt(f),
             Self::Command(command) => command.fmt(f),
             Self::Transaction(transaction) => transaction.fmt(f),
-            Self::EmptyLine => f.write_char('\n'),
         }
     }
 }
 
 impl JournalNode {
     pub fn parse(input: &str) -> IResult<&str, JournalNode> {
+        let (input, _) = many0(helpers::empty_line).parse(input)?;
         nom::branch::alt((
             map_res(Comment::parse, |c| {
                 Ok::<JournalNode, ()>(JournalNode::Comment(c))
@@ -47,9 +44,6 @@ impl JournalNode {
             }),
             map_res(Command::parse, |c| {
                 Ok::<JournalNode, ()>(JournalNode::Command(c))
-            }),
-            map_res(helpers::empty_line, |_| {
-                Ok::<JournalNode, ()>(JournalNode::EmptyLine)
             }),
         ))
         .parse(input)
@@ -65,6 +59,24 @@ impl Journal {
             Ok::<Journal, ()>(Journal(nodes.into_iter().collect()))
         })
         .parse(input)
+    }
+
+    pub fn add_txn(&mut self, txn: Transaction) {
+        let i = self
+            .0
+            .iter()
+            .enumerate()
+            .find_map(|(i, jn)| {
+                if let JournalNode::Transaction(ti) = jn {
+                    if ti.date > txn.date {
+                        return Some(i);
+                    }
+                }
+                None
+            })
+            .unwrap_or(self.0.len());
+
+        self.0.insert(i, JournalNode::Transaction(txn));
     }
 }
 
