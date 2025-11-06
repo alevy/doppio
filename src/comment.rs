@@ -1,8 +1,8 @@
 use std::fmt::{Display, Write};
 
-use nom::{
+use winnow::{
     IResult, Parser,
-    bytes::{complete::take_till1, tag, take_till},
+    bytes::{complete::take_till1, tag, take_till0},
     character::complete::{alphanumeric1, newline, one_of, space0, space1},
     combinator::map_res,
     multi::many1,
@@ -46,7 +46,7 @@ pub struct Comment {
 
 impl Comment {
     fn comment(input: &str) -> IResult<&str, String> {
-        let (input, res) = map_res(take_till(|c| c == '\n'), |s: &str| {
+        let (input, res) = map_res(take_till0(|c| c == '\n'), |s: &str| {
             Ok::<String, ()>(s.into())
         })
         .parse(input)?;
@@ -57,7 +57,7 @@ impl Comment {
         separated_pair(
             take_till1(|c| " \t\n\r:".contains(c)),
             tag(":").and(space1),
-            take_till(|c| c == '\n'),
+            take_till0(|c| c == '\n'),
         )
         .parse(input)
     }
@@ -73,7 +73,7 @@ impl Comment {
 
     fn comment_body(input: &str) -> IResult<&str, CommentBody> {
         let (input, _) = space0(input)?;
-        let (input, res) = nom::branch::alt((
+        let (input, res) = winnow::branch::alt((
             map_res(Self::value, |c| {
                 Ok::<CommentBody, ()>(CommentBody::Value(c.0.into(), c.1.into()))
             }),

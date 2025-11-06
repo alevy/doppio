@@ -1,17 +1,17 @@
-use nom::{
+use winnow::{
     IResult, Parser,
     bytes::{tag, take},
-    character::complete::{newline, space0},
+    character::{newline, space0},
     combinator::{peek, value},
     multi::many1,
 };
 
 pub(crate) fn empty_line(input: &str) -> IResult<&str, ()> {
-    value((), many1(space0.and(newline))).parse(input)
+    many1(space0.and(newline)).parse(input)
 }
 
 pub(crate) fn hard_stop(input: &str) -> IResult<&str, ()> {
-    let (input, _) = nom::branch::alt((
+    let (input, _) = winnow::branch::alt((
         // two spaces
         tag("  "),
         // a space and a tab
@@ -34,7 +34,7 @@ pub(crate) fn amount(mut input: &str) -> IResult<&str, Amount> {
         )
         .parse(input)
         {
-            Err(nom::Err::Error(input)) => {
+            Err(winnow::error::ErrMode::Backtrack(input)) => {
                 let (input, c) = take(1usize).parse(input.input)?;
                 amount.push_str(c);
                 input

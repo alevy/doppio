@@ -3,15 +3,8 @@ use std::{
     fmt::{Display, Write},
 };
 
-use nom::{
-    IResult, Parser,
-    bytes::{tag, take, take_till1},
-    character::{
-        complete::{newline, one_of, space0, space1},
-    },
-    combinator::{map_res, opt, peek, value},
-    multi::many0,
-    sequence::delimited,
+use winnow::{
+    bytes::{one_of, tag, take, take_till1}, character::{newline, space0, space1}, combinator::{map_res, opt, peek, value}, multi::many0, sequence::{delimited, tuple}, IResult, Parser
 };
 
 use crate::{
@@ -29,7 +22,7 @@ pub enum TransactionState {
 impl TransactionState {
     pub fn parse(input: &str) -> IResult<&str, TransactionState> {
         // State is optionally '*' or '!'
-        let (input, state) = map_res(opt(one_of("*!")), |c| {
+        let (input, state) = opt(one_of("*!")).map_res(|c| {
             Ok::<TransactionState, ()>(match c {
                 Some('*') => TransactionState::Cleared,
                 Some('!') => TransactionState::Pending,
@@ -108,7 +101,7 @@ impl Transaction {
         // Date as Y-M-D or Y/M/D
         let (input, date) = chrono::NaiveDate::parse_and_remainder(input, "%Y-%m-%d")
             .or_else(|_| chrono::NaiveDate::parse_and_remainder(input, "%Y/%m/%d"))
-            .map_or_else(|_| Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Fail))), |(d, i)| Ok((i, d)))?;
+            .map_or_else(|_| Err(winnow::error::ErrMode::Backtrack(winnow::error::Error::new(input, winnow::error::ErrorKind::Fail))), |(d, i)| Ok((i, d)))?;
 
         let (input, _) = space0(input)?;
 
@@ -124,11 +117,13 @@ impl Transaction {
         let mut input = input;
         let mut description = String::new();
         input = loop {
-            input = match peek((value((), hard_stop.and(tag(";")))).or(value((), newline)))
-                .parse(input)
+            input = match peek(winnow::branch::alt((
+                (hard_stop, tag(";")).value(()),
+                (newline.value(()))
+            ))).parse_next(input)
             {
-                Err(nom::Err::Error(input)) => {
-                    let (input, c) = take(1usize).parse(input.input)?;
+                Err(winnow::error::ErrMode::Backtrack(input)) => {
+                    let (input, c) = take(1usize).parse_next(input.input)?;
                     description.push_str(c);
                     input
                 }
@@ -208,7 +203,7 @@ impl Posting {
             let mut account = String::new();
             input = loop {
                 input = match peek(hard_stop.or(value((), newline))).parse(input) {
-                    Err(nom::Err::Error(input)) => {
+                    Err(winnow::error::ErrMode::Backtrack(input)) => {
                         let (input, c) = take(1usize).parse(input.input)?;
                         account.push_str(c);
                         input
@@ -237,9 +232,9 @@ impl Posting {
             ))
         }
 
-        nom::branch::alt((
+        winnow::branch::alt((
             // TODO parse comments into tags etc
-            map_res(Comment::parse, |c| {
+            Comment::parse.map_res(|c| {
                 Ok::<Posting, ()>(Posting::Comment(c.comment))
             }),
             posting_helper,

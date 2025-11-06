@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
-use nom::{
-    combinator::{eof, map_res}, multi::{many0, many_till}, IResult, Parser
+use winnow::{
+    combinator::{eof, map_res}, multi::{many0, many_till, many_till0}, IResult, Parser
 };
 
 pub mod comment;
@@ -34,8 +34,8 @@ impl Display for JournalNode {
 
 impl JournalNode {
     pub fn parse(input: &str) -> IResult<&str, JournalNode> {
-        let (input, _) = many0(helpers::empty_line).parse(input)?;
-        nom::branch::alt((
+        let (input, _): (_, ()) = many0(helpers::empty_line).parse(input)?;
+        winnow::branch::alt((
             map_res(Comment::parse, |c| {
                 Ok::<JournalNode, ()>(JournalNode::Comment(c))
             }),
@@ -55,10 +55,10 @@ pub struct Journal(pub Vec<JournalNode>);
 
 impl Journal {
     pub fn parse(input: &str) -> IResult<&str, Journal> {
-        map_res(many_till(JournalNode::parse, eof), |(nodes, _)| {
+        many_till0(JournalNode::parse, eof).map_res(|(nodes, _): (Vec<JournalNode>, &str)| {
             Ok::<Journal, ()>(Journal(nodes.into_iter().collect()))
         })
-        .parse(input)
+        .parse_next(input)
     }
 
     pub fn add_txn(&mut self, txn: Transaction) {

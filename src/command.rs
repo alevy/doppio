@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Display};
 
-use nom::{
-    bytes::{tag, take_till}, character::complete::{newline, one_of, space0, space1}, combinator::opt, multi::many0, IResult, Parser
+use winnow::{
+    bytes::{tag, take_till0}, character::complete::{newline, one_of, space0, space1}, combinator::opt, multi::many0, IResult, Parser
 };
 
 #[derive(Clone, Debug)]
@@ -22,7 +22,7 @@ impl Command {
         let (input, _) = tag("include").parse(input)?;
         let (input, _) = space0(input)?;
 
-        let (input, res) = take_till(|c| c == '\n').parse(input)?;
+        let (input, res) = take_till0(|c| c == '\n').parse(input)?;
         let (input, _) = newline.parse(input)?;
         Ok((input, Command::Include(res.into())))
     }
@@ -31,7 +31,7 @@ impl Command {
         let (input, _) = tag("P").parse(input)?;
         let (input, _) = space0(input)?;
 
-        let (input, res) = take_till(|c| c == '\n').parse(input)?;
+        let (input, res) = take_till0(|c| c == '\n').parse(input)?;
         let (input, _) = newline.parse(input)?;
         Ok((input, Command::Price(res.into())))
     }
@@ -40,16 +40,16 @@ impl Command {
         let (input, _) = tag("account").parse(input)?;
         let (input, _) = space0(input)?;
 
-        let (input, res) = take_till(|c| c == '\n').parse(input)?;
+        let (input, res) = take_till0(|c| c == '\n').parse(input)?;
         let (input, _) = newline.parse(input)?;
 
-        let (input, mut sub_directives) = many0(|input| {
+        let (input, mut sub_directives): (&str, Vec<(String, String)>) = many0(|input| {
             let (input, _) = space1(input)?;
-            let (input, key): (&str, &str) = nom::branch::alt((
+            let (input, key): (&str, &str) = winnow::branch::alt((
                 tag("note"),
             )).parse(input)?;
             let (input, _) = space1(input)?;
-            let (input, value) = take_till(|c| c == '\n').parse(input)?;
+            let (input, value) = take_till0(|c| c == '\n').parse(input)?;
 
             Ok((input, (key.to_string(), value.to_string())))
         }).parse(input)?;
@@ -65,7 +65,7 @@ impl Command {
         let (input, _) = tag("payee").parse(input)?;
         let (input, _) = space0(input)?;
 
-        let (input, res) = take_till(|c| c == '\n').parse(input)?;
+        let (input, res) = take_till0(|c| c == '\n').parse(input)?;
         let (input, _) = newline.parse(input)?;
         Ok((input, Command::Payee(res.into())))
     }
@@ -74,7 +74,7 @@ impl Command {
         let (input, _) = tag("commodity").parse(input)?;
         let (input, _) = space0(input)?;
 
-        let (input, res) = take_till(|c| c == '\n').parse(input)?;
+        let (input, res) = take_till0(|c| c == '\n').parse(input)?;
         let (input, _) = newline.parse(input)?;
         Ok((input, Command::Commodity(res.into())))
     }
@@ -83,7 +83,7 @@ impl Command {
         let (input, _) = tag("tag").parse(input)?;
         let (input, _) = space0(input)?;
 
-        let (input, res) = take_till(|c| c == '\n').parse(input)?;
+        let (input, res) = take_till0(|c| c == '\n').parse(input)?;
         let (input, _) = newline.parse(input)?;
         Ok((input, Command::Tag(res.into())))
     }
@@ -91,7 +91,7 @@ impl Command {
     pub fn parse(input: &str) -> IResult<&str, Command> {
         // Preceding command lines with ! or @ is deprecated
         let (input, _) = opt(one_of("!@")).parse(input)?;
-        nom::branch::alt((
+        winnow::branch::alt((
             Self::include,
             Self::price,
             Self::account,
