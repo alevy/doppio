@@ -5,11 +5,9 @@ use std::{
 
 use winnow::{
     IResult, Parser,
-    bytes::{one_of, tag, take, take_till1},
-    character::{newline, space0, space1},
-    combinator::{opt, peek},
-    multi::many0,
-    sequence::delimited,
+    ascii::{newline, space0, space1},
+    combinator::{alt, delimited, opt, peek, repeat},
+    token::{one_of, tag, take, take_till1},
 };
 
 use crate::{
@@ -28,7 +26,7 @@ impl TransactionState {
     pub fn parse(input: &str) -> IResult<&str, TransactionState> {
         // State is optionally '*' or '!'
         let (input, state) = opt(one_of("*!"))
-            .map_res(|c| {
+            .try_map(|c| {
                 Ok::<TransactionState, ()>(match c {
                     Some('*') => TransactionState::Cleared,
                     Some('!') => TransactionState::Pending,
@@ -130,11 +128,8 @@ impl Transaction {
         let mut input = input;
         let mut description = String::new();
         input = loop {
-            input = match peek(winnow::branch::alt((
-                (hard_stop, tag(";")).value(()),
-                (newline.value(())),
-            )))
-            .parse_next(input)
+            input = match peek(alt(((hard_stop, tag(";")).value(()), (newline.value(())))))
+                .parse_next(input)
             {
                 Err(winnow::error::ErrMode::Backtrack(input)) => {
                     let (input, c) = take(1usize).parse_next(input.input)?;
@@ -152,7 +147,7 @@ impl Transaction {
             (input, _) = newline(input)?;
         }
 
-        let (input, postings) = many0(Posting::parse).parse_next(input)?;
+        let (input, postings) = repeat(.., Posting::parse).parse_next(input)?;
 
         Ok((
             input,
@@ -216,9 +211,7 @@ impl Posting {
 
             let mut account = String::new();
             input = loop {
-                input = match peek(winnow::branch::alt((hard_stop, newline.value(()))))
-                    .parse_next(input)
-                {
+                input = match peek(alt((hard_stop, newline.value(())))).parse_next(input) {
                     Err(winnow::error::ErrMode::Backtrack(input)) => {
                         let (input, c) = take(1usize).parse_next(input.input)?;
                         account.push_str(c);
@@ -248,9 +241,9 @@ impl Posting {
             ))
         }
 
-        winnow::branch::alt((
+        alt((
             // TODO parse comments into tags etc
-            Comment::parse.map_res(|c| Ok::<Posting, ()>(Posting::Comment(c.comment))),
+            Comment::parse.try_map(|c| Ok::<Posting, ()>(Posting::Comment(c.comment))),
             posting_helper,
         ))
         .parse_next(input)
@@ -275,7 +268,7 @@ impl Display for Posting {
                 if let Some(note) = note {
                     writeln!(f, "  ; {note}")
                 } else {
-                    writeln!(f, "")
+                    writeln!(f)
                 }
             }
         }

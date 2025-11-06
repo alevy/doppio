@@ -2,8 +2,7 @@ use std::fmt::Display;
 
 use winnow::{
     IResult, Parser,
-    combinator::eof,
-    multi::{many_till0, many0},
+    combinator::{alt, eof, repeat, repeat_till0},
 };
 
 pub mod comment;
@@ -36,11 +35,11 @@ impl Display for JournalNode {
 
 impl JournalNode {
     pub fn parse(input: &str) -> IResult<&str, JournalNode> {
-        let (input, _): (_, ()) = many0(helpers::empty_line).parse_next(input)?;
-        winnow::branch::alt((
-            Comment::parse.map_res(|c| Ok::<JournalNode, ()>(JournalNode::Comment(c))),
-            Transaction::parse.map_res(|c| Ok::<JournalNode, ()>(JournalNode::Transaction(c))),
-            Command::parse.map_res(|c| Ok::<JournalNode, ()>(JournalNode::Command(c))),
+        let (input, _): (_, ()) = repeat(.., helpers::empty_line).parse_next(input)?;
+        alt((
+            Comment::parse.try_map(|c| Ok::<JournalNode, ()>(JournalNode::Comment(c))),
+            Transaction::parse.try_map(|c| Ok::<JournalNode, ()>(JournalNode::Transaction(c))),
+            Command::parse.try_map(|c| Ok::<JournalNode, ()>(JournalNode::Command(c))),
         ))
         .parse_next(input)
     }
@@ -51,8 +50,8 @@ pub struct Journal(pub Vec<JournalNode>);
 
 impl Journal {
     pub fn parse(input: &str) -> IResult<&str, Journal> {
-        many_till0(JournalNode::parse, eof)
-            .map_res(|(nodes, _): (Vec<JournalNode>, &str)| {
+        repeat_till0(JournalNode::parse, eof)
+            .try_map(|(nodes, _): (Vec<JournalNode>, &str)| {
                 Ok::<Journal, ()>(Journal(nodes.into_iter().collect()))
             })
             .parse_next(input)
@@ -64,11 +63,10 @@ impl Journal {
             .iter()
             .enumerate()
             .find_map(|(i, jn)| {
-                if let JournalNode::Transaction(ti) = jn {
-                    if ti.date > txn.date {
+                if let JournalNode::Transaction(ti) = jn
+                    && ti.date > txn.date {
                         return Some(i);
                     }
-                }
                 None
             })
             .unwrap_or(self.0.len());

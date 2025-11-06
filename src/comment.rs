@@ -2,10 +2,9 @@ use std::fmt::{Display, Write};
 
 use winnow::{
     IResult, Parser,
-    bytes::{one_of, tag, take_till0, take_till1},
-    character::{alphanumeric1, newline, space0, space1},
-    multi::many1,
-    sequence::separated_pair,
+    ascii::{alphanumeric1, newline, space0, space1},
+    combinator::{alt, repeat, separated_pair},
+    token::{one_of, tag, take_till0, take_till1},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -46,7 +45,7 @@ pub struct Comment {
 impl Comment {
     fn comment(input: &str) -> IResult<&str, String> {
         let (input, res) = take_till0(|c| c == '\n')
-            .map_res(|s: &str| Ok::<String, ()>(s.into()))
+            .try_map(|s: &str| Ok::<String, ()>(s.into()))
             .parse_next(input)?;
         Ok((input, res))
     }
@@ -63,17 +62,20 @@ impl Comment {
     fn tags(input: &str) -> IResult<&str, Vec<String>> {
         let input = tag(":").parse_next(input)?.0;
 
-        many1((alphanumeric1::<&str, _>, (tag(":"))).map_res(|(r, _)| Ok::<String, ()>(r.into())))
-            .parse_next(input)
+        repeat(
+            1..,
+            (alphanumeric1::<&str, _>, (tag(":"))).try_map(|(r, _)| Ok::<String, ()>(r.into())),
+        )
+        .parse_next(input)
     }
 
     fn comment_body(input: &str) -> IResult<&str, CommentBody> {
         let (input, _) = space0(input)?;
-        let (input, res) = winnow::branch::alt((
+        let (input, res) = alt((
             Self::value
-                .map_res(|c| Ok::<CommentBody, ()>(CommentBody::Value(c.0.into(), c.1.into()))),
-            Self::tags.map_res(|c| Ok::<CommentBody, ()>(CommentBody::Tags(c))),
-            Self::comment.map_res(|c| Ok::<CommentBody, ()>(CommentBody::Comment(c))),
+                .try_map(|c| Ok::<CommentBody, ()>(CommentBody::Value(c.0.into(), c.1.into()))),
+            Self::tags.try_map(|c| Ok::<CommentBody, ()>(CommentBody::Tags(c))),
+            Self::comment.try_map(|c| Ok::<CommentBody, ()>(CommentBody::Comment(c))),
         ))
         .parse_next(input)?;
         let (input, _) = newline.parse_next(input)?;
@@ -91,7 +93,7 @@ impl Comment {
         };
         let (input, _) = space0(input)?;
         Self::comment_body
-            .map_res(|comment| Ok::<Comment, ()>(Comment { kind, comment }))
+            .try_map(|comment| Ok::<Comment, ()>(Comment { kind, comment }))
             .parse_next(input)
     }
 }

@@ -1,12 +1,12 @@
 use std::{collections::HashMap, fmt::Display};
 
-use winnow::bytes::one_of;
+use winnow::combinator::alt;
+use winnow::token::one_of;
 use winnow::{
     IResult, Parser,
-    bytes::{tag, take_till0},
-    character::{newline, space0, space1},
-    combinator::opt,
-    multi::many0,
+    ascii::{newline, space0, space1},
+    combinator::{opt, repeat},
+    token::{tag, take_till0},
 };
 
 #[derive(Clone, Debug)]
@@ -48,10 +48,9 @@ impl Command {
         let (input, res) = take_till0(|c| c == '\n').parse_next(input)?;
         let (input, _) = newline.parse_next(input)?;
 
-        let (input, mut sub_directives): (&str, Vec<(String, String)>) = many0(|input| {
+        let (input, mut sub_directives): (&str, Vec<(String, String)>) = repeat(.., |input| {
             let (input, _) = space1(input)?;
-            let (input, key): (&str, &str) =
-                winnow::branch::alt((tag("note"),)).parse_next(input)?;
+            let (input, key): (&str, &str) = alt((tag("note"),)).parse_next(input)?;
             let (input, _) = space1(input)?;
             let (input, value) = take_till0(|c| c == '\n').parse_next(input)?;
 
@@ -98,7 +97,7 @@ impl Command {
     pub fn parse(input: &str) -> IResult<&str, Command> {
         // Preceding command lines with ! or @ is deprecated
         let (input, _) = opt(one_of("!@")).parse_next(input)?;
-        winnow::branch::alt((
+        alt((
             Self::include,
             Self::price,
             Self::account,

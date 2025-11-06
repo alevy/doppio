@@ -1,17 +1,16 @@
 use winnow::{
     IResult, Parser,
-    bytes::{tag, take},
-    character::{newline, space0},
-    combinator::peek,
-    multi::many1,
+    ascii::{newline, space0},
+    combinator::{alt, peek, repeat},
+    token::{tag, take},
 };
 
 pub(crate) fn empty_line(input: &str) -> IResult<&str, ()> {
-    many1((space0, newline)).parse_next(input)
+    repeat(1.., (space0, newline)).parse_next(input)
 }
 
 pub(crate) fn hard_stop(input: &str) -> IResult<&str, ()> {
-    let (input, _) = winnow::branch::alt((
+    let (input, _) = alt((
         // two spaces
         tag("  "),
         // a space and a tab
@@ -29,7 +28,7 @@ type Amount = String;
 pub(crate) fn amount(mut input: &str) -> IResult<&str, Amount> {
     let mut amount = String::new();
     input = loop {
-        input = match peek(winnow::branch::alt((
+        input = match peek(alt((
             (hard_stop, crate::comment::Comment::parse).value(()),
             newline.value(()),
         )))
