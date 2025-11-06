@@ -1,7 +1,10 @@
 use std::fmt::{Display, Write};
 
 use winnow::{
-    ascii::{alphanumeric1, newline, space0, space1}, combinator::{alt, repeat, separated_pair}, token::{one_of, tag, take_till, take_till0, take_till1}, IResult, PResult, Parser
+    PResult, Parser,
+    ascii::{alphanumeric1, newline, space0, space1},
+    combinator::{alt, repeat, separated_pair},
+    token::{literal, one_of, take_till},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -49,19 +52,19 @@ impl Comment {
 
     fn value(input: &mut &str) -> PResult<(String, String)> {
         separated_pair(
-            take_till1(|c| " \t\n\r:".contains(c)).map(Into::into),
-            (tag(":"), (space1)),
-            take_till0(|c| c == '\n').map(Into::into),
+            take_till(1.., |c| " \t\n\r:".contains(c)).map(Into::into),
+            (literal(":"), (space1)),
+            take_till(0.., |c| c == '\n').map(Into::into),
         )
         .parse_next(input)
     }
 
     fn tags(input: &mut &str) -> PResult<Vec<String>> {
-        tag(":").parse_next(input)?;
+        literal(":").parse_next(input)?;
 
         repeat(
             1..,
-            (alphanumeric1.map(String::from), tag(":")).map(|r| r.0),
+            (alphanumeric1.map(String::from), literal(":")).map(|r| r.0),
         )
         .parse_next(input)
     }
@@ -69,10 +72,9 @@ impl Comment {
     fn comment_body(input: &mut &str) -> PResult<CommentBody> {
         space0(input)?;
         let res = alt((
-            Self::value
-                .map(|c| CommentBody::Value(c.0.into(), c.1.into())),
-            Self::tags.map(|c| CommentBody::Tags(c)),
-            Self::comment.map(|c| CommentBody::Comment(c)),
+            Self::value.map(|c| CommentBody::Value(c.0, c.1)),
+            Self::tags.map(CommentBody::Tags),
+            Self::comment.map(CommentBody::Comment),
         ))
         .parse_next(input)?;
         newline.parse_next(input)?;

@@ -1,13 +1,13 @@
 use std::{collections::HashMap, fmt::Display};
 
-use winnow::combinator::alt;
-use winnow::token::one_of;
 use winnow::PResult;
+use winnow::combinator::alt;
+use winnow::token::{literal, one_of};
 use winnow::{
-    IResult, Parser,
+    Parser,
     ascii::{newline, space0, space1},
     combinator::{opt, repeat},
-    token::{tag, take_till0},
+    token::take_till,
 };
 
 #[derive(Clone, Debug)]
@@ -20,79 +20,78 @@ pub enum Command {
     },
     Payee(String),
     Commodity(String),
-    Tag(String),
+    Literal(String),
 }
 
 impl Command {
     fn include(input: &mut &str) -> PResult<Command> {
-        tag("include").parse_next(input)?;
+        literal("include").parse_next(input)?;
         space0(input)?;
 
-        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
         Ok(Command::Include(res.into()))
     }
 
     fn price(input: &mut &str) -> PResult<Command> {
-        tag("P").parse_next(input)?;
+        literal("P").parse_next(input)?;
         space0(input)?;
 
-        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
         Ok(Command::Price(res.into()))
     }
 
     fn sub_directive(input: &mut &str) -> PResult<(String, String)> {
         space1(input)?;
-        let key: &str = alt((tag("note"),)).parse_next(input)?;
+        let key: &str = alt((literal("note"),)).parse_next(input)?;
         space1(input)?;
-        let value: &str = take_till0(|c| c == '\n').parse_next(input)?;
+        let value: &str = take_till(0.., |c| c == '\n').parse_next(input)?;
 
         Ok((key.to_string(), value.to_string()))
     }
 
     fn account(input: &mut &str) -> PResult<Command> {
-        tag("account").parse_next(input)?;
+        literal("account").parse_next(input)?;
         space0(input)?;
 
-        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
 
-        let mut sub_directives: Vec<(String, String)> = repeat(.., Self::sub_directive)
-        .parse_next(input)?;
+        let mut sub_directives: Vec<(String, String)> =
+            repeat(.., Self::sub_directive).parse_next(input)?;
 
         Ok(Command::Account {
-                name: res.into(),
-                sub_directives: sub_directives.drain(..).collect(),
-            },
-        )
+            name: res.into(),
+            sub_directives: sub_directives.drain(..).collect(),
+        })
     }
 
     fn payee(input: &mut &str) -> PResult<Command> {
-        tag("payee").parse_next(input)?;
+        literal("payee").parse_next(input)?;
         space0(input)?;
 
-        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
         Ok(Command::Payee(res.into()))
     }
 
     fn commodity(input: &mut &str) -> PResult<Command> {
-        tag("commodity").parse_next(input)?;
+        literal("commodity").parse_next(input)?;
         space0(input)?;
 
-        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
         Ok(Command::Commodity(res.into()))
     }
 
     fn tag(input: &mut &str) -> PResult<Command> {
-        tag("tag").parse_next(input)?;
+        literal("tag").parse_next(input)?;
         space0(input)?;
 
-        let res = take_till0(|c| c == '\n').parse_next(input)?;
+        let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
-        Ok(Command::Tag(res.into()))
+        Ok(Command::Literal(res.into()))
     }
 
     pub fn parse(input: &mut &str) -> PResult<Command> {
@@ -127,7 +126,7 @@ impl Display for Command {
             }
             Command::Payee(p) => writeln!(f, "payee {p}"),
             Command::Commodity(c) => writeln!(f, "commodity {c}"),
-            Command::Tag(t) => writeln!(f, "tag {t}"),
+            Command::Literal(t) => writeln!(f, "tag {t}"),
         }
     }
 }

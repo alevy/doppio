@@ -1,5 +1,8 @@
 use winnow::{
-    ascii::{newline, space0}, combinator::{alt, peek, repeat}, token::{tag, take}, PResult, Parser
+    PResult, Parser,
+    ascii::{newline, space0},
+    combinator::{alt, peek, repeat},
+    token::{literal, take},
 };
 
 pub(crate) fn empty_line(input: &mut &str) -> PResult<()> {
@@ -9,11 +12,11 @@ pub(crate) fn empty_line(input: &mut &str) -> PResult<()> {
 pub(crate) fn hard_stop(input: &mut &str) -> PResult<()> {
     alt((
         // two spaces
-        tag("  "),
+        literal("  "),
         // a space and a tab
-        tag(" \t"),
+        literal(" \t"),
         // one tab
-        tag("\t"),
+        literal("\t"),
     ))
     .parse_next(input)?;
     space0(input)?;
@@ -38,6 +41,6 @@ pub(crate) fn amount(input: &mut &str) -> PResult<Amount> {
             Err(e) => return Err(e),
             Ok(_) => break,
         };
-    };
+    }
     Ok(amount)
 }

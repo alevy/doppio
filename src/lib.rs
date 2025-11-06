@@ -1,7 +1,8 @@
 use std::fmt::Display;
 
 use winnow::{
-    combinator::{alt, eof, repeat, repeat_till0}, IResult, PResult, Parser
+    PResult, Parser,
+    combinator::{alt, eof, repeat, repeat_till},
 };
 
 pub mod comment;
@@ -37,8 +38,8 @@ impl JournalNode {
         let () = repeat(.., helpers::empty_line).parse_next(input)?;
         alt((
             Comment::parse.map(JournalNode::Comment),
-            Transaction::parse.map(|c| JournalNode::Transaction(c)),
-            Command::parse.map(|c| JournalNode::Command(c)),
+            Transaction::parse.map(JournalNode::Transaction),
+            Command::parse.map(JournalNode::Command),
         ))
         .parse_next(input)
     }
@@ -49,10 +50,8 @@ pub struct Journal(pub Vec<JournalNode>);
 
 impl Journal {
     pub fn parse(input: &mut &str) -> PResult<Journal> {
-        repeat_till0(JournalNode::parse, eof)
-            .map(|(nodes, _): (Vec<JournalNode>, &str)| {
-                Journal(nodes.into_iter().collect())
-            })
+        repeat_till(0.., JournalNode::parse, eof)
+            .map(|(nodes, _): (Vec<JournalNode>, &str)| Journal(nodes.into_iter().collect()))
             .parse_next(input)
     }
 
@@ -63,9 +62,10 @@ impl Journal {
             .enumerate()
             .find_map(|(i, jn)| {
                 if let JournalNode::Transaction(ti) = jn
-                    && ti.date > txn.date {
-                        return Some(i);
-                    }
+                    && ti.date > txn.date
+                {
+                    return Some(i);
+                }
                 None
             })
             .unwrap_or(self.0.len());

@@ -4,7 +4,11 @@ use std::{
 };
 
 use winnow::{
-    ascii::{newline, space0, space1}, combinator::{alt, delimited, opt, peek, repeat}, error::ContextError, token::{one_of, tag, take, take_till1}, IResult, PResult, Parser
+    PResult, Parser,
+    ascii::{newline, space0, space1},
+    combinator::{alt, delimited, opt, peek, repeat},
+    error::ContextError,
+    token::{literal, one_of, take, take_till},
 };
 
 use crate::{
@@ -24,11 +28,10 @@ impl TransactionState {
         // State is optionally '*' or '!'
         let state = opt(one_of(b"*!"))
             .map(|c| match c {
-                    Some('*') => TransactionState::Cleared,
-                    Some('!') => TransactionState::Pending,
-                    _ => TransactionState::Uncleared,
-                }
-            )
+                Some('*') => TransactionState::Cleared,
+                Some('!') => TransactionState::Pending,
+                _ => TransactionState::Uncleared,
+            })
             .parse_next(input)?;
         space0(input)?;
         Ok(state)
@@ -56,7 +59,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub fn tags(&self) -> Vec<String> {
+    pub fn literals(&self) -> Vec<String> {
         self.postings
             .iter()
             .filter_map(|posting| {
@@ -99,14 +102,14 @@ impl Transaction {
 
     pub fn parse(input: &mut &str) -> PResult<Transaction> {
         // Date as Y-M-D or Y/M/D
-        let date = chrono::NaiveDate::parse_and_remainder(*input, "%Y-%m-%d")
-            .or_else(|_| chrono::NaiveDate::parse_and_remainder(*input, "%Y/%m/%d"))
+        let date = chrono::NaiveDate::parse_and_remainder(input, "%Y-%m-%d")
+            .or_else(|_| chrono::NaiveDate::parse_and_remainder(input, "%Y/%m/%d"))
             .map_or_else(
                 |_| Err(winnow::error::ErrMode::Backtrack(ContextError::new())),
                 |(d, i)| {
                     *input = i;
                     Ok(d)
-                }
+                },
             )?;
 
         space0(input)?;
@@ -114,16 +117,23 @@ impl Transaction {
         // State is optionally '*' or '!'
         let state = TransactionState::parse(input)?;
 
-        let code =
-            opt(delimited(tag("("), take_till1(|c| c == ')'), tag(")"))).parse_next(input)?;
+        let code = opt(delimited(
+            literal("("),
+            take_till(1.., |c| c == ')'),
+            literal(")"),
+        ))
+        .parse_next(input)?;
 
         space0(input)?;
 
         // description
         let mut description = String::new();
         loop {
-            match peek(alt(((hard_stop, tag(";")).value(()), (newline.value(())))))
-                .parse_next(input)
+            match peek(alt((
+                (hard_stop, literal(";")).value(()),
+                (newline.value(())),
+            )))
+            .parse_next(input)
             {
                 Err(winnow::error::ErrMode::Backtrack(_)) => {
                     let c = take(1usize).parse_next(input)?;
@@ -132,7 +142,7 @@ impl Transaction {
                 Err(e) => return Err(e),
                 Ok(_) => break,
             };
-        };
+        }
 
         // note
         let note = opt((hard_stop, Comment::parse)).parse_next(input)?;
@@ -142,16 +152,14 @@ impl Transaction {
 
         let postings = repeat(.., Posting::parse).parse_next(input)?;
 
-        Ok(
-            Transaction {
-                date,
-                state,
-                code: code.map(Into::into),
-                description,
-                note: note.map(|n| n.1.comment),
-                postings,
-            },
-        )
+        Ok(Transaction {
+            date,
+            state,
+            code: code.map(Into::into),
+            description,
+            note: note.map(|n| n.1.comment),
+            postings,
+        })
     }
 }
 
@@ -210,7 +218,7 @@ impl Posting {
                     Err(e) => return Err(e),
                     Ok(_) => break,
                 };
-            };
+            }
 
             let amount = opt((hard_stop, amount).map(|a| a.1)).parse_next(input)?;
 
@@ -220,16 +228,15 @@ impl Posting {
                 newline(input)?;
             }
             Ok(Posting::Posting {
-                    account,
-                    amount,
-                    state,
-                    note: note.map(|n| n.1.comment),
-                },
-            )
+                account,
+                amount,
+                state,
+                note: note.map(|n| n.1.comment),
+            })
         }
 
         alt((
-            // TODO parse comments into tags etc
+            // TODO parse comments into literals etc
             Comment::parse.map(|c| Posting::Comment(c.comment)),
             posting_helper,
         ))
