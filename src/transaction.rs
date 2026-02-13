@@ -7,7 +7,7 @@ use winnow::{
     ModalResult, Parser,
     ascii::{newline, space0, space1},
     combinator::{alt, delimited, opt, peek, repeat},
-    error::ContextError,
+    error::{ContextError, StrContext},
     token::{literal, one_of, take, take_till},
 };
 
@@ -50,7 +50,7 @@ impl Display for TransactionState {
 
 #[derive(Clone, Debug)]
 pub struct Transaction {
-    pub date: chrono::NaiveDate,
+    pub date: chrono::NaiveDateTime,
     pub state: TransactionState,
     pub code: Option<String>,
     pub description: String,
@@ -102,10 +102,14 @@ impl Transaction {
 
     pub fn parse(input: &mut &str) -> ModalResult<Transaction> {
         // Date as Y-M-D or Y/M/D
-        let date = chrono::NaiveDate::parse_and_remainder(input, "%Y-%m-%d")
-            .or_else(|_| chrono::NaiveDate::parse_and_remainder(input, "%Y/%m/%d"))
+        let date = chrono::NaiveDateTime::parse_and_remainder(input, "%Y-%m-%d")
+            .or_else(|_| chrono::NaiveDateTime::parse_and_remainder(input, "%Y/%m/%d"))
             .map_or_else(
-                |_| Err(winnow::error::ErrMode::Backtrack(ContextError::new())),
+                |_| {
+                    let mut err = ContextError::new();
+                    err.push(StrContext::Label("date"));
+                    Err(winnow::error::ErrMode::Backtrack(err))
+                },
                 |(d, i)| {
                     *input = i;
                     Ok(d)
@@ -139,7 +143,9 @@ impl Transaction {
                     let c = take(1usize).parse_next(input)?;
                     description.push_str(c);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    return Err(e);
+                }
                 Ok(_) => break,
             };
         }
@@ -165,15 +171,15 @@ impl Transaction {
 
 impl Display for Transaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.date.format("%Y-%m-%d").write_to(f)?;
+        self.date.format("%Y-%m-%d ").write_to(f)?;
 
         write!(f, "{}", self.state)?;
 
         if let Some(ref code) = self.code {
-            write!(f, "({code}) ")?;
+            write!(f, " ({code})")?;
         }
 
-        f.write_str(&self.description)?;
+        write!(f, "{}", self.description)?;
 
         if let Some(ref note) = self.note {
             write!(f, "  ; {note}")?;
@@ -215,7 +221,9 @@ impl Posting {
                         let c = take(1usize).parse_next(input)?;
                         account.push_str(c);
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        return Err(e);
+                    }
                     Ok(_) => break,
                 };
             }

@@ -1,6 +1,6 @@
 fn main() {
     let mut input = LEDGER;
-    let output = ledger::Journal::parse(&mut input).unwrap();
+    let output = ledger::JournalAst::parse(&mut input).unwrap();
     println!("{}", output);
 }
 

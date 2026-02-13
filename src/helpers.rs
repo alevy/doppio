@@ -38,7 +38,9 @@ pub(crate) fn amount(input: &mut &str) -> ModalResult<Amount> {
                 let c = take(1usize).parse_next(input)?;
                 amount.push_str(c);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                return Err(e);
+            }
             Ok(_) => break,
         };
     }

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Display};
 
 use winnow::ModalResult;
+use winnow::ascii::alphanumeric1;
 use winnow::combinator::alt;
 use winnow::token::{literal, one_of};
 use winnow::{
@@ -12,18 +13,45 @@ use winnow::{
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    Alias {
+        alias: String,
+        origin: String,
+    },
     Include(String),
     Price(String),
+    Define(String),
     Account {
         name: String,
-        sub_directives: HashMap<String, String>,
+        sub_directives: HashMap<String, Option<String>>,
     },
     Payee(String),
-    Commodity(String),
-    Literal(String),
+    Commodity {
+        name: String,
+        sub_directives: HashMap<String, Option<String>>,
+    },
+    Tag {
+        name: String,
+        sub_directives: HashMap<String, Option<String>>,
+    },
 }
 
 impl Command {
+    fn alias(input: &mut &str) -> ModalResult<Command> {
+        literal("alias").parse_next(input)?;
+        space0(input)?;
+
+        let alias = take_till(0.., |c| c == '=').parse_next(input)?;
+        space0(input)?;
+        literal("=").parse_next(input)?;
+        space0(input)?;
+        let origin = take_till(0.., |c| c == '\n').parse_next(input)?;
+        newline.parse_next(input)?;
+        Ok(Command::Alias {
+            alias: alias.into(),
+            origin: origin.into(),
+        })
+    }
+
     fn include(input: &mut &str) -> ModalResult<Command> {
         literal("include").parse_next(input)?;
         space0(input)?;
@@ -42,13 +70,24 @@ impl Command {
         Ok(Command::Price(res.into()))
     }
 
-    fn sub_directive(input: &mut &str) -> ModalResult<(String, String)> {
-        space1(input)?;
-        let key: &str = alt((literal("note"),)).parse_next(input)?;
-        space1(input)?;
-        let value: &str = take_till(0.., |c| c == '\n').parse_next(input)?;
+    fn define(input: &mut &str) -> ModalResult<Command> {
+        literal("define").parse_next(input)?;
+        space0(input)?;
 
-        Ok((key.to_string(), value.to_string()))
+        let res = take_till(0.., |c| c == '\n').parse_next(input)?;
+        newline.parse_next(input)?;
+        Ok(Command::Define(res.into()))
+    }
+
+    fn sub_directive(input: &mut &str) -> ModalResult<(String, Option<String>)> {
+        space1(input)?;
+        let key: &str = alt((alphanumeric1,)).parse_next(input)?;
+        let value =
+            opt((space1, take_till(0.., |c| c == '\n')).map(|(_, v): (_, &str)| v.to_string()))
+                .parse_next(input)?;
+        newline.parse_next(input)?;
+
+        Ok((key.to_string(), value))
     }
 
     fn account(input: &mut &str) -> ModalResult<Command> {
@@ -58,7 +97,7 @@ impl Command {
         let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
 
-        let mut sub_directives: Vec<(String, String)> =
+        let mut sub_directives: Vec<(String, Option<String>)> =
             repeat(.., Self::sub_directive).parse_next(input)?;
 
         Ok(Command::Account {
@@ -82,7 +121,14 @@ impl Command {
 
         let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
-        Ok(Command::Commodity(res.into()))
+
+        let mut sub_directives: Vec<(String, Option<String>)> =
+            repeat(.., Self::sub_directive).parse_next(input)?;
+
+        Ok(Command::Commodity {
+            name: res.into(),
+            sub_directives: sub_directives.drain(..).collect(),
+        })
     }
 
     fn tag(input: &mut &str) -> ModalResult<Command> {
@@ -91,15 +137,24 @@ impl Command {
 
         let res = take_till(0.., |c| c == '\n').parse_next(input)?;
         newline.parse_next(input)?;
-        Ok(Command::Literal(res.into()))
+
+        let mut sub_directives: Vec<(String, Option<String>)> =
+            repeat(.., Self::sub_directive).parse_next(input)?;
+
+        Ok(Command::Tag {
+            name: res.into(),
+            sub_directives: sub_directives.drain(..).collect(),
+        })
     }
 
     pub fn parse(input: &mut &str) -> ModalResult<Command> {
         // Preceding command lines with ! or @ is deprecated
         opt(one_of(b"!@")).parse_next(input)?;
         alt((
+            Self::alias,
             Self::include,
             Self::price,
+            Self::define,
             Self::account,
             Self::payee,
             Self::commodity,
@@ -112,21 +167,53 @@ impl Command {
 impl Display for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Command::Alias { alias, origin } => writeln!(f, "alias {alias} = {origin}"),
             Command::Include(path) => writeln!(f, "include {path}"),
             Command::Price(p) => writeln!(f, "P {p}"),
+            Command::Define(d) => writeln!(f, "define {d}"),
             Command::Account {
                 name,
                 sub_directives,
             } => {
                 writeln!(f, "account {name}")?;
                 for (key, value) in sub_directives {
-                    writeln!(f, "{key} {value}")?;
+                    write!(f, "  {key}")?;
+                    if let Some(value) = value {
+                        write!(f, " {value}")?;
+                    }
+                    writeln!(f)?;
                 }
                 Ok(())
             }
             Command::Payee(p) => writeln!(f, "payee {p}"),
-            Command::Commodity(c) => writeln!(f, "commodity {c}"),
-            Command::Literal(t) => writeln!(f, "tag {t}"),
+            Command::Commodity {
+                name,
+                sub_directives,
+            } => {
+                writeln!(f, "commodity {name}")?;
+                for (key, value) in sub_directives {
+                    write!(f, "  {key}")?;
+                    if let Some(value) = value {
+                        write!(f, " {value}")?;
+                    }
+                    writeln!(f)?;
+                }
+                Ok(())
+            }
+            Command::Tag {
+                name,
+                sub_directives,
+            } => {
+                writeln!(f, "tag {name}")?;
+                for (key, value) in sub_directives {
+                    write!(f, "  {key}")?;
+                    if let Some(value) = value {
+                        write!(f, " {value}")?;
+                    }
+                    writeln!(f)?;
+                }
+                Ok(())
+            }
         }
     }
 }
