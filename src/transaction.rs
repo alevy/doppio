@@ -3,18 +3,12 @@ use std::{
     fmt::{Display, Write},
 };
 
+use rust_decimal::Decimal;
 use winnow::{
-    ModalResult, Parser,
-    ascii::{newline, space0, space1},
-    combinator::{alt, delimited, opt, peek, repeat},
-    error::{ContextError, StrContext},
-    token::{literal, one_of, take, take_till},
+    ascii::{alpha1, newline, space0, space1}, combinator::{alt, delimited, dispatch, fail, opt, peek, repeat}, error::{ContextError, StrContext}, stream::AsChar, token::{any, literal, one_of, take, take_till, take_while}, ModalResult, Parser
 };
 
-use crate::{
-    Comment, CommentBody,
-    helpers::{amount, hard_stop},
-};
+use crate::{Comment, CommentBody, helpers::hard_stop};
 
 #[derive(Clone, Debug)]
 pub enum TransactionState {
@@ -102,8 +96,8 @@ impl Transaction {
 
     pub fn parse(input: &mut &str) -> ModalResult<Transaction> {
         // Date as Y-M-D or Y/M/D
-        let date = chrono::NaiveDateTime::parse_and_remainder(input, "%Y-%m-%d")
-            .or_else(|_| chrono::NaiveDateTime::parse_and_remainder(input, "%Y/%m/%d"))
+        let date = chrono::NaiveDate::parse_and_remainder(input, "%Y-%m-%d")
+            .or_else(|_| chrono::NaiveDate::parse_and_remainder(input, "%Y/%m/%d"))
             .map_or_else(
                 |_| {
                     let mut err = ContextError::new();
@@ -159,7 +153,7 @@ impl Transaction {
         let postings = repeat(.., Posting::parse).parse_next(input)?;
 
         Ok(Transaction {
-            date,
+            date: date.and_time(chrono::NaiveTime::MIN),
             state,
             code: code.map(Into::into),
             description,
@@ -195,11 +189,243 @@ impl Display for Transaction {
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub enum ValueExpr {
+    Value { decimal: Decimal, commodity: String },
+    String(String),
+    Function { name: String, args: Vec<ValueExpr> },
+}
+
+impl Display for ValueExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValueExpr::Value { decimal, commodity } => {
+                write!(f, "{commodity} {decimal}")
+            }
+            ValueExpr::String(s) => write!(f, "\"{s}\""),
+            ValueExpr::Function { name, args } => {
+                write!(f, "{name}(")?;
+                let mut args_iter = args.iter();
+                if let Some(arg) = args_iter.next() {
+                    write!(f, "{arg}")?;
+                }
+                for arg in args_iter {
+                    write!(f, ", {arg}")?;
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
+impl ValueExpr {
+    pub fn parse_value(input: &mut &str) -> ModalResult<ValueExpr> {
+        alt((
+            (
+                take_while(1.., |c| AsChar::is_alpha(c) || c == '$'),
+                opt(one_of(b" ")),
+                decimal,
+            )
+                .map(|r| ValueExpr::Value {
+                    decimal: r.2,
+                    commodity: r.0.to_string(),
+                }),
+            (
+                decimal,
+                opt(one_of(b" ")),
+                take_while(1.., |c| AsChar::is_alpha(c) || c == '$'),
+            )
+                .map(|r| ValueExpr::Value {
+                    decimal: r.0,
+                    commodity: r.2.to_string(),
+                }),
+        ))
+        .parse_next(input)
+    }
+
+    pub fn parse_string(input: &mut &str) -> ModalResult<ValueExpr> {
+        ('"', take_till(0.., ['"', '\n']), '"')
+            .map(|r: (_, &str, _)| ValueExpr::String(r.1.into()))
+            .parse_next(input)
+    }
+
+    pub fn parse_function(input: &mut &str) -> ModalResult<ValueExpr> {
+        (alpha1, '(', repeat(0.., Self::parse), ')')
+            .map(|r| ValueExpr::Function {
+                name: r.0.into(),
+                args: r.2,
+            })
+            .parse_next(input)
+    }
+
+    pub fn parse_operator(input: &mut &str) -> ModalResult<ValueExpr> {
+        use winnow::combinator::{Infix::{self, *}, Prefix, Postfix};
+        winnow::combinator::expression(alt((Self::parse_function, Self::parse_value)))
+            .prefix(dispatch! {any;
+                               '-' => Prefix(12, |_, e: ValueExpr| Ok(ValueExpr::Function {
+                                   name: "negate".into(),
+                                   args: vec![e],
+                               })),
+                _ => fail,
+            })
+            .infix(dispatch! {any;
+                              '+' => Left(5, |_, a, b| Ok(ValueExpr::Function {
+                                  name: "+".into(),
+                                  args: vec![a, b],
+                              })),
+                              '-' => Left(5, |_, a, b| Ok(ValueExpr::Function {
+                                  name: "-".into(),
+                                  args: vec![a, b],
+                              })),
+                              '*' => Left(7, |_, a, b| Ok(ValueExpr::Function {
+                                  name: "*".into(),
+                                  args: vec![a, b],
+                              })),
+                              '/' => Left(7, |_, a, b| Ok(ValueExpr::Function {
+                                  name: "/".into(),
+                                  args: vec![a, b],
+                              })),
+                              _ => fail,
+            })
+            .parse_next(input)
+    }
+
+    pub fn parse(input: &mut &str) -> ModalResult<ValueExpr> {
+        alt((
+            Self::parse_operator,
+            Self::parse_value,
+            Self::parse_string,
+            Self::parse_function,
+        ))
+        .parse_next(input)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use rust_decimal::dec;
+
+    #[test]
+    fn test_parse_value() {
+        let mut input = "$12";
+        let res = super::ValueExpr::parse_value(&mut input);
+        assert_eq!(
+            res,
+            Ok(super::ValueExpr::Value {
+                decimal: dec!(12.00),
+                commodity: "$".into()
+            })
+        )
+    }
+
+    #[test]
+    fn test_parse_negation() {
+        let mut input = "-$12";
+        let res = super::ValueExpr::parse_operator(&mut input);
+        assert_eq!(
+            res,
+            Ok(super::ValueExpr::Function {
+                name: "negate".into(),
+                args: vec![
+                    super::ValueExpr::Value {
+                        decimal: dec!(12.00),
+                        commodity: "$".into()
+                    }
+                ]
+            })
+        )
+    }
+
+    #[test]
+    fn test_parse_operator() {
+        let mut input = "$12 + $14";
+        let res = super::ValueExpr::parse_operator(&mut input);
+        assert_eq!(
+            res,
+            Ok(super::ValueExpr::Function {
+                name: "+".into(),
+                args: vec![
+                    super::ValueExpr::Value {
+                        decimal: dec!(12.00),
+                        commodity: "$".into()
+                    },
+                    super::ValueExpr::Value {
+                        decimal: dec!(14.00),
+                        commodity: "$".into()
+                    }
+                ]
+            })
+        )
+    }
+
+    #[test]
+    fn test_parse_operator_complex() {
+        let mut input = "scrub(account(\"Liabilities:Mortgage:Densmore\")) + $12";
+        let res = super::ValueExpr::parse_operator(&mut input);
+        assert_eq!(
+            res,
+            Ok(super::ValueExpr::Function {
+                name: "+".into(),
+                args: vec![
+                    super::ValueExpr::Value {
+                        decimal: dec!(12.00),
+                        commodity: "$".into()
+                    },
+                    super::ValueExpr::Value {
+                        decimal: dec!(14.00),
+                        commodity: "$".into()
+                    }
+                ]
+            })
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Amount {
+    pub value: ValueExpr,
+    pub absolute: bool,
+}
+
+impl Display for Amount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = &self.value;
+        if self.absolute {
+            write!(f, "={value}")
+        } else {
+            write!(f, "{value}")
+        }
+    }
+}
+
+fn decimal(input: &mut &str) -> ModalResult<Decimal> {
+    take_while(1.., b"-.,0123456789")
+        .verify_map(|r: &str| {
+            Decimal::from_str_exact(r.chars().filter(|c| *c != ',').collect::<String>().as_str())
+                .ok()
+        })
+        .parse_next(input)
+}
+
+impl Amount {
+    pub fn parse(input: &mut &str) -> ModalResult<Amount> {
+        (
+            opt('='),
+            alt((ValueExpr::parse, ('(', ValueExpr::parse, ')').map(|r| r.1))),
+        )
+            .map(|r| Amount {
+                value: r.1,
+                absolute: r.0.is_some(),
+            })
+            .parse_next(input)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Posting {
     Posting {
         account: String,
-        amount: Option<String>,
+        amount: Option<Amount>,
         note: Option<CommentBody>,
         state: TransactionState,
     },
@@ -228,7 +454,9 @@ impl Posting {
                 };
             }
 
-            let amount = opt((hard_stop, amount).map(|a| a.1)).parse_next(input)?;
+            let amount = opt((hard_stop, Amount::parse).map(|a| a.1)).parse_next(input)?;
+
+            let _pricing = opt((space1, literal("@@"), space1, Amount::parse)).parse_next(input)?;
 
             let note = opt((hard_stop, Comment::parse)).parse_next(input)?;
 

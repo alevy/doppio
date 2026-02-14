@@ -1,6 +1,4 @@
-use std::{
-    collections::BTreeMap, fmt::Display, fs::File, io::Read, path::PathBuf
-};
+use std::{collections::BTreeMap, fmt::Display, fs::File, io::Read, path::PathBuf};
 
 use winnow::{
     ModalResult, Parser,
@@ -51,7 +49,10 @@ impl JournalNode {
 pub struct JournalAst(pub Vec<JournalNode>);
 
 fn resolve_paths(base: &PathBuf, pattern: &PathBuf) -> Vec<PathBuf> {
-    let base = base.parent().map(Into::<PathBuf>::into).unwrap_or("".into());
+    let base = base
+        .parent()
+        .map(Into::<PathBuf>::into)
+        .unwrap_or("".into());
     let pattern = pattern.components().fold(base.clone(), |pb, c| pb.join(c));
     let files = glob::glob(pattern.to_str().unwrap_or("")).unwrap();
     files.filter_map(Result::ok).collect()
@@ -64,10 +65,7 @@ impl JournalAst {
             .parse_next(input)
     }
 
-    pub fn resolve_includes<P: Into<PathBuf>>(
-        &mut self,
-        original_file: P,
-    ) -> ModalResult<()> {
+    pub fn resolve_includes<P: Into<PathBuf>>(&mut self, original_file: P) -> ModalResult<()> {
         let original_file = original_file.into();
         while let Some((i, path)) = self
             .0
@@ -146,13 +144,16 @@ impl Journal {
             match node {
                 JournalNode::Command(command) => {
                     match command {
-                        Command::Account { name, sub_directives } => {
+                        Command::Account {
+                            name,
+                            sub_directives,
+                        } => {
                             let account = Account {
                                 name: name.clone(),
                                 note: sub_directives.get("note").cloned().flatten(),
                             };
                             result.accounts.insert(name.clone(), account);
-                        },
+                        }
                         // Command::Alias { alias, origin } => todo!(),
                         // Command::Include(_) => todo!(),
                         // Command::Price(_) => todo!(),
@@ -160,11 +161,29 @@ impl Journal {
                         // Command::Payee(_) => todo!(),
                         // Command::Commodity { name, sub_directives } => todo!(),
                         // Command::Tag { name, sub_directives } => todo!(),
-                        _ => {},
+                        _ => {}
                     }
-                },
-                JournalNode::Comment(_comment) => {},
-                JournalNode::Transaction(_transaction) => {},
+                }
+                JournalNode::Comment(_comment) => {}
+                JournalNode::Transaction(transaction) => {
+                    for posting in transaction.postings.iter() {
+                        match posting {
+                            Posting::Posting {
+                                account,
+                                amount,
+                                note: _,
+                                state: _,
+                            } => {
+                                println!("{:?}", amount);
+                                result.accounts.entry(account.clone()).or_insert(Account {
+                                    name: account.clone(),
+                                    note: None,
+                                });
+                            }
+                            Posting::Comment(_comment_body) => {}
+                        }
+                    }
+                }
             }
         }
         Ok(result)
