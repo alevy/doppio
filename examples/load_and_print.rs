@@ -8,8 +8,7 @@ fn main() {
         .read_to_string(&mut file)
         .unwrap();
     let mut file = file.as_str();
-    let mut output = ledger::JournalAst::parse(&mut file).unwrap();
+    let output = ledger::parser::parse_ledger(&mut file).unwrap();
 
-    output.resolve_includes(path).unwrap();
-    println!("{}", output);
+    println!("{:?}", output);
 }

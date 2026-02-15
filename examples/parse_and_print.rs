@@ -1,7 +1,7 @@
 fn main() {
     let mut input = LEDGER;
-    let output = ledger::JournalAst::parse(&mut input).unwrap();
-    println!("{}", output);
+    let output = ledger::parser::parse_ledger(&mut input).unwrap();
+    println!("{:?}", output);
 }
 
 const LEDGER: &str = r#"

@@ -1,0 +1,132 @@
+// --- Top Level ---
+journal = ${ (entry | NEWLINE)* ~ EOI }
+
+entry = _{
+    transaction
+    | directive
+    | comment_line
+    | budget
+}
+
+// --- Transactions ---
+transaction = ${
+    header ~ NEWLINE ~
+    (transaction_note | posting | empty_indented_line)*
+}
+
+budget = ${
+    "~" ~ ws+ ~ ("yearly" | "monthly" | "weekly") ~ NEWLINE ~
+    (transaction_note | posting | empty_indented_line)*
+}
+
+header = ${
+    date ~ (ws* ~ "=" ~ ws* ~ date)?
+    ~ (ws+ ~ state)?
+    ~ (ws+ ~ code)?
+    ~ (ws+ ~ description)
+    ~ (ws* ~ note)?
+}
+
+transaction_note = ${ indent+ ~ note ~ (NEWLINE | EOI) }
+empty_indented_line = _{ indent+ ~ NEWLINE }
+
+// --- Postings ---
+posting = ${
+    indent+ ~ !NEWLINE ~ (state ~ ws+)? ~ account ~ (amount_logic)? ~ (ws* ~ note)? ~ (NEWLINE | EOI) ~
+    posting_note*
+}
+
+posting_note = ${ indent+ ~ note ~ (NEWLINE | EOI) }
+
+amount_logic = ${
+    (ws{2,} | "\t") ~ (
+        (value_expr ~ (ws* ~ lot_price)? ~ (ws* ~ assertion)?)
+        | assertion
+    )
+}
+
+assertion = ${ "="{1, 2} ~ ws* ~ value_expr }
+
+// --- Atoms ---
+date = @{ ASCII_DIGIT{4} ~ ("/" | "-") ~ ASCII_DIGIT{2} ~ ("/" | "-") ~ ASCII_DIGIT{2} }
+state = { "*" | "!" }
+code = { "(" ~ (!")" ~ ANY)* ~ ")" }
+description = { (!(";" | NEWLINE) ~ ANY)* }
+account = @{ !(";") ~ (!("  " | "\t" | NEWLINE) ~ ANY)+ }
+
+lot_price = ${ ("@@" | "@") ~ ws* ~ value_expr }
+
+indent = _{ " " | "\t" }
+ws = _{ " " | "\t" }
+
+note = ${ ";" ~ (!NEWLINE ~ ANY)* }
+comment_line = @{ (";" | "#" | "*" | "%" | "|") ~ (!NEWLINE ~ ANY)* }
+// --- Directives ---
+directive = _{ "!"? ~ (commodity_directive | account_directive | include_directive ) }
+
+commodity_directive = ${
+    "commodity" ~ ws+ ~ commodity ~ (ws* ~ note)? ~ NEWLINE ~
+    ((indent+ ~ note ~ NEWLINE) | commodity_item)*
+}
+
+commodity_item = ${
+    indent+ ~ commodity_key ~ (ws+ ~ commodity_val)? ~ (ws* ~ note)? ~ (NEWLINE | EOI)
+}
+
+commodity_key = @{ "alias" | "format" | "nomarket" | "default" | identifier }
+commodity_val = @{ (!NEWLINE ~ ANY)* }
+
+account_directive = ${ "account" ~ ws+ ~ account ~ (ws* ~ note)? ~ (NEWLINE | EOI) }
+
+include_directive = ${ "include" ~ ws+ ~ (!NEWLINE ~ ANY)+ ~ (NEWLINE | EOI) }
+
+// --- Expressions (Explicit Whitespace) ---
+value_expr = ${ expr ~ (ws+ ~ commodity)? }
+
+expr = ${ term ~ (ws* ~ infix_op ~ ws* ~ term)* }
+
+term = ${ (prefix_op ~ ws*)? ~ primary }
+primary = { base_primary ~ access* }
+
+base_primary = _{
+    function_call
+    | string
+    | "(" ~ expr ~ ")"
+    | amount
+    | commodity
+}
+
+access = ${ "." ~ identifier }
+
+// Atomic string: matches anything between double quotes
+string = ${ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+function_call = ${ identifier ~ ws* ~ "(" ~ ws* ~ (expr ~ (ws* ~ "," ~ ws* ~ expr)*)? ~ ws* ~ ")" }
+
+amount = ${
+    (commodity ~ ws* ~ number)
+    | (number ~ ws+ ~ commodity)
+    | number
+}
+
+// Comma followed by 3 digits to distinguish from function arguments
+number = @{
+    ASCII_DIGIT+ ~ ("," ~ ASCII_DIGIT{3})* ~ ("." ~ ASCII_DIGIT+)?
+    | "." ~ ASCII_DIGIT+
+}
+
+commodity = @{
+    symbol+
+    | (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "." | ":" | "#")*
+}
+
+symbol = _{ "$" | "€" | "£" | "¥" }
+identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// Operators must be visible to Pratt
+infix_op = _{ add | sub | mul | div }
+    add = { "+" }
+    sub = { "-" }
+    mul = { "*" }
+    div = { "/" }
+prefix_op = { "-" | "+" }

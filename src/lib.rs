@@ -1,186 +1,244 @@
-use std::{collections::BTreeMap, fmt::Display, fs::File, io::Read, path::PathBuf};
+use std::collections::{BTreeMap, BTreeSet};
 
-use winnow::{
-    ModalResult, Parser,
-    combinator::{alt, eof, repeat, repeat_till},
-};
+use ast::CommodityItem;
+use rust_decimal::Decimal;
 
-pub mod comment;
-pub use comment::*;
-
-pub mod command;
-pub use command::*;
-
-pub mod transaction;
-pub use transaction::*;
-
-mod helpers;
-
-#[derive(Clone, Debug)]
-pub enum JournalNode {
-    Comment(Comment),
-    Command(Command),
-    Transaction(Transaction),
-}
-
-impl Display for JournalNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Comment(comment) => comment.fmt(f),
-            Self::Command(command) => command.fmt(f),
-            Self::Transaction(transaction) => transaction.fmt(f),
-        }
-    }
-}
-
-impl JournalNode {
-    pub fn parse(input: &mut &str) -> ModalResult<JournalNode> {
-        let () = repeat(.., helpers::empty_line).parse_next(input)?;
-        alt((
-            Comment::parse.map(JournalNode::Comment),
-            Transaction::parse.map(JournalNode::Transaction),
-            Command::parse.map(JournalNode::Command),
-        ))
-        .parse_next(input)
-    }
-}
-
-#[derive(Debug)]
-pub struct JournalAst(pub Vec<JournalNode>);
-
-fn resolve_paths(base: &PathBuf, pattern: &PathBuf) -> Vec<PathBuf> {
-    let base = base
-        .parent()
-        .map(Into::<PathBuf>::into)
-        .unwrap_or("".into());
-    let pattern = pattern.components().fold(base.clone(), |pb, c| pb.join(c));
-    let files = glob::glob(pattern.to_str().unwrap_or("")).unwrap();
-    files.filter_map(Result::ok).collect()
-}
-
-impl JournalAst {
-    pub fn parse(input: &mut &str) -> ModalResult<JournalAst> {
-        repeat_till(0.., JournalNode::parse, eof)
-            .map(|(nodes, _): (Vec<JournalNode>, &str)| JournalAst(nodes.into_iter().collect()))
-            .parse_next(input)
-    }
-
-    pub fn resolve_includes<P: Into<PathBuf>>(&mut self, original_file: P) -> ModalResult<()> {
-        let original_file = original_file.into();
-        while let Some((i, path)) = self
-            .0
-            .iter()
-            .enumerate()
-            .filter_map(|(i, node)| {
-                if let JournalNode::Command(Command::Include(path)) = node {
-                    Some((i, path.clone()))
-                } else {
-                    None
-                }
-            })
-            .next()
-        {
-            let mut module = String::new();
-            let mypaths = resolve_paths(&original_file, &path.into());
-            let mut nodes = vec![];
-            for mypath in mypaths.iter() {
-                File::open(&mypath)
-                    .expect(&mypath.to_str().unwrap())
-                    .read_to_string(&mut module)
-                    .unwrap();
-                let mut module = module.as_str();
-                let mut new_journal = JournalAst::parse(&mut module)?;
-                new_journal.resolve_includes(mypath)?;
-                nodes.extend(new_journal.0);
-            }
-            self.0.splice(i..=i, nodes);
-        }
-        Ok(())
-    }
-
-    pub fn add_txn(&mut self, txn: Transaction) {
-        let i = self
-            .0
-            .iter()
-            .enumerate()
-            .find_map(|(i, jn)| {
-                if let JournalNode::Transaction(ti) = jn
-                    && ti.date > txn.date
-                {
-                    return Some(i);
-                }
-                None
-            })
-            .unwrap_or(self.0.len());
-
-        self.0.insert(i, JournalNode::Transaction(txn));
-    }
-}
-
-impl Display for JournalAst {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for node in self.0.iter() {
-            node.fmt(f)?;
-        }
-        Ok(())
-    }
-}
+pub mod ast;
+pub mod parser;
 
 pub struct Account {
     pub name: String,
     pub note: Option<String>,
+    pub balances: BTreeMap<Option<String>, Decimal>,
 }
 
+pub struct Transaction {
+    pub date: chrono::NaiveDate,
+    pub payee: String,
+    pub postings: Vec<Posting>,
+}
+
+pub struct Posting {
+    pub account: String,
+    pub amount: Decimal,
+    pub currency: String,
+}
+
+pub struct Commodity {
+    pub name: String,
+    pub aliases: BTreeSet<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Default)]
 pub struct Journal {
     pub accounts: BTreeMap<String, Account>,
+    pub commodities: BTreeMap<String, Commodity>,
+    pub transactions: Vec<Transaction>,
 }
 
 impl Journal {
-    pub fn compile(ast: &JournalAst) -> Result<Self, ()> {
-        let mut result = Journal {
-            accounts: Default::default(),
-        };
-        for node in ast.0.iter() {
-            match node {
-                JournalNode::Command(command) => {
-                    match command {
-                        Command::Account {
-                            name,
-                            sub_directives,
-                        } => {
-                            let account = Account {
-                                name: name.clone(),
-                                note: sub_directives.get("note").cloned().flatten(),
-                            };
-                            result.accounts.insert(name.clone(), account);
+    fn eval(&self, val: ast::ValueExpr) -> ast::ValueExpr {
+        match val {
+            a@ast::ValueExpr::Amount { .. } => a,
+            s@ast::ValueExpr::Str(_) => s,
+            o@ast::ValueExpr::Object(_) => o,
+            ast::ValueExpr::Unary { op, expr } => {
+                match self.eval(*expr) {
+                    ast::ValueExpr::Amount { value, commodity } => {
+                        match op {
+                            ast::Op::Sub => ast::ValueExpr::Amount {
+                                value: -value,
+                                commodity
+                            },
+                            ast::Op::Add => ast::ValueExpr::Amount {
+                                value,
+                                commodity
+                            },
+                            _ => panic!("Can't multiple or divide in a unary operation"),
                         }
-                        // Command::Alias { alias, origin } => todo!(),
-                        // Command::Include(_) => todo!(),
-                        // Command::Price(_) => todo!(),
-                        // Command::Define(_) => todo!(),
-                        // Command::Payee(_) => todo!(),
-                        // Command::Commodity { name, sub_directives } => todo!(),
-                        // Command::Tag { name, sub_directives } => todo!(),
-                        _ => {}
+                    },
+                    _ => panic!("Can't perform unary operations on a non-amount"),
+                }
+            },
+            ast::ValueExpr::Binary { lhs, rhs, op } => {
+                match (self.eval(*lhs), self.eval(*rhs)) {
+                    (ast::ValueExpr::Commodity(c), ast::ValueExpr::Amount { value, commodity: None }) |
+                    (ast::ValueExpr::Amount { value, commodity: None }, ast::ValueExpr::Commodity(c)) => {
+                        match op {
+                            ast::Op::Sub => ast::ValueExpr::Amount {
+                                value: -value,
+                                commodity: Some(c),
+                            },
+                            ast::Op::Add => ast::ValueExpr::Amount {
+                                value,
+                                commodity: Some(c),
+                            },
+                            _ => panic!("Can't multiple or divide in a unary operation"),
+                        }
+
+                    },
+                    (ast::ValueExpr::Amount { value: v1, commodity: c }, ast::ValueExpr::Amount { value: v2, commodity: None }) |
+                    (ast::ValueExpr::Amount { value: v1, commodity: None }, ast::ValueExpr::Amount { value: v2, commodity: c }) => {
+                        match op {
+                            ast::Op::Add =>
+                        ast::ValueExpr::Amount { value: v1 + v2, commodity: c },
+                            ast::Op::Sub =>
+                        ast::ValueExpr::Amount { value: v1 - v2, commodity: c },
+                            ast::Op::Mul =>
+                        ast::ValueExpr::Amount { value: v1 * v2, commodity: c },
+                            ast::Op::Div =>
+                        ast::ValueExpr::Amount { value: v1 / v2, commodity: c },
+                        }
+                    },
+                    (ast::ValueExpr::Amount { value: v1, commodity: c }, ast::ValueExpr::Amount { value: v2, commodity: c2 }) if c == c2 => {
+                        match op {
+                            ast::Op::Add =>
+                        ast::ValueExpr::Amount { value: v1 + v2, commodity: c },
+                            ast::Op::Sub =>
+                        ast::ValueExpr::Amount { value: v1 - v2, commodity: c },
+                            ast::Op::Mul =>
+                        ast::ValueExpr::Amount { value: v1 * v2, commodity: c },
+                            ast::Op::Div =>
+                        ast::ValueExpr::Amount { value: v1 / v2, commodity: c },
+                        }
+                    }
+                    (a, b) => panic!("Can only perform binary operations on amounts of like commodity {a:?} {b:?} {op:?}"),
+                }
+            },
+            ast::ValueExpr::Function { name, args } => {
+                match (name.as_str(), args.as_slice()) {
+                    ("scrub", [arg]) => self.eval(arg.clone()),
+                    ("account", [_account]) => {
+                        ast::ValueExpr::Object(BTreeMap::from([("total".into(), ast::ValueExpr::Amount {
+                            value: Decimal::ZERO,
+                            commodity: Some("$".into())
+                        })]))
+                    },
+                    _ => panic!("{name} {args:?}"),
+                }
+            },
+            c@ast::ValueExpr::Commodity(_) => c,
+            ast::ValueExpr::Typed { expr, commodity: new_commodity } => {
+                match self.eval(*expr) {
+                    ast::ValueExpr::Amount { value, commodity } if commodity.is_none() || commodity.as_ref() == Some(&new_commodity) => {
+                        ast::ValueExpr::Amount { value, commodity: Some(new_commodity) }
+                    },
+                    _ => panic!("Can only assign a commodity to an amount with no or the same commodity"),
+                }
+            },
+            ast::ValueExpr::Access { expr, field } => {
+                match self.eval(*expr) {
+                    ast::ValueExpr::Object(map) => {
+                        map.get(&field).expect("No such field").clone()
+                    },
+                    _ => panic!("Can only access fields on objects"),
+                }
+            },
+        }
+    }
+
+    pub fn resolve_commodity(&self, alias: &String) -> Option<&Commodity> {
+        self.commodities.values().find(|t| t.aliases.contains(alias))
+    }
+
+    pub fn compile(ast: &ast::Journal) -> Result<Self, ()> {
+        let mut result: Journal = Default::default();
+
+        for entry in ast.entries.iter() {
+            match entry {
+                ast::Entry::Directive(directive) => {
+                    match directive {
+                        ast::Directive::Commodity { name, notes, items } => {
+                            let commodity = result.commodities.entry(name.clone()).or_insert(Commodity {
+                                name: name.clone(),
+                                notes: vec![],
+                                aliases: Default::default(),
+                            });
+                            commodity.notes.append(&mut notes.clone());
+                            for item in items {
+                                if let CommodityItem::Alias(alias) = item {
+                                    commodity.aliases.insert(alias.clone());
+                                }
+                            }
+                        }
+                        ast::Directive::Account(account) => {
+                            result.accounts.insert(account.clone(), Account {
+                                name: account.clone(),
+                                note: None,
+                                balances: Default::default(),
+                            });
+                        },
+                        ast::Directive::Unknown(_) => {
+                            // TODO: warning
+                        },
                     }
                 }
-                JournalNode::Comment(_comment) => {}
-                JournalNode::Transaction(transaction) => {
+                ast::Entry::Comment(_comment) => {}
+                ast::Entry::Transaction(transaction) => {
+                    let mut running_sum: BTreeMap<Option<String>, Decimal> = BTreeMap::new();
                     for posting in transaction.postings.iter() {
-                        match posting {
-                            Posting::Posting {
-                                account,
-                                amount,
-                                note: _,
-                                state: _,
-                            } => {
-                                println!("{:?}", amount);
-                                result.accounts.entry(account.clone()).or_insert(Account {
-                                    name: account.clone(),
-                                    note: None,
-                                });
+                        result
+                            .accounts
+                            .entry(posting.account.clone())
+                            .or_insert(Account {
+                                name: posting.account.clone(),
+                                note: None,
+                                balances: Default::default(),
+                            });
+
+                        if let Some(ref amount) = posting.amount {
+                            if let Some(ref value) = amount.value {
+                                match result.eval(value.clone()) {
+                                    ast::ValueExpr::Amount { value, commodity } => {
+                                        let commodity = if let Some(c) = commodity.as_ref() && let Some(target) = result.resolve_commodity(c) {
+                                            Some(target.name.clone())
+                                        } else {
+                                            commodity
+                                        };
+                                        *(running_sum.entry(commodity.clone()).or_default()) += value;
+                                        let balance = result.accounts.entry(posting.account.clone()).or_insert_with(|| Account {
+                                            name: posting.account.clone(),
+                                            note: None,
+                                            balances: Default::default(),
+                                        }).balances.entry(commodity).or_default();
+                                        *balance += value;
+                                    },
+                                    _ => panic!("WTF!"),
+                                }
+                            } else if let Some(ref balance) = amount.balance_assertion {
+                                match result.eval(balance.clone()) {
+                                    ast::ValueExpr::Amount { value, commodity } => {
+                                        let commodity = if let Some(c) = commodity.as_ref() && let Some(target) = result.resolve_commodity(c) {
+                                            Some(target.name.clone())
+                                        } else {
+                                            commodity
+                                        };
+                                        let balance = result.accounts.entry(posting.account.clone()).or_insert_with(|| Account {
+                                            name: posting.account.clone(),
+                                            note: None,
+                                            balances: Default::default(),
+                                        }).balances.entry(commodity.clone()).or_default();
+                                        let orig = *balance;
+                                        let diff = value - orig;
+                                        *balance = value;
+                                        *(running_sum.entry(commodity).or_default()) += diff;
+                                    },
+                                    _ => panic!("WTF!"),
+                                }
                             }
-                            Posting::Comment(_comment_body) => {}
+                            }
+                        }
+
+                    let mut bare_postings = transaction.postings.iter().filter(|p| p.amount.is_none());
+                    if let Some(p) = bare_postings.next() {
+                        let account = result.accounts.entry(p.account.clone()).or_insert_with(|| Account {
+                            name: p.account.clone(),
+                            note: None,
+                            balances: Default::default(),
+                        });
+                        for (commodity, sum) in running_sum {
+                            *(account.balances.entry(commodity).or_default()) -= sum;
                         }
                     }
                 }
