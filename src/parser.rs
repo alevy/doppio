@@ -1,7 +1,6 @@
 use crate::ast::*;
-use chrono::NaiveDate;
 use pest::Parser;
-use pest::iterators::Pair;
+use pest::iterators::{Pair, Pairs};
 use pest_derive::Parser;
 use rust_decimal::Decimal;
 
@@ -74,6 +73,25 @@ fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
     }
 }
 
+fn parse_date(pairs: &mut Pairs<Rule>) -> Date {
+    let mut year: Option<u16> = None;
+
+    let mut p = pairs.next().unwrap();
+    if let Rule::year = p.as_rule() {
+        year = Some(p.as_str().parse().unwrap());
+        p = pairs.next().unwrap();
+    }
+
+    let month = p.as_str().parse().unwrap();
+    let date = p.as_str().parse().unwrap();
+
+    Date {
+        year,
+        month,
+        date,
+    }
+}
+
 fn parse_transaction(pair: Pair<Rule>) -> Transaction {
     let mut inner = pair.into_inner();
     let header_pair = inner.next().unwrap();
@@ -96,8 +114,7 @@ fn parse_transaction(pair: Pair<Rule>) -> Transaction {
         }
     }
     let mut header = header_pair.into_inner();
-    let date_str = header.next().unwrap().as_str();
-    let date = parse_date(date_str);
+    let date = parse_date(&mut header.next().unwrap().into_inner());
 
     let mut secondary_date = None;
     let mut state = TransactionState::Uncleared;
@@ -106,7 +123,7 @@ fn parse_transaction(pair: Pair<Rule>) -> Transaction {
 
     for p in header {
         match p.as_rule() {
-            Rule::date => secondary_date = Some(parse_date(p.as_str())),
+            Rule::date => secondary_date = Some(parse_date(&mut p.into_inner())),
             Rule::state => state = parse_state(p.as_str()),
             Rule::code => {
                 // Remove parentheses from code
@@ -314,13 +331,6 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
 fn clean_parse_decimal(s: &str) -> Decimal {
     let cleaned = s.replace(',', "");
     cleaned.parse().unwrap_or(Decimal::ZERO)
-}
-
-fn parse_date(s: &str) -> NaiveDate {
-    // Basic date parsing for now
-    NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .or_else(|_| NaiveDate::parse_from_str(s, "%Y/%m/%d"))
-        .unwrap()
 }
 
 fn parse_state(s: &str) -> TransactionState {

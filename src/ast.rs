@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
 #[derive(Debug)]
@@ -37,9 +36,16 @@ pub enum CommodityItem {
 }
 
 #[derive(Debug)]
+pub struct Date {
+    pub year: Option<u16>,
+    pub month: u8,
+    pub date: u8,
+}
+
+#[derive(Debug)]
 pub struct Transaction {
-    pub date: NaiveDate,
-    pub secondary_date: Option<NaiveDate>,
+    pub date: Date,
+    pub secondary_date: Option<Date>,
     pub state: TransactionState,
     pub code: Option<String>,
     pub description: String,

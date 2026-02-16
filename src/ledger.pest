@@ -48,7 +48,9 @@ amount_logic = ${
 assertion = ${ "="{1, 2} ~ ws* ~ value_expr }
 
 // --- Atoms ---
-date = @{ ASCII_DIGIT{4} ~ ("/" | "-") ~ ASCII_DIGIT{2} ~ ("/" | "-") ~ ASCII_DIGIT{2} }
+date = ${ year ~ ("/" | "-") ~ monthdate ~ ("/" | "-") ~ monthdate }
+year = @{ ASCII_DIGIT{4} }
+monthdate = @{ ASCII_DIGIT{1,2} }
 state = { "*" | "!" }
 code = { "(" ~ (!")" ~ ANY)* ~ ")" }
 description = { (!(";" | NEWLINE) ~ ANY)* }
