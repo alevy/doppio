@@ -1,7 +1,7 @@
 pub mod ast;
+pub mod elaboration;
 pub mod parser;
 pub mod resolution;
-pub mod elaboration;
 
 pub use elaboration::Journal;
 

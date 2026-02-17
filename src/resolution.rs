@@ -89,9 +89,7 @@ impl std::fmt::Display for ResolutionError {
     }
 }
 
-impl std::error::Error for ResolutionError {
-
-}
+impl std::error::Error for ResolutionError {}
 
 impl HIR {
     fn resolve_date(
@@ -168,16 +166,16 @@ impl TryFrom<ast::Journal> for HIR {
                                         ctx.default_commodity = Some(name.clone());
                                         ctx
                                     });
-                            },
+                            }
                             ast::CommodityItem::Format(format) => {
                                 global_context.format = Some(format);
                             }
                             ast::CommodityItem::NoMarket => {
                                 global_context.no_market = true;
-                            },
+                            }
                             ast::CommodityItem::Note(note) => {
                                 global_context.note = Some(note);
-                            },
+                            }
                             ast::CommodityItem::Unknown(key, value) => todo!("{key} {value:?}"),
                         }
                     }

@@ -14,16 +14,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hir: HIR = output.try_into()?;
     let journal: Journal = hir.try_into()?;
 
-
     if let Some(last_txn) = journal.transactions.last() {
         for (account, balances) in last_txn.running_state.account_balances.iter() {
             let mut balances = balances.commodity.iter();
             if let Some((commodity, value)) = balances.next() {
                 let balance = format!("{} {value}", commodity);
-                println!(
-                    "{balance:>20}  {}",
-                    account,
-                );
+                println!("{balance:>20}  {}", account,);
             }
             for (commodity, value) in balances {
                 let balance = format!("{} {value}", commodity);

@@ -1,7 +1,6 @@
-use std::{fs::File, io::{Read as _}, path::PathBuf};
+use std::{fs::File, io::Read as _, path::PathBuf};
 
 use clap::{Parser, Subcommand};
-
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -24,7 +23,7 @@ enum Commands {
     },
 }
 
-fn main () -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -36,7 +35,7 @@ fn main () -> Result<(), Box<dyn std::error::Error>> {
             let output_file = File::create(output)?;
             let mut output_xz = xz::write::XzEncoder::new(output_file, 0);
             serde_pickle::ser::to_writer(&mut output_xz, &journal, Default::default())?;
-        },
+        }
         Commands::Balance { source } => {
             let journal = if let Some("bki") = source.extension().and_then(|e| e.to_str()) {
                 let input_xz = xz::read::XzDecoder::new(File::open(source)?);
@@ -48,7 +47,7 @@ fn main () -> Result<(), Box<dyn std::error::Error>> {
                 ledger::compile(&mut file)?
             };
             println!("{}", journal.transactions.len());
-        },
+        }
     }
     Ok(())
 }
