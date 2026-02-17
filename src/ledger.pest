@@ -40,10 +40,12 @@ posting_note = ${ indent+ ~ note ~ (NEWLINE | EOI) }
 
 amount_logic = ${
     (ws{2,} | "\t") ~ (
-        (value_expr ~ (ws* ~ lot_price)? ~ (ws* ~ assertion)?)
+        value_logic
         | assertion
     )
 }
+
+value_logic = ${ value_expr ~ (ws* ~ lot_price)? ~ (ws* ~ assertion)? }
 
 assertion = ${ "="{1, 2} ~ ws* ~ value_expr }
 

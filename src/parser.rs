@@ -85,11 +85,7 @@ fn parse_date(pairs: &mut Pairs<Rule>) -> Date {
     let month = p.as_str().parse().unwrap();
     let date = p.as_str().parse().unwrap();
 
-    Date {
-        year,
-        month,
-        date,
-    }
+    Date { year, month, date }
 }
 
 fn parse_transaction(pair: Pair<Rule>) -> Transaction {
@@ -178,39 +174,49 @@ fn parse_posting(pair: Pair<Rule>) -> Posting {
 }
 
 fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
-    let mut inner = pair.into_inner();
-    let mut value = None;
-    let mut lot_pricing = None;
-    let mut balance_assertion = None;
+    let p = pair.into_inner().next().unwrap();
+    match p.as_rule() {
+        Rule::value_logic => {
+            let inner = p.into_inner();
 
-    while let Some(p) = inner.next() {
-        match p.as_rule() {
-            Rule::value_expr => {
-                value = Some(parse_expr(p));
-            }
-            Rule::lot_price => {
-                let s = p.as_str();
-                let inner_expr_pair = p.into_inner().next().unwrap();
-                let inner_val = inner_expr_pair.as_str().trim().to_string();
-                if s.starts_with("@@") {
-                    lot_pricing = Some(LotPricing::Total(inner_val));
-                } else {
-                    lot_pricing = Some(LotPricing::Unit(inner_val));
+            let mut value = None;
+            let mut lot_pricing = None;
+            let mut balance_assertion = None;
+
+            for p in inner {
+                match p.as_rule() {
+                    Rule::value_expr => {
+                        value = Some(parse_expr(p));
+                    }
+                    Rule::lot_price => {
+                        let s = p.as_str();
+                        let inner_expr_pair = p.into_inner().next().unwrap();
+                        let inner_val = inner_expr_pair.as_str().trim().to_string();
+                        if s.starts_with("@@") {
+                            lot_pricing = Some(LotPricing::Total(inner_val));
+                        } else {
+                            lot_pricing = Some(LotPricing::Unit(inner_val));
+                        }
+                    }
+                    Rule::assertion => {
+                        // Now parsing as a ValueExpr
+                        let inner_expr_pair = p.into_inner().next().unwrap();
+                        balance_assertion = Some(parse_expr(inner_expr_pair));
+                    }
+                    _ => unreachable!(),
                 }
             }
-            Rule::assertion => {
-                // Now parsing as a ValueExpr
-                let inner_expr_pair = p.into_inner().next().unwrap();
-                balance_assertion = Some(parse_expr(inner_expr_pair));
+            AmountDetails::Amount {
+                value: value.unwrap(),
+                lot_pricing,
+                balance_assertion,
             }
-            _ => {}
         }
-    }
-
-    AmountDetails {
-        value,
-        lot_pricing,
-        balance_assertion,
+        Rule::assertion => {
+            let inner_expr_pair = p.into_inner().next().unwrap();
+            AmountDetails::BalanceAssignment(parse_expr(inner_expr_pair))
+        }
+        _ => unreachable!(),
     }
 }
 
@@ -361,10 +367,14 @@ mod tests {
             assert_eq!(tx.postings.len(), 2);
             assert_eq!(tx.postings[0].account, "Expenses:Food");
             assert_eq!(
-                tx.postings[0].amount.as_ref().unwrap().value,
-                Some(ValueExpr::Amount {
-                    value: dec!(50.00),
-                    commodity: Some("$".into()),
+                tx.postings[0].amount,
+                Some(AmountDetails::Amount {
+                    value: ValueExpr::Amount {
+                        value: dec!(50.00),
+                        commodity: Some("$".into()),
+                    },
+                    lot_pricing: None,
+                    balance_assertion: None,
                 })
             );
             assert_eq!(tx.postings[1].account, "Assets:Checking");
@@ -379,27 +389,23 @@ mod tests {
         let input = "2023-01-01 * Stock Purchase\n  Assets:Brokerage  10 AAPL @ $150.00 = $1500.00\n  Assets:Checking\n";
         let journal = parse_ledger(input).expect("Should parse successfully");
 
-        if let Entry::Transaction(tx) = &journal.entries[0] {
+        if let Entry::Transaction(ref tx) = journal.entries[0] {
             let p = &tx.postings[0];
             let details = p.amount.as_ref().expect("Should have amount details");
 
             assert_eq!(
-                details.value,
-                Some(ValueExpr::Amount {
-                    value: dec!(10),
-                    commodity: Some("AAPL".into()),
-                })
-            );
-            match &details.lot_pricing {
-                Some(LotPricing::Unit(v)) => assert_eq!(v, "$150.00"),
-                _ => panic!("Expected unit lot pricing"),
-            }
-            assert_eq!(
-                details.balance_assertion,
-                Some(ValueExpr::Amount {
-                    value: dec!(1500.00),
-                    commodity: Some("$".to_string()),
-                })
+                details,
+                &AmountDetails::Amount {
+                    value: ValueExpr::Amount {
+                        value: dec!(10),
+                        commodity: Some("AAPL".into()),
+                    },
+                    lot_pricing: Some(LotPricing::Unit("$150.00".into())),
+                    balance_assertion: Some(ValueExpr::Amount {
+                        value: dec!(1500.00),
+                        commodity: Some("$".to_string()),
+                    })
+                }
             );
         }
     }
@@ -461,18 +467,28 @@ mod tests {
         let p1 = &tx.postings[0];
         if let Some(details) = &p1.amount {
             // We expect a Binary expression at the top level
-            assert!(matches!(details.value, Some(ValueExpr::Binary { .. })));
-            println!("{:#?}", details.value); // Useful for debugging the tree
+            assert!(matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Binary { .. },
+                    ..
+                }
+            ));
         }
 
         // Verify second posting (Negative with Commas)
         let p2 = &tx.postings[1];
         if let Some(details) = &p2.amount {
-            println!("{:#?}", details.value); // Useful for debugging the tree
             // This is interesting: depending on whether $-1234 or -$1234 is used,
             // it might be a Unary(Amount) or an Amount with a negative number.
             // Current grammar for `amount` + `prefix_op` makes this a Unary(Amount).
-            assert!(matches!(details.value, Some(ValueExpr::Binary { .. })));
+            assert!(matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Binary { .. },
+                    ..
+                }
+            ));
         }
     }
 
@@ -489,14 +505,15 @@ mod tests {
         };
 
         let p1 = &tx.postings[0];
-        if let Some(details) = &p1.amount {
-            match &details.value {
-                Some(ValueExpr::Function { name, args }) => {
-                    assert_eq!(name, "market");
-                    assert_eq!(args.len(), 2);
-                }
-                _ => panic!("Expected a function call, got {:?}", details.value),
+        match &p1.amount {
+            Some(AmountDetails::Amount {
+                value: ValueExpr::Function { name, args },
+                ..
+            }) => {
+                assert_eq!(name, "market");
+                assert_eq!(args.len(), 2);
             }
+            _ => panic!("Expected a function call, got {:?}", p1.amount),
         }
     }
 
@@ -585,14 +602,13 @@ mod directed_tests {
         assert_eq!(p.account, "Assets:Bank:Checking");
 
         let details = p.amount.as_ref().expect("Should have amount details");
-        assert!(details.value.is_none()); // No explicit amount
-
-        if let Some(ValueExpr::Amount { value, commodity }) = &details.balance_assertion {
-            assert_eq!(*value, dec!(21966.08));
-            assert_eq!(commodity.as_deref(), Some("$"));
-        } else {
-            panic!("Expected balance assertion to be an Amount");
-        }
+        assert_eq!(
+            *details,
+            AmountDetails::BalanceAssignment(ValueExpr::Amount {
+                value: dec!(21966.08),
+                commodity: Some("$".into())
+            })
+        );
     }
 
     #[test]

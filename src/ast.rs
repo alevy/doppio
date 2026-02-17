@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use rust_decimal::Decimal;
 
+use crate::parser::{self, Rule};
+
 #[derive(Debug)]
 pub struct Journal {
     pub entries: Vec<Entry>,
@@ -25,7 +27,7 @@ pub enum Directive {
     Unknown(String),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum CommodityItem {
     Alias(String),
     Format(String), // Format strings are usually "settings" literals
@@ -35,14 +37,14 @@ pub enum CommodityItem {
     Unknown(String, Option<String>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Date {
     pub year: Option<u16>,
     pub month: u8,
     pub date: u8,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Transaction {
     pub date: Date,
     pub secondary_date: Option<Date>,
@@ -53,7 +55,7 @@ pub struct Transaction {
     pub postings: Vec<Posting>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Posting {
     pub account: String,
     pub amount: Option<AmountDetails>,
@@ -61,11 +63,14 @@ pub struct Posting {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug)]
-pub struct AmountDetails {
-    pub value: Option<ValueExpr>,
-    pub lot_pricing: Option<LotPricing>,
-    pub balance_assertion: Option<ValueExpr>,
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub enum AmountDetails {
+    Amount {
+        value: ValueExpr,
+        lot_pricing: Option<LotPricing>,
+        balance_assertion: Option<ValueExpr>,
+    },
+    BalanceAssignment(ValueExpr),
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -110,16 +115,24 @@ pub enum Op {
     Div,
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum LotPricing {
     Unit(String),
     Total(String),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum TransactionState {
     #[default]
     Uncleared,
     Pending,
     Cleared,
+}
+
+impl TryFrom<&str> for Journal {
+    type Error = pest::error::Error<Rule>;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        parser::parse_ledger(value)
+    }
 }
