@@ -139,6 +139,20 @@ impl TryFrom<resolution::HIR> for Journal {
                             let (value, commodity, lot_pricing) = match amount {
                                 AmountDetails::Amount { value, lot_pricing, balance_assertion } => {
                                     let (value, commodity) = evaluator::eval_and_normalize_amount(value, &entry_context)?;
+                                    let lot_pricing = match lot_pricing {
+                                        Some(ast::LotPricing::Total(expr)) => {
+                                            let (mut v, c) = evaluator::eval_and_normalize_amount(expr, &entry_context)?;
+                                            if value.is_sign_negative() {
+                                                v = -v;
+                                            }
+                                            Some((v, c))
+                                        },
+                                        Some(ast::LotPricing::Unit(expr)) => {
+                                            let (v, c) = evaluator::eval_and_normalize_amount(expr, &entry_context)?;
+                                            Some((v * value, c))
+                                        },
+                                        None => None,
+                                    };
                                     if let Some(balance_assertion) = balance_assertion {
                                         let (baval, bacommodity) = evaluator::eval_and_normalize_amount(balance_assertion, &entry_context)?;
                                         if !(bacommodity == commodity && account_balance.commodity.get(&commodity).unwrap_or(&Decimal::ZERO) + value == baval) {
@@ -155,7 +169,11 @@ impl TryFrom<resolution::HIR> for Journal {
                             };
                             let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
 
-                            *(transaction_state.0.entry(commodity.clone()).or_default()) += value;
+                            if let Some((lot_total, lot_commodity)) = lot_pricing {
+                                *(transaction_state.0.entry(lot_commodity).or_default()) += lot_total;
+                            } else {
+                                *(transaction_state.0.entry(commodity.clone()).or_default()) += value;
+                            }
 
                             let amount = Amount(BTreeMap::from([(commodity, value)]));
                             resolved_postings.push(ResolvedPosting {

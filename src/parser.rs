@@ -53,7 +53,6 @@ fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
     let mut inner = pair.into_inner();
     let key_pair = inner.next().unwrap();
     let key = key_pair.as_str();
-
     // Look for value and trailing note
     let mut val = None;
 
@@ -190,8 +189,7 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
                     }
                     Rule::lot_price => {
                         let s = p.as_str();
-                        let inner_expr_pair = p.into_inner().next().unwrap();
-                        let inner_val = inner_expr_pair.as_str().trim().to_string();
+                        let inner_val = parse_expr(p.into_inner().next().unwrap());
                         if s.starts_with("@@") {
                             lot_pricing = Some(LotPricing::Total(inner_val));
                         } else {

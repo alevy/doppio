@@ -117,8 +117,8 @@ pub enum Op {
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum LotPricing {
-    Unit(String),
-    Total(String),
+    Unit(ValueExpr),
+    Total(ValueExpr),
 }
 
 #[derive(Clone, Debug, Default)]
