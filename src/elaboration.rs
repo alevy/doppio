@@ -156,13 +156,13 @@ impl TryFrom<resolution::HIR> for Journal {
                                 } => {
                                     let (value, commodity) = evaluator::eval_and_normalize_amount(
                                         value,
-                                        &entry_context,
+                                        entry_context,
                                     )?;
                                     let lot_pricing = match lot_pricing {
                                         Some(ast::LotPricing::Total(expr)) => {
                                             let (mut v, c) = evaluator::eval_and_normalize_amount(
                                                 expr,
-                                                &entry_context,
+                                                entry_context,
                                             )?;
                                             if value.is_sign_negative() {
                                                 v = -v;
@@ -172,7 +172,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                         Some(ast::LotPricing::Unit(expr)) => {
                                             let (v, c) = evaluator::eval_and_normalize_amount(
                                                 expr,
-                                                &entry_context,
+                                                entry_context,
                                             )?;
                                             Some((v * value, c))
                                         }
@@ -182,7 +182,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                         let (baval, bacommodity) =
                                             evaluator::eval_and_normalize_amount(
                                                 balance_assertion,
-                                                &entry_context,
+                                                entry_context,
                                             )?;
                                         if !(bacommodity == commodity
                                             && account_balance
@@ -200,7 +200,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                 AmountDetails::BalanceAssignment(assignment) => {
                                     let (newsum, commodity) = evaluator::eval_and_normalize_amount(
                                         assignment,
-                                        &entry_context,
+                                        entry_context,
                                     )?;
                                     let value = newsum
                                         - account_balance

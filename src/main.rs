@@ -30,8 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Compile { output, source } => {
             let mut file = String::new();
             File::open(source)?.read_to_string(&mut file)?;
-            let mut file = file.as_str();
-            let journal = ledger::compile(&mut file)?;
+            let file = file.as_str();
+            let journal = ledger::compile(file)?;
             let output_file = File::create(output)?;
             let mut output_xz = xz::write::XzEncoder::new(output_file, 0);
             serde_pickle::ser::to_writer(&mut output_xz, &journal, Default::default())?;
@@ -43,8 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 let mut file = String::new();
                 File::open(source)?.read_to_string(&mut file)?;
-                let mut file = file.as_str();
-                ledger::compile(&mut file)?
+                let file = file.as_str();
+                ledger::compile(file)?
             };
             println!("{}", journal.transactions.len());
         }

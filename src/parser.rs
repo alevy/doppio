@@ -57,10 +57,7 @@ fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
     let mut val = None;
 
     for p in inner {
-        match p.as_rule() {
-            Rule::commodity_val => val = Some(p.as_str().trim().to_string()),
-            _ => {}
-        }
+        if p.as_rule() == Rule::commodity_val { val = Some(p.as_str().trim().to_string()) }
     }
 
     match key {

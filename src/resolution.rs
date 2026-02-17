@@ -202,8 +202,8 @@ impl TryFrom<ast::Journal> for HIR {
                                 account: p.account,
                                 amount: p.amount,
                                 state: p.state,
-                                tags: tags,
-                                metadata: metadata,
+                                tags,
+                                metadata,
                             }
                         })
                         .collect();
