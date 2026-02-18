@@ -14,27 +14,14 @@ pub struct Journal {
     pub transactions: Vec<ResolvedTransaction>,
 }
 
-#[derive(Deserialize, Serialize, Default, Clone, Debug)]
-pub struct AccountBalances {
-    #[serde(flatten)]
-    pub commodity: BTreeMap<String, Decimal>,
+#[derive(Default, Clone, Debug)]
+struct AccountBalances {
+    commodity: BTreeMap<String, Decimal>,
 }
 
-#[derive(Deserialize, Serialize, Default, Clone, Debug)]
-pub struct RunningState {
-    #[serde(flatten)]
-    pub account_balances: BTreeMap<String, AccountBalances>,
-}
-impl RunningState {
-    fn minify(mut self) -> RunningState {
-        for (_, ab) in self.account_balances.iter_mut() {
-            ab.commodity.retain(|_, v| !v.is_zero());
-        }
-
-        self.account_balances
-            .retain(|_, ab| !ab.commodity.is_empty());
-        self
-    }
+#[derive(Default, Clone, Debug)]
+struct RunningState {
+    account_balances: BTreeMap<String, AccountBalances>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -46,7 +33,6 @@ pub struct ResolvedTransaction {
     pub description: String,
     pub tags: Vec<String>,
     pub metadata: BTreeMap<String, String>,
-    pub running_state: RunningState,
     pub postings: Vec<ResolvedPosting>,
 }
 
@@ -284,8 +270,6 @@ impl TryFrom<resolution::HIR> for Journal {
                         }
                     }
 
-                    let running_state = state.clone().minify();
-
                     transactions.push(ResolvedTransaction {
                         date: transaction.date,
                         secondary_date: transaction.secondary_date,
@@ -295,7 +279,6 @@ impl TryFrom<resolution::HIR> for Journal {
                         tags: transaction.tags,
                         metadata: transaction.metadata,
                         postings: resolved_postings,
-                        running_state,
                     });
                 }
                 resolution::Entry::Price(()) => todo!(),
