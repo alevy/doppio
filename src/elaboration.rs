@@ -63,7 +63,7 @@ pub struct ResolvedPosting {
 pub type Commodity = String;
 
 #[derive(Deserialize, Serialize, Debug)]
-pub struct Amount(BTreeMap<Commodity, Decimal>);
+pub struct Amount(pub BTreeMap<Commodity, Decimal>);
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum TransactionState {
@@ -101,6 +101,7 @@ pub enum EvaluationError {
     FieldAccessTypeError(ValueExpr),
     UnknownFunctionArgs((String, Vec<ValueExpr>)),
     TypedCommodityToIncompatibleAmount((String, ValueExpr)),
+    InvalidFunctionArgs((String, ValueExpr)),
 }
 
 impl From<EvaluationError> for ElaborationError {
@@ -146,8 +147,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                 .unwrap_or(posting.account);
                             let account_balance = state
                                 .account_balances
-                                .entry(account_name.clone())
-                                .or_default();
+                                .get(&account_name);
                             let (value, commodity, lot_pricing) = match amount {
                                 AmountDetails::Amount {
                                     value,
@@ -157,12 +157,14 @@ impl TryFrom<resolution::HIR> for Journal {
                                     let (value, commodity) = evaluator::eval_and_normalize_amount(
                                         value,
                                         entry_context,
+                                        &state,
                                     )?;
                                     let lot_pricing = match lot_pricing {
                                         Some(ast::LotPricing::Total(expr)) => {
                                             let (mut v, c) = evaluator::eval_and_normalize_amount(
                                                 expr,
                                                 entry_context,
+                                                &state,
                                             )?;
                                             if value.is_sign_negative() {
                                                 v = -v;
@@ -173,6 +175,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                             let (v, c) = evaluator::eval_and_normalize_amount(
                                                 expr,
                                                 entry_context,
+                                                &state,
                                             )?;
                                             Some((v * value, c))
                                         }
@@ -183,11 +186,10 @@ impl TryFrom<resolution::HIR> for Journal {
                                             evaluator::eval_and_normalize_amount(
                                                 balance_assertion,
                                                 entry_context,
+                                                &state,
                                             )?;
                                         if !(bacommodity == commodity
-                                            && account_balance
-                                                .commodity
-                                                .get(&commodity)
+                                            && account_balance.and_then(|ab| ab.commodity.get(&commodity))
                                                 .unwrap_or(&Decimal::ZERO)
                                                 + value
                                                 == baval)
@@ -201,11 +203,10 @@ impl TryFrom<resolution::HIR> for Journal {
                                     let (newsum, commodity) = evaluator::eval_and_normalize_amount(
                                         assignment,
                                         entry_context,
+                                        &state,
                                     )?;
                                     let value = newsum
-                                        - account_balance
-                                            .commodity
-                                            .get(&commodity)
+                                        - account_balance.and_then(|ab| ab.commodity.get(&commodity))
                                             .unwrap_or(&Decimal::ZERO);
                                     (value, commodity, None)
                                 }
@@ -311,15 +312,16 @@ mod evaluator {
 
     use rust_decimal::Decimal;
 
-    use crate::{ast, resolution};
+    use crate::{ast::{self, ValueExpr}, resolution};
 
-    use super::{ElaborationError, EvaluationError};
+    use super::{ElaborationError, EvaluationError, RunningState};
 
     pub fn eval_and_normalize_amount(
         val: ast::ValueExpr,
         eval_context: &resolution::Context,
+        running_state: &RunningState,
     ) -> Result<(Decimal, String), ElaborationError> {
-        match eval(val)? {
+        match eval(val, eval_context, running_state)? {
             ast::ValueExpr::Amount { value, commodity } => {
                 let commodity = if let Some(commodity) = commodity {
                     eval_context
@@ -339,12 +341,12 @@ mod evaluator {
         }
     }
 
-    fn eval(val: ast::ValueExpr) -> Result<ast::ValueExpr, EvaluationError> {
+    fn eval(val: ast::ValueExpr, eval_context: &resolution::Context, state: &RunningState) -> Result<ast::ValueExpr, EvaluationError> {
         match val {
             a @ ast::ValueExpr::Amount { .. } => Ok(a),
             s @ ast::ValueExpr::Str(_) => Ok(s),
             o @ ast::ValueExpr::Object(_) => Ok(o),
-            ast::ValueExpr::Unary { op, expr } => match eval(*expr)? {
+            ast::ValueExpr::Unary { op, expr } => match eval(*expr, eval_context, state)? {
                 ast::ValueExpr::Amount { value, commodity } => match op {
                     ast::Op::Sub => Ok(ast::ValueExpr::Amount {
                         value: -value,
@@ -356,7 +358,7 @@ mod evaluator {
                 val => Err(EvaluationError::UnaryOnNonAmount(val)),
             },
             ast::ValueExpr::Binary { lhs, rhs, op } => {
-                match (eval(*lhs)?, eval(*rhs)?) {
+                match (eval(*lhs, eval_context, state)?, eval(*rhs, eval_context, state)?) {
                     (
                         ast::ValueExpr::Amount {
                             value: v1,
@@ -450,21 +452,29 @@ mod evaluator {
                 }
             }
             ast::ValueExpr::Function { name, args } => match (name.as_str(), args.as_slice()) {
-                ("scrub", [arg]) => eval(arg.clone()),
-                ("account", [_account]) => Ok(ast::ValueExpr::Object(BTreeMap::from([(
-                    "total".into(),
-                    ast::ValueExpr::Amount {
-                        value: Decimal::ZERO,
-                        commodity: Some("$".into()),
-                    },
-                )]))),
+                ("scrub", [arg]) => eval(arg.clone(), eval_context, state),
+                ("account", [account]) => {
+                    if let ValueExpr::Str(account) = eval(account.clone(), eval_context, state)? {
+                        let account = eval_context.account_aliases.get(&account).unwrap_or(&account);
+                        let balance = state.account_balances.get(account).and_then(|ab| ab.commodity.get("$")).cloned().unwrap_or_default();
+                        Ok(ast::ValueExpr::Object(BTreeMap::from([(
+                        "total".into(),
+                            ast::ValueExpr::Amount {
+                            value: balance,
+                            commodity: Some("$".into()),
+                        },
+                        )])))
+                    } else {
+                        Err(EvaluationError::InvalidFunctionArgs((name, account.clone())))
+                    }
+                },
                 _ => Err(EvaluationError::UnknownFunctionArgs((name, args))),
             },
             c @ ast::ValueExpr::Commodity(_) => Ok(c),
             ast::ValueExpr::Typed {
                 expr,
                 commodity: new_commodity,
-            } => match eval(*expr)? {
+            } => match eval(*expr, eval_context, state)? {
                 ast::ValueExpr::Amount { value, commodity }
                     if commodity.is_none() || commodity.as_ref() == Some(&new_commodity) =>
                 {
@@ -478,7 +488,7 @@ mod evaluator {
                     a,
                 ))),
             },
-            ast::ValueExpr::Access { expr, field } => match eval(*expr)? {
+            ast::ValueExpr::Access { expr, field } => match eval(*expr, eval_context, state)? {
                 ast::ValueExpr::Object(map) => map
                     .get(&field)
                     .cloned()
