@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Display};
 
 use rust_decimal::Decimal;
 
@@ -55,12 +55,74 @@ pub struct Transaction {
     pub postings: Vec<Posting>,
 }
 
+impl Display for Transaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(year) = self.date.year {
+            write!(f, "{year:04}-")?;
+        }
+        write!(f, "{:02}-{:02}", self.date.month, self.date.date)?;
+
+        if let Some(ref date) = self.secondary_date {
+            write!(f, "=")?;
+            if let Some(year) = date.year {
+                write!(f, "{year:04}-")?;
+            }
+            write!(f, "{:02}-{:02}", date.month, date.date)?;
+        }
+
+        match self.state {
+            TransactionState::Uncleared => {},
+            TransactionState::Pending => write!(f, " !")?,
+            TransactionState::Cleared => write!(f, " *")?,
+        }
+
+        if let Some(ref code) = self.code {
+            write!(f, " ({code})")?;
+        }
+
+        writeln!(f, " {}", self.description)?;
+
+        for note in self.notes.iter() {
+            writeln!(f, "  ; {note}")?;
+        }
+
+        for posting in self.postings.iter() {
+            posting.fmt(f)?;
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct Posting {
     pub account: String,
     pub amount: Option<AmountDetails>,
     pub state: TransactionState,
     pub notes: Vec<String>,
+}
+
+impl Display for Posting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "  ")?;
+        match self.state {
+            TransactionState::Uncleared => {},
+            TransactionState::Pending => write!(f, "! ")?,
+            TransactionState::Cleared => write!(f, "* ")?,
+        }
+
+        write!(f, "{}", self.account)?;
+
+        if let Some(ref amount) = self.amount {
+            write!(f, "  {amount}")?;
+        }
+        writeln!(f)?;
+
+        for note in self.notes.iter() {
+            writeln!(f, "  ; {note}")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -71,6 +133,77 @@ pub enum AmountDetails {
         balance_assertion: Option<ValueExpr>,
     },
     BalanceAssignment(ValueExpr),
+}
+
+impl Display for AmountDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AmountDetails::Amount { value, lot_pricing, balance_assertion } => {
+                write!(f, "{value}")?;
+                if let Some(lot_pricing) = lot_pricing {
+                    match lot_pricing {
+                        LotPricing::Unit(value_expr) => write!(f, " @ {value_expr}")?,
+                        LotPricing::Total(value_expr) => write!(f, " @@ {value_expr}")?,
+                    }
+                }
+                if let Some(balance_assertion) = balance_assertion {
+                    write!(f, " = {balance_assertion}")?;
+                }
+                Ok(())
+            },
+            AmountDetails::BalanceAssignment(value) => {
+                write!(f, "={value}")
+            },
+        }
+    }
+}
+
+impl Display for ValueExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValueExpr::Amount { value, commodity } => {
+                write!(f,"{value}")?;
+                if let Some(commodity) = commodity {
+                    write!(f," {commodity}")?;
+                }
+                Ok(())
+            },
+            ValueExpr::Str(s) => write!(f, "\"{s}\""),
+            ValueExpr::Unary { op, expr } => {
+                let op = match op {
+                    Op::Add => "+",
+                    Op::Sub => "-",
+                    Op::Mul => "*",
+                    Op::Div => "/",
+                };
+                write!(f, "{op}{expr}")
+            },
+            ValueExpr::Binary { lhs, rhs, op } => {
+                let op = match op {
+                    Op::Add => "+",
+                    Op::Sub => "-",
+                    Op::Mul => "*",
+                    Op::Div => "/",
+                };
+                write!(f, "{lhs} {op} {rhs}")
+            },
+            ValueExpr::Function { name, args } => {
+                write!(f, "{name}(")?;
+                let mut args = args.iter();
+                if let Some(a) = args.next() {
+                    write!(f, "{a}")?;
+                }
+                for a in args {
+                    write!(f, ", {a}")?;
+                }
+                write!(f, ")")
+            },
+            ValueExpr::Commodity(c) => write!(f, "{c}"),
+            ValueExpr::Typed { expr, commodity } => write!(f, "{expr} {commodity}"),
+            ValueExpr::Access { expr, field } => write!(f, "{expr}.{field}"),
+            ValueExpr::Object(_) => todo!(),
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
