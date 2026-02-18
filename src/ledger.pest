@@ -63,7 +63,8 @@ lot_price = ${ ("@@" | "@") ~ ws* ~ value_expr }
 indent = _{ " " | "\t" }
 ws = _{ " " | "\t" }
 
-note = ${ ";" ~ (!NEWLINE ~ ANY)* }
+note = ${ ";" ~ note_str }
+note_str = ${ (!NEWLINE ~ ANY)* }
 comment_line = @{ (";" | "#" | "*" | "%" | "|") ~ (!NEWLINE ~ ANY)* }
 // --- Directives ---
 directive = _{ "!"? ~ (commodity_directive | account_directive | include_directive ) }

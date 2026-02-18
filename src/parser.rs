@@ -38,7 +38,7 @@ fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
 
     for p in inner {
         match p.as_rule() {
-            Rule::note => notes.push(p.as_str().to_string()),
+            Rule::note => notes.push(p.into_inner().as_str().trim().to_string()),
             Rule::commodity_item => {
                 items.push(parse_commodity_item(p));
             }
@@ -57,7 +57,9 @@ fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
     let mut val = None;
 
     for p in inner {
-        if p.as_rule() == Rule::commodity_val { val = Some(p.as_str().trim().to_string()) }
+        if p.as_rule() == Rule::commodity_val {
+            val = Some(p.as_str().trim().to_string())
+        }
     }
 
     match key {
@@ -96,7 +98,7 @@ fn parse_transaction(pair: Pair<Rule>) -> Transaction {
             Rule::transaction_note => {
                 // Get the inner note rule
                 if let Some(note_pair) = p.into_inner().next() {
-                    notes.push(note_pair.as_str().trim().to_string());
+                    notes.push(note_pair.into_inner().as_str().trim().to_string());
                 }
             }
             Rule::posting => {
@@ -154,7 +156,7 @@ fn parse_posting(pair: Pair<Rule>) -> Posting {
             Rule::note => notes.push(p.as_str().trim().to_string()),
             Rule::posting_note => {
                 if let Some(note_pair) = p.into_inner().next() {
-                    notes.push(note_pair.as_str().trim().to_string());
+                    notes.push(note_pair.into_inner().as_str().trim().to_string());
                 }
             }
             _ => {}
@@ -395,7 +397,10 @@ mod tests {
                         value: dec!(10),
                         commodity: Some("AAPL".into()),
                     },
-                    lot_pricing: Some(LotPricing::Unit("$150.00".into())),
+                    lot_pricing: Some(LotPricing::Unit(ValueExpr::Amount {
+                        commodity: Some("$".into()),
+                        value: dec!(150.00)
+                    })),
                     balance_assertion: Some(ValueExpr::Amount {
                         value: dec!(1500.00),
                         commodity: Some("$".to_string()),
@@ -432,8 +437,8 @@ mod tests {
             })
             .expect("Transaction not found");
 
-        assert_eq!(tx.notes[0], "; Header note");
-        assert_eq!(tx.postings[0].notes[0], "; Posting note");
+        assert_eq!(tx.notes[0], "Header note");
+        assert_eq!(tx.postings[0].notes[0], "Posting note");
     }
 
     #[test]
@@ -619,7 +624,7 @@ mod directed_tests {
 
         if let Entry::Directive(Directive::Commodity { name, notes, items }) = &journal.entries[0] {
             assert_eq!(name, "BTC");
-            assert_eq!(notes[0], "; The primary crypto");
+            assert_eq!(notes[0], "The primary crypto");
             assert_eq!(items.len(), 4);
 
             assert!(matches!(items[0], CommodityItem::Alias(_)));
