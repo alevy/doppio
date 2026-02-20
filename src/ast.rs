@@ -23,7 +23,11 @@ pub enum Directive {
         notes: Vec<String>,
         items: Vec<CommodityItem>,
     },
-    Account(String),
+    Account {
+        name: String,
+        notes: Vec<String>,
+        items: Vec<AccountItem>,
+    },
     Unknown(String),
 }
 
@@ -36,6 +40,14 @@ pub enum CommodityItem {
     Note(String),
     Unknown(String, Option<String>),
 }
+
+#[derive(Clone, Debug)]
+pub enum AccountItem {
+    Alias(String),
+    Note(String),
+    Unknown(String, Option<String>),
+}
+
 
 #[derive(Clone, Default, Debug)]
 pub struct Date {

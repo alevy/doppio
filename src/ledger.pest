@@ -81,7 +81,16 @@ commodity_item = ${
 commodity_key = @{ "alias" | "format" | "nomarket" | "default" | identifier }
 commodity_val = @{ (!NEWLINE ~ ANY)* }
 
-account_directive = ${ "account" ~ ws+ ~ account ~ (ws* ~ note)? ~ (NEWLINE | EOI) }
+account_directive = ${
+    "account" ~ ws+ ~ account ~ (ws* ~ note)? ~ NEWLINE ~
+    ((indent+ ~ note ~ NEWLINE) | account_item)*
+}
+
+account_item = ${
+    indent+ ~ account_key ~ (ws+ ~ account_val)? ~ (ws* ~ note)? ~ (NEWLINE | EOI)
+}
+account_key = @{ "note" | "alias" | identifier }
+account_val = @{ (!NEWLINE ~ ANY)* }
 
 include_directive = ${ "include" ~ ws+ ~ (!NEWLINE ~ ANY)+ ~ (NEWLINE | EOI) }
 

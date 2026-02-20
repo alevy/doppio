@@ -31,12 +31,18 @@ pub struct Context {
 #[derive(Default, Debug)]
 pub struct GlobalContext {
     pub commodity_properties: BTreeMap<String, CommodityProperties>,
+    pub account_properties: BTreeMap<String, AccountProperties>,
 }
 
 #[derive(Default, Debug)]
 pub struct CommodityProperties {
     pub format: Option<String>,
     pub no_market: bool,
+    pub note: Option<String>,
+}
+
+#[derive(Default, Debug)]
+pub struct AccountProperties {
     pub note: Option<String>,
 }
 
@@ -180,8 +186,26 @@ impl TryFrom<ast::Journal> for HIR {
                         }
                     }
                 }
-                ast::Entry::Directive(ast::Directive::Account(account)) => {
-                    todo!("{account}")
+                ast::Entry::Directive(ast::Directive::Account { name, notes: _, items }) => {
+                    let global_context = result
+                        .global_context
+                        .account_properties
+                        .entry(name.clone())
+                        .or_default();
+
+                    for item in items {
+                        match item {
+                            ast::AccountItem::Alias(alias) => {
+                                new_context = Some(new_context.unwrap_or_else(|| context.clone()))
+                                    .map(|mut ctx| {
+                                        ctx.account_aliases.insert(alias, name.clone());
+                                        ctx
+                                    });
+                            },
+                            ast::AccountItem::Note(note) => global_context.note = Some(note),
+                            ast::AccountItem::Unknown(key, value) => todo!("{key} {value:?}"),
+                        }
+                    }
                 }
                 ast::Entry::Transaction(transaction) => {
                     let date = Self::resolve_date(&transaction.date, current_default_year)?;

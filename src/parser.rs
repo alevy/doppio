@@ -23,11 +23,33 @@ pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
             Rule::commodity_directive => {
                 entries.push(Entry::Directive(parse_commodity_directive(pair)));
             }
+            Rule::account_directive => {
+                entries.push(Entry::Directive(parse_account_directive(pair)));
+            }
             _ => {}
         }
     }
 
     Ok(Journal { entries })
+}
+
+fn parse_account_directive(pair: Pair<Rule>) -> Directive {
+    let mut inner = pair.into_inner();
+    let name = inner.next().unwrap().as_str().to_string();
+    let mut notes = Vec::new();
+    let mut items = Vec::new();
+
+    for p in inner {
+        match p.as_rule() {
+            Rule::note => notes.push(p.into_inner().as_str().trim().to_string()),
+            Rule::account_item => {
+                items.push(parse_account_item(p));
+            }
+            _ => {}
+        }
+    }
+
+    Directive::Account { name, notes, items }
 }
 
 fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
@@ -48,6 +70,27 @@ fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
 
     Directive::Commodity { name, notes, items }
 }
+
+fn parse_account_item(pair: Pair<Rule>) -> AccountItem {
+    let mut inner = pair.into_inner();
+    let key_pair = inner.next().unwrap();
+    let key = key_pair.as_str();
+    // Look for value and trailing note
+    let mut val = None;
+
+    for p in inner {
+        if p.as_rule() == Rule::account_val {
+            val = Some(p.as_str().trim().to_string())
+        }
+    }
+
+    match key {
+        "alias" => AccountItem::Alias(val.unwrap_or_default()),
+        "note" => AccountItem::Note(val.unwrap_or_default()),
+        _ => AccountItem::Unknown(key.to_string(), val),
+    }
+}
+
 
 fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
     let mut inner = pair.into_inner();

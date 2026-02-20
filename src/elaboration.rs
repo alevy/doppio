@@ -11,6 +11,12 @@ use crate::{
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Journal {
     pub transactions: Vec<ResolvedTransaction>,
+    pub accounts: BTreeMap<String, AccountProperties>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct AccountProperties {
+    pub note: Option<String>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -110,6 +116,14 @@ impl TryFrom<resolution::HIR> for Journal {
         let mut state = RunningState::default();
 
         let mut transactions = vec![];
+
+        let mut accounts = BTreeMap::new();
+
+        for (name, properties) in value.global_context.account_properties {
+            accounts.insert(name, AccountProperties {
+                note: properties.note,
+            });
+        }
 
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
@@ -260,8 +274,12 @@ impl TryFrom<resolution::HIR> for Journal {
                         }
                     }
 
-                    // Finally, update account balances
+                    // Finally, update account balances and names
                     for posting in resolved_postings.iter() {
+                        if !accounts.contains_key(&posting.account) {
+                            accounts.insert(posting.account.clone(), Default::default());
+                        }
+
                         let balances = state
                             .account_balances
                             .entry(posting.account.clone())
@@ -287,7 +305,7 @@ impl TryFrom<resolution::HIR> for Journal {
             }
         }
 
-        Ok(Journal { transactions })
+        Ok(Journal { transactions, accounts })
     }
 }
 
