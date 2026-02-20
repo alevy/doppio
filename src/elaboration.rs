@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, fmt::Display};
 
-use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -26,8 +25,8 @@ struct RunningState {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ResolvedTransaction {
-    pub date: NaiveDate,
-    pub secondary_date: Option<NaiveDate>,
+    pub date: i32,
+    pub secondary_date: Option<i32>,
     pub state: TransactionState,
     pub code: Option<String>,
     pub description: String,
@@ -48,8 +47,8 @@ pub struct ResolvedPosting {
 
 pub type Commodity = String;
 
-#[derive(Deserialize, Serialize, Debug)]
-pub struct Amount(pub BTreeMap<Commodity, Decimal>);
+#[derive(Deserialize, Default, Serialize, Debug)]
+pub struct Amount(pub BTreeMap<Commodity, [u8;16]>);
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum TransactionState {
@@ -200,14 +199,16 @@ impl TryFrom<resolution::HIR> for Journal {
                             let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
 
                             if let Some((lot_total, lot_commodity)) = lot_pricing {
-                                *(transaction_state.0.entry(lot_commodity).or_default()) +=
-                                    lot_total;
+                                let decb = transaction_state.0.entry(lot_commodity).or_default();
+                                let dec = Decimal::deserialize(*decb) + lot_total;
+                                *decb = dec.serialize();
                             } else {
-                                *(transaction_state.0.entry(commodity.clone()).or_default()) +=
-                                    value;
+                                let decb = transaction_state.0.entry(commodity.clone()).or_default();
+                                let dec = Decimal::deserialize(*decb) + value;
+                                *decb = dec.serialize();
                             }
 
-                            let amount = Amount(BTreeMap::from([(commodity, value)]));
+                            let amount = Amount(BTreeMap::from([(commodity, value.serialize())]));
                             resolved_postings.push(ResolvedPosting {
                                 account: account_name,
                                 payee,
@@ -238,7 +239,7 @@ impl TryFrom<resolution::HIR> for Journal {
                             transaction_state
                                 .0
                                 .iter()
-                                .map(|(c, v)| (c.clone(), -v))
+                                .map(|(c, v)| (c.clone(), (-Decimal::deserialize(*v)).serialize()))
                                 .collect(),
                         );
 
@@ -252,7 +253,7 @@ impl TryFrom<resolution::HIR> for Journal {
                         });
                     } else {
                         // Check that transaction state is all zeros to balance the transaction.
-                        if transaction_state.0.values().any(|value| !value.is_zero()) {
+                        if transaction_state.0.values().any(|value| !Decimal::deserialize(*value).is_zero()) {
                             return Err(ElaborationError::TransactionDoesNotBalance(
                                 transaction_state,
                             ));
@@ -266,13 +267,13 @@ impl TryFrom<resolution::HIR> for Journal {
                             .entry(posting.account.clone())
                             .or_default();
                         for (commodity, delta) in posting.amount.0.iter() {
-                            *(balances.commodity.entry(commodity.clone()).or_default()) += delta;
+                            *(balances.commodity.entry(commodity.clone()).or_default()) += Decimal::deserialize(*delta);
                         }
                     }
 
                     transactions.push(ResolvedTransaction {
-                        date: transaction.date,
-                        secondary_date: transaction.secondary_date,
+                        date: transaction.date.to_epoch_days(),
+                        secondary_date: transaction.secondary_date.map(|d| d.to_epoch_days()),
                         state: transaction.state.into(),
                         code: transaction.code,
                         description: transaction.description,

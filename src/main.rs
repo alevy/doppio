@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, fs::File, io::Read as _, path::PathBuf};
 
 use clap::{Parser, Subcommand};
+use rust_decimal::Decimal;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -23,14 +24,15 @@ enum Commands {
     },
     Register {
         source: PathBuf,
-        pattern: Option<String>
-    }
+        pattern: Option<String>,
+    },
 }
 
 fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::Error>> {
     if let Some("bki") = path.extension().and_then(|e| e.to_str()) {
         let input_xz = xz::read::XzDecoder::new(File::open(path)?);
-        Ok(serde_pickle::de::from_reader(input_xz, Default::default())?)
+        let mut buf = vec![0; 102400];
+        Ok(postcard::from_io((input_xz, &mut buf))?.0)
     } else {
         let mut file = String::new();
         File::open(path)?.read_to_string(&mut file)?;
@@ -49,28 +51,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let file = file.as_str();
             let journal = ledger::compile(file)?;
             let output_file = File::create(output)?;
-            let mut output_xz = xz::write::XzEncoder::new(output_file, 0);
-            serde_pickle::ser::to_writer(&mut output_xz, &journal, Default::default())?;
-        },
+            let mut output_xz = xz::write::XzEncoder::new(output_file, 6);
+            postcard::to_io(&journal, &mut output_xz)?;
+        }
         Commands::Register { source, pattern } => {
             let pattern = pattern.unwrap_or_default().to_lowercase();
             let journal = load_journal(&source)?;
             for txn in journal.transactions.iter() {
                 for posting in txn.postings.iter() {
                     if posting.account.to_lowercase().contains(&pattern) {
-                        println!("{:<20} {:>20}", posting.account, posting.amount.0.get("$").unwrap());
+                        println!(
+                            "{:<20} {:>20}",
+                            posting.account,
+                            Decimal::deserialize(*posting.amount.0.get("$").unwrap())
+                        );
                     }
                 }
             }
-        },
+        }
         Commands::Balance { source } => {
             let journal = load_journal(&source)?;
-            let mut balances: BTreeMap<&String, BTreeMap<&String, rust_decimal::Decimal>> = BTreeMap::new();
+            let mut balances: BTreeMap<&String, BTreeMap<&String, rust_decimal::Decimal>> =
+                BTreeMap::new();
 
             for txn in journal.transactions.iter() {
                 for posting in txn.postings.iter() {
                     for (commodity, amount) in posting.amount.0.iter() {
-                        *(balances.entry(&posting.account).or_default().entry(commodity).or_default()) += amount;
+                        *(balances
+                            .entry(&posting.account)
+                            .or_default()
+                            .entry(commodity)
+                            .or_default()) += Decimal::deserialize(*amount);
                     }
                 }
             }
