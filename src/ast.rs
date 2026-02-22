@@ -61,7 +61,7 @@ pub struct Date {
 impl From<NaiveDate> for Date {
     fn from(value: NaiveDate) -> Self {
         Self {
-            year: Some(value.year().into()),
+            year: Some(value.year()),
             month: value.month0() + 1,
             date: value.day0() + 1,
         }

@@ -40,7 +40,7 @@ impl<F: Fn(&str) -> String> Parser<F> {
                 }
                 Rule::include_directive => {
                     let include_path = self.base_path.join(pair.into_inner().as_str());
-                    let new_input = (self.openner)(&include_path.as_os_str().to_str().unwrap());
+                    let new_input = (self.openner)(include_path.as_os_str().to_str().unwrap());
                     let new_base_path = include_path
                         .parent()
                         .map(|p| self.base_path.join(p))

@@ -106,7 +106,7 @@ impl HIR {
             .year
             .or(fallback_year)
             .ok_or(ResolutionError::InvalidDate)?;
-        NaiveDate::from_ymd_opt(year.into(), ast.month.into(), ast.date.into())
+        NaiveDate::from_ymd_opt(year, ast.month, ast.date)
             .ok_or(ResolutionError::InvalidDate)
     }
 
