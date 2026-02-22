@@ -184,12 +184,16 @@ impl TryFrom<ast::Journal> for HIR {
                             }
                             ast::CommodityItem::Unknown(key, Some(value)) if &key == "note" => {
                                 global_context.note = Some(value);
-                            },
+                            }
                             ast::CommodityItem::Unknown(key, value) => todo!("{key} {value:?}"),
                         }
                     }
                 }
-                ast::Entry::Directive(ast::Directive::Account { name, notes: _, items }) => {
+                ast::Entry::Directive(ast::Directive::Account {
+                    name,
+                    notes: _,
+                    items,
+                }) => {
                     let global_context = result
                         .global_context
                         .account_properties
@@ -204,9 +208,9 @@ impl TryFrom<ast::Journal> for HIR {
                                         ctx.account_aliases.insert(alias, name.clone());
                                         ctx
                                     });
-                            },
+                            }
                             ast::AccountItem::Note(note) => global_context.note = Some(note),
-                            ast::AccountItem::Unknown(_, _) => { /* TODO */ },
+                            ast::AccountItem::Unknown(_, _) => { /* TODO */ }
                         }
                     }
                 }
@@ -216,7 +220,7 @@ impl TryFrom<ast::Journal> for HIR {
                         ctx.account_aliases.insert(alias, account);
                         ctx
                     });
-                },
+                }
                 ast::Entry::Transaction(transaction) => {
                     let date = Self::resolve_date(&transaction.date, current_default_year)?;
                     let secondary_date = if let Some(ref d) = transaction.secondary_date {

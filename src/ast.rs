@@ -28,7 +28,10 @@ pub enum Directive {
         items: Vec<AccountItem>,
     },
     Unknown(String),
-    Alias { alias: String, account: String },
+    Alias {
+        alias: String,
+        account: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -47,7 +50,6 @@ pub enum AccountItem {
     Note(String),
     Unknown(String, Option<String>),
 }
-
 
 #[derive(Clone, Default, Debug)]
 pub struct Date {
@@ -93,7 +95,7 @@ impl Display for Transaction {
         }
 
         match self.state {
-            TransactionState::Uncleared => {},
+            TransactionState::Uncleared => {}
             TransactionState::Pending => write!(f, " !")?,
             TransactionState::Cleared => write!(f, " *")?,
         }
@@ -149,7 +151,7 @@ impl Display for Posting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "  ")?;
         match self.state {
-            TransactionState::Uncleared => {},
+            TransactionState::Uncleared => {}
             TransactionState::Pending => write!(f, "! ")?,
             TransactionState::Cleared => write!(f, "* ")?,
         }
@@ -191,7 +193,11 @@ impl<I: Into<ValueExpr>> From<I> for AmountDetails {
 impl Display for AmountDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AmountDetails::Amount { value, lot_pricing, balance_assertion } => {
+            AmountDetails::Amount {
+                value,
+                lot_pricing,
+                balance_assertion,
+            } => {
                 write!(f, "{value}")?;
                 if let Some(lot_pricing) = lot_pricing {
                     match lot_pricing {
@@ -203,10 +209,10 @@ impl Display for AmountDetails {
                     write!(f, " = {balance_assertion}")?;
                 }
                 Ok(())
-            },
+            }
             AmountDetails::BalanceAssignment(value) => {
                 write!(f, "={value}")
-            },
+            }
         }
     }
 }
@@ -215,12 +221,12 @@ impl Display for ValueExpr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ValueExpr::Amount { value, commodity } => {
-                write!(f,"{value}")?;
+                write!(f, "{value}")?;
                 if let Some(commodity) = commodity {
-                    write!(f," {commodity}")?;
+                    write!(f, " {commodity}")?;
                 }
                 Ok(())
-            },
+            }
             ValueExpr::Str(s) => write!(f, "\"{s}\""),
             ValueExpr::Unary { op, expr } => {
                 let op = match op {
@@ -230,7 +236,7 @@ impl Display for ValueExpr {
                     Op::Div => "/",
                 };
                 write!(f, "{op}{expr}")
-            },
+            }
             ValueExpr::Binary { lhs, rhs, op } => {
                 let op = match op {
                     Op::Add => "+",
@@ -239,7 +245,7 @@ impl Display for ValueExpr {
                     Op::Div => "/",
                 };
                 write!(f, "{lhs} {op} {rhs}")
-            },
+            }
             ValueExpr::Function { name, args } => {
                 write!(f, "{name}(")?;
                 let mut args = args.iter();
@@ -250,7 +256,7 @@ impl Display for ValueExpr {
                     write!(f, ", {a}")?;
                 }
                 write!(f, ")")
-            },
+            }
             ValueExpr::Commodity(c) => write!(f, "{c}"),
             ValueExpr::Typed { expr, commodity } => write!(f, "{expr} {commodity}"),
             ValueExpr::Access { expr, field } => write!(f, "{expr}.{field}"),

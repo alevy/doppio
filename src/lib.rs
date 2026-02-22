@@ -18,7 +18,13 @@ pub fn file_openner(pattern: &str) -> String {
     buf
 }
 
-pub fn compile<F>(input: &String, mut parser: parser::Parser<F>) -> Result<elaboration::Journal, Box<dyn std::error::Error>> where F: Fn(&str) -> String {
+pub fn compile<F>(
+    input: &String,
+    mut parser: parser::Parser<F>,
+) -> Result<elaboration::Journal, Box<dyn std::error::Error>>
+where
+    F: Fn(&str) -> String,
+{
     let output = parser.parse(input)?;
     let hir: resolution::HIR = output.try_into()?;
     Ok(hir.try_into()?)

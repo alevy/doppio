@@ -37,7 +37,7 @@ impl<F: Fn(&str) -> String> Parser<F> {
                 }
                 Rule::alias_directive => {
                     entries.push(Entry::Directive(parse_alias_directive(pair)));
-                },
+                }
                 Rule::include_directive => {
                     let include_path = self.base_path.join(pair.into_inner().as_str());
                     let new_input = (self.openner)(&include_path.as_os_str().to_str().unwrap());
@@ -61,17 +61,15 @@ pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
     Parser {
         openner: |_| String::new(),
         base_path: PathBuf::new(),
-    }.parse(input)
+    }
+    .parse(input)
 }
 
 fn parse_alias_directive(pair: Pair<Rule>) -> Directive {
     let mut pairs = pair.into_inner();
     let alias = pairs.next().unwrap().as_str().trim().to_string();
     let account = pairs.next().unwrap().as_str().trim().to_string();
-    Directive::Alias {
-        alias,
-        account,
-    }
+    Directive::Alias { alias, account }
 }
 
 fn parse_account_directive(pair: Pair<Rule>) -> Directive {

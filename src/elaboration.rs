@@ -54,7 +54,7 @@ pub struct ResolvedPosting {
 pub type Commodity = String;
 
 #[derive(Deserialize, Default, Serialize, Debug)]
-pub struct Amount(pub BTreeMap<Commodity, [u8;16]>);
+pub struct Amount(pub BTreeMap<Commodity, [u8; 16]>);
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum TransactionState {
@@ -120,9 +120,12 @@ impl TryFrom<resolution::HIR> for Journal {
         let mut accounts = BTreeMap::new();
 
         for (name, properties) in value.global_context.account_properties {
-            accounts.insert(name, AccountProperties {
-                note: properties.note,
-            });
+            accounts.insert(
+                name,
+                AccountProperties {
+                    note: properties.note,
+                },
+            );
         }
 
         for entry in value.entries {
@@ -144,9 +147,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                 .get(&posting.account)
                                 .cloned()
                                 .unwrap_or(posting.account);
-                            let account_balance = state
-                                .account_balances
-                                .get(&account_name);
+                            let account_balance = state.account_balances.get(&account_name);
                             let (value, commodity, lot_pricing) = match amount {
                                 AmountDetails::Amount {
                                     value,
@@ -188,7 +189,8 @@ impl TryFrom<resolution::HIR> for Journal {
                                                 &state,
                                             )?;
                                         if !(bacommodity == commodity
-                                            && account_balance.and_then(|ab| ab.commodity.get(&commodity))
+                                            && account_balance
+                                                .and_then(|ab| ab.commodity.get(&commodity))
                                                 .unwrap_or(&Decimal::ZERO)
                                                 + value
                                                 == baval)
@@ -205,7 +207,8 @@ impl TryFrom<resolution::HIR> for Journal {
                                         &state,
                                     )?;
                                     let value = newsum
-                                        - account_balance.and_then(|ab| ab.commodity.get(&commodity))
+                                        - account_balance
+                                            .and_then(|ab| ab.commodity.get(&commodity))
                                             .unwrap_or(&Decimal::ZERO);
                                     (value, commodity, None)
                                 }
@@ -217,7 +220,8 @@ impl TryFrom<resolution::HIR> for Journal {
                                 let dec = Decimal::deserialize(*decb) + lot_total;
                                 *decb = dec.serialize();
                             } else {
-                                let decb = transaction_state.0.entry(commodity.clone()).or_default();
+                                let decb =
+                                    transaction_state.0.entry(commodity.clone()).or_default();
                                 let dec = Decimal::deserialize(*decb) + value;
                                 *decb = dec.serialize();
                             }
@@ -267,7 +271,11 @@ impl TryFrom<resolution::HIR> for Journal {
                         });
                     } else {
                         // Check that transaction state is all zeros to balance the transaction.
-                        if transaction_state.0.values().any(|value| !Decimal::deserialize(*value).is_zero()) {
+                        if transaction_state
+                            .0
+                            .values()
+                            .any(|value| !Decimal::deserialize(*value).is_zero())
+                        {
                             return Err(ElaborationError::TransactionDoesNotBalance(
                                 transaction_state,
                             ));
@@ -285,7 +293,8 @@ impl TryFrom<resolution::HIR> for Journal {
                             .entry(posting.account.clone())
                             .or_default();
                         for (commodity, delta) in posting.amount.0.iter() {
-                            *(balances.commodity.entry(commodity.clone()).or_default()) += Decimal::deserialize(*delta);
+                            *(balances.commodity.entry(commodity.clone()).or_default()) +=
+                                Decimal::deserialize(*delta);
                         }
                     }
 
@@ -305,7 +314,10 @@ impl TryFrom<resolution::HIR> for Journal {
             }
         }
 
-        Ok(Journal { transactions, accounts })
+        Ok(Journal {
+            transactions,
+            accounts,
+        })
     }
 }
 
@@ -314,7 +326,10 @@ mod evaluator {
 
     use rust_decimal::Decimal;
 
-    use crate::{ast::{self, ValueExpr}, resolution};
+    use crate::{
+        ast::{self, ValueExpr},
+        resolution,
+    };
 
     use super::{ElaborationError, EvaluationError, RunningState};
 
@@ -343,7 +358,11 @@ mod evaluator {
         }
     }
 
-    fn eval(val: ast::ValueExpr, eval_context: &resolution::Context, state: &RunningState) -> Result<ast::ValueExpr, EvaluationError> {
+    fn eval(
+        val: ast::ValueExpr,
+        eval_context: &resolution::Context,
+        state: &RunningState,
+    ) -> Result<ast::ValueExpr, EvaluationError> {
         match val {
             a @ ast::ValueExpr::Amount { .. } => Ok(a),
             s @ ast::ValueExpr::Str(_) => Ok(s),
@@ -360,7 +379,10 @@ mod evaluator {
                 val => Err(EvaluationError::UnaryOnNonAmount(val)),
             },
             ast::ValueExpr::Binary { lhs, rhs, op } => {
-                match (eval(*lhs, eval_context, state)?, eval(*rhs, eval_context, state)?) {
+                match (
+                    eval(*lhs, eval_context, state)?,
+                    eval(*rhs, eval_context, state)?,
+                ) {
                     (
                         ast::ValueExpr::Amount {
                             value: v1,
@@ -457,19 +479,30 @@ mod evaluator {
                 ("scrub", [arg]) => eval(arg.clone(), eval_context, state),
                 ("account", [account]) => {
                     if let ValueExpr::Str(account) = eval(account.clone(), eval_context, state)? {
-                        let account = eval_context.account_aliases.get(&account).unwrap_or(&account);
-                        let balance = state.account_balances.get(account).and_then(|ab| ab.commodity.get("$")).cloned().unwrap_or_default();
+                        let account = eval_context
+                            .account_aliases
+                            .get(&account)
+                            .unwrap_or(&account);
+                        let balance = state
+                            .account_balances
+                            .get(account)
+                            .and_then(|ab| ab.commodity.get("$"))
+                            .cloned()
+                            .unwrap_or_default();
                         Ok(ast::ValueExpr::Object(BTreeMap::from([(
-                        "total".into(),
+                            "total".into(),
                             ast::ValueExpr::Amount {
-                            value: balance,
-                            commodity: Some("$".into()),
-                        },
+                                value: balance,
+                                commodity: Some("$".into()),
+                            },
                         )])))
                     } else {
-                        Err(EvaluationError::InvalidFunctionArgs((name, account.clone())))
+                        Err(EvaluationError::InvalidFunctionArgs((
+                            name,
+                            account.clone(),
+                        )))
                     }
-                },
+                }
                 _ => Err(EvaluationError::UnknownFunctionArgs((name, args))),
             },
             c @ ast::ValueExpr::Commodity(_) => Ok(c),
