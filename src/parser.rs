@@ -1,36 +1,77 @@
 use crate::ast::*;
-use pest::Parser;
+use pest::Parser as _;
 use pest::iterators::{Pair, Pairs};
+use pest::pratt_parser::PrattParser;
 use pest_derive::Parser;
 use rust_decimal::Decimal;
+use std::path::PathBuf;
+use std::sync::LazyLock; // Or once_cell
 
 #[derive(Parser)]
 #[grammar = "ledger.pest"]
 pub struct LedgerParser;
 
-pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
-    let pairs = LedgerParser::parse(Rule::journal, input)?;
-    let mut entries = Vec::new();
+pub struct Parser<F: Fn(&str) -> String> {
+    pub openner: F,
+    pub base_path: PathBuf,
+}
 
-    for pair in pairs.into_iter().next().unwrap().into_inner() {
-        match pair.as_rule() {
-            Rule::transaction => {
-                entries.push(Entry::Transaction(parse_transaction(pair)));
+impl<F: Fn(&str) -> String> Parser<F> {
+    pub fn parse(&mut self, input: &str) -> Result<Journal, pest::error::Error<Rule>> {
+        let pairs = LedgerParser::parse(Rule::journal, input)?;
+        let mut entries = Vec::new();
+
+        for pair in pairs.into_iter().next().unwrap().into_inner() {
+            match pair.as_rule() {
+                Rule::transaction => {
+                    entries.push(Entry::Transaction(parse_transaction(pair)));
+                }
+                Rule::comment_line => {
+                    entries.push(Entry::Comment(pair.as_str().to_string()));
+                }
+                Rule::commodity_directive => {
+                    entries.push(Entry::Directive(parse_commodity_directive(pair)));
+                }
+                Rule::account_directive => {
+                    entries.push(Entry::Directive(parse_account_directive(pair)));
+                }
+                Rule::alias_directive => {
+                    entries.push(Entry::Directive(parse_alias_directive(pair)));
+                },
+                Rule::include_directive => {
+                    let include_path = self.base_path.join(pair.into_inner().as_str());
+                    let new_input = (self.openner)(&include_path.as_os_str().to_str().unwrap());
+                    let new_base_path = include_path
+                        .parent()
+                        .map(|p| self.base_path.join(p))
+                        .unwrap_or(self.base_path.clone());
+                    let old_base_path = std::mem::replace(&mut self.base_path, new_base_path);
+                    entries.append(&mut self.parse(&new_input)?.entries);
+                    let _ = std::mem::replace(&mut self.base_path, old_base_path);
+                }
+                _ => {}
             }
-            Rule::comment_line => {
-                entries.push(Entry::Comment(pair.as_str().to_string()));
-            }
-            Rule::commodity_directive => {
-                entries.push(Entry::Directive(parse_commodity_directive(pair)));
-            }
-            Rule::account_directive => {
-                entries.push(Entry::Directive(parse_account_directive(pair)));
-            }
-            _ => {}
         }
-    }
 
-    Ok(Journal { entries })
+        Ok(Journal { entries })
+    }
+}
+
+pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
+    Parser {
+        openner: |_| String::new(),
+        base_path: PathBuf::new(),
+    }.parse(input)
+}
+
+fn parse_alias_directive(pair: Pair<Rule>) -> Directive {
+    let mut pairs = pair.into_inner();
+    let alias = pairs.next().unwrap().as_str().trim().to_string();
+    let account = pairs.next().unwrap().as_str().trim().to_string();
+    Directive::Alias {
+        alias,
+        account,
+    }
 }
 
 fn parse_account_directive(pair: Pair<Rule>) -> Directive {
@@ -91,7 +132,6 @@ fn parse_account_item(pair: Pair<Rule>) -> AccountItem {
     }
 }
 
-
 fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
     let mut inner = pair.into_inner();
     let key_pair = inner.next().unwrap();
@@ -115,7 +155,7 @@ fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
 }
 
 fn parse_date(pairs: &mut Pairs<Rule>) -> Date {
-    let mut year: Option<u16> = None;
+    let mut year: Option<i32> = None;
 
     let mut p = pairs.next().unwrap();
     if let Rule::year = p.as_rule() {
@@ -259,9 +299,6 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
         _ => unreachable!(),
     }
 }
-
-use pest::pratt_parser::PrattParser;
-use std::sync::LazyLock; // Or once_cell
 
 static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
     use Rule::*;

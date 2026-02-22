@@ -56,7 +56,7 @@ monthdate = @{ ASCII_DIGIT{1,2} }
 state = { "*" | "!" }
 code = { "(" ~ (!")" ~ ANY)* ~ ")" }
 description = { (!(";" | NEWLINE) ~ ANY)* }
-account = @{ !(";") ~ (!("  " | "\t" | NEWLINE) ~ ANY)+ }
+account = @{ (!("  " | ";" | "\t" | "=" | NEWLINE) ~ ANY)+ }
 
 lot_price = ${ ("@@" | "@") ~ ws* ~ value_expr }
 
@@ -67,7 +67,12 @@ note = ${ ";" ~ note_str }
 note_str = ${ (!NEWLINE ~ ANY)* }
 comment_line = @{ (";" | "#" | "*" | "%" | "|") ~ (!NEWLINE ~ ANY)* }
 // --- Directives ---
-directive = _{ "!"? ~ (commodity_directive | account_directive | include_directive ) }
+directive = _{ "!"? ~ (commodity_directive | account_directive | alias_directive | include_directive | define_directive | tag_directive ) }
+
+tag_directive = ${
+    "tag" ~ ws+ ~ identifier ~ (ws* ~ note)? ~ NEWLINE ~
+    (indent+ ~ (!NEWLINE ~ ANY )* ~ (NEWLINE | EOI))*
+}
 
 commodity_directive = ${
     "commodity" ~ ws+ ~ commodity ~ (ws* ~ note)? ~ NEWLINE ~
@@ -92,7 +97,12 @@ account_item = ${
 account_key = @{ "note" | "alias" | identifier }
 account_val = @{ (!NEWLINE ~ ANY)* }
 
-include_directive = ${ "include" ~ ws+ ~ (!NEWLINE ~ ANY)+ ~ (NEWLINE | EOI) }
+alias_directive = ${ "alias" ~ ws+ ~ account ~ ws* ~ "=" ~ ws* ~ account ~ (ws+ ~ note)? ~ (NEWLINE | EOI) }
+
+define_directive = @{ "define" ~ ws+ ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }
+
+include_directive = ${ "include" ~ ws+ ~ filename ~ (NEWLINE | EOI) }
+filename = @{ (!NEWLINE ~ ANY)+ }
 
 // --- Expressions (Explicit Whitespace) ---
 value_expr = ${ expr ~ (ws+ ~ commodity)? }

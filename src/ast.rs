@@ -1,8 +1,7 @@
 use std::{collections::BTreeMap, fmt::Display};
 
+use chrono::{Datelike, NaiveDate};
 use rust_decimal::Decimal;
-
-use crate::parser::{self, Rule};
 
 #[derive(Debug)]
 pub struct Journal {
@@ -29,6 +28,7 @@ pub enum Directive {
         items: Vec<AccountItem>,
     },
     Unknown(String),
+    Alias { alias: String, account: String },
 }
 
 #[derive(Clone, Debug)]
@@ -51,9 +51,19 @@ pub enum AccountItem {
 
 #[derive(Clone, Default, Debug)]
 pub struct Date {
-    pub year: Option<u16>,
-    pub month: u8,
-    pub date: u8,
+    pub year: Option<i32>,
+    pub month: u32,
+    pub date: u32,
+}
+
+impl From<NaiveDate> for Date {
+    fn from(value: NaiveDate) -> Self {
+        Self {
+            year: Some(value.year().into()),
+            month: value.month0() + 1,
+            date: value.day0() + 1,
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -114,6 +124,27 @@ pub struct Posting {
     pub notes: Vec<String>,
 }
 
+impl Posting {
+    pub fn new<S: Into<String>>(account: S) -> Self {
+        Self {
+            account: account.into(),
+            amount: None,
+            state: TransactionState::Uncleared,
+            notes: vec![],
+        }
+    }
+
+    pub fn with_note<S: Into<String>>(mut self, note: S) -> Self {
+        self.notes.push(note.into());
+        self
+    }
+
+    pub fn with_amount<A: Into<AmountDetails>>(mut self, amount: A) -> Self {
+        self.amount = Some(amount.into());
+        self
+    }
+}
+
 impl Display for Posting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "  ")?;
@@ -145,6 +176,16 @@ pub enum AmountDetails {
         balance_assertion: Option<ValueExpr>,
     },
     BalanceAssignment(ValueExpr),
+}
+
+impl<I: Into<ValueExpr>> From<I> for AmountDetails {
+    fn from(value: I) -> Self {
+        AmountDetails::Amount {
+            value: value.into(),
+            lot_pricing: None,
+            balance_assertion: None,
+        }
+    }
 }
 
 impl Display for AmountDetails {
@@ -252,6 +293,21 @@ pub enum ValueExpr {
     },
 }
 
+impl ValueExpr {
+    pub fn amount(value: Decimal, commodity: String) -> ValueExpr {
+        ValueExpr::Amount {
+            value,
+            commodity: Some(commodity),
+        }
+    }
+}
+
+impl<S: Into<String>> From<(Decimal, S)> for ValueExpr {
+    fn from(value: (Decimal, S)) -> Self {
+        Self::amount(value.0, value.1.into())
+    }
+}
+
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Op {
     Add,
@@ -272,12 +328,4 @@ pub enum TransactionState {
     Uncleared,
     Pending,
     Cleared,
-}
-
-impl TryFrom<&str> for Journal {
-    type Error = pest::error::Error<Rule>;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        parser::parse_ledger(value)
-    }
 }

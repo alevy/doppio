@@ -34,10 +34,14 @@ fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::E
         let mut buf = vec![0; 102400];
         Ok(postcard::from_io((input_xz, &mut buf))?.0)
     } else {
+        let base_path = path.parent().unwrap().to_path_buf();
+        let parser = ledger::parser::Parser {
+            openner: ledger::file_openner,
+            base_path,
+        };
         let mut file = String::new();
         File::open(path)?.read_to_string(&mut file)?;
-        let file = file.as_str();
-        Ok(ledger::compile(file)?)
+        Ok(ledger::compile(&file, parser)?)
     }
 }
 
@@ -46,10 +50,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Compile { output, source } => {
+            let base_path = source.parent().unwrap().to_path_buf();
+            let parser = ledger::parser::Parser {
+                openner: ledger::file_openner,
+                base_path,
+            };
             let mut file = String::new();
             File::open(source)?.read_to_string(&mut file)?;
-            let file = file.as_str();
-            let journal = ledger::compile(file)?;
+            let journal = ledger::compile(&file, parser)?;
             let output_file = File::create(output)?;
             let mut output_xz = xz::write::XzEncoder::new(output_file, 6);
             postcard::to_io(&journal, &mut output_xz)?;

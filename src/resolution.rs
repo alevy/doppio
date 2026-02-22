@@ -100,7 +100,7 @@ impl std::error::Error for ResolutionError {}
 impl HIR {
     fn resolve_date(
         ast: &ast::Date,
-        fallback_year: Option<u16>,
+        fallback_year: Option<i32>,
     ) -> Result<NaiveDate, ResolutionError> {
         let year = ast
             .year
@@ -182,6 +182,9 @@ impl TryFrom<ast::Journal> for HIR {
                             ast::CommodityItem::Note(note) => {
                                 global_context.note = Some(note);
                             }
+                            ast::CommodityItem::Unknown(key, Some(value)) if &key == "note" => {
+                                global_context.note = Some(value);
+                            },
                             ast::CommodityItem::Unknown(key, value) => todo!("{key} {value:?}"),
                         }
                     }
@@ -203,10 +206,17 @@ impl TryFrom<ast::Journal> for HIR {
                                     });
                             },
                             ast::AccountItem::Note(note) => global_context.note = Some(note),
-                            ast::AccountItem::Unknown(key, value) => todo!("{key} {value:?}"),
+                            ast::AccountItem::Unknown(_, _) => { /* TODO */ },
                         }
                     }
                 }
+                ast::Entry::Directive(ast::Directive::Alias { alias, account }) => {
+                    new_context = Some({
+                        let mut ctx = context.clone();
+                        ctx.account_aliases.insert(alias, account);
+                        ctx
+                    });
+                },
                 ast::Entry::Transaction(transaction) => {
                     let date = Self::resolve_date(&transaction.date, current_default_year)?;
                     let secondary_date = if let Some(ref d) = transaction.secondary_date {
