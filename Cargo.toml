@@ -27,6 +27,10 @@ harness = false
 name = "serial"
 harness = false
 
+[[bench]]
+name = "queries"
+harness = false
+
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
 rust_decimal = { version = "1.40.0", features = ["macros"] }
