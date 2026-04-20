@@ -23,7 +23,7 @@ pub fn simple(n: usize) -> String {
         let year = 2020 + i / 336;
         out.push_str(&format!(
             "{:04}/{:02}/{:02} Payee {}\n    {}  $ {}\n    {}\n\n",
-            year, month, day, i % 100, amount, debit, credit,
+            year, month, day, i % 100, debit, amount, credit,
         ));
     }
     out

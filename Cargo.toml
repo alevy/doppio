@@ -19,6 +19,10 @@ xz = "0.1.0"
 name = "parse"
 harness = false
 
+[[bench]]
+name = "pipeline"
+harness = false
+
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
 rust_decimal = { version = "1.40.0", features = ["macros"] }
