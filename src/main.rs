@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs::File, io::Read as _, path::PathBuf};
+use std::{collections::BTreeMap, fs::File, io::{Read as _, Write as _}, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use rust_decimal::Decimal;
@@ -58,9 +58,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut file = String::new();
             File::open(source)?.read_to_string(&mut file)?;
             let journal = ledger::compile(&file, parser)?;
-            let output_file = File::create(output)?;
-            let mut output_xz = xz::write::XzEncoder::new(output_file, 6);
-            postcard::to_io(&journal, &mut output_xz)?;
+            let mut output_xz = xz::write::XzEncoder::new(File::create(output)?, 6);
+            {
+                let mut buf = std::io::BufWriter::new(&mut output_xz);
+                postcard::to_io(&journal, &mut buf)?;
+                buf.flush()?;
+            }
+            output_xz.finish()?;
         }
         Commands::Register { source, pattern } => {
             let pattern = pattern.unwrap_or_default().to_lowercase();
