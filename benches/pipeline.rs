@@ -5,7 +5,7 @@ mod data;
 
 fn make_parser() -> ledger::parser::Parser<impl Fn(&str) -> String> {
     ledger::parser::Parser {
-        openner: |_: &str| String::new(),
+        opener: |_: &str| String::new(),
         base_path: PathBuf::new(),
     }
 }
