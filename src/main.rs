@@ -51,6 +51,9 @@ enum Commands {
         /// default tree view.
         #[arg(long, default_value_t = false)]
         flat: bool,
+        /// Output format: text (default), json, or csv.
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 
     /// List individual postings, optionally filtered by account name.
@@ -60,6 +63,9 @@ enum Commands {
     Register {
         source: PathBuf,
         pattern: Option<String>,
+        /// Output format: text (default), json, or csv.
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 
     /// Re-emit the journal as canonical Ledger source text.
@@ -95,6 +101,29 @@ enum Commands {
     Stats {
         source: PathBuf,
     },
+}
+
+/// The set of supported output formats for `balance` and `register`.
+enum OutputFormat {
+    Text,
+    Json,
+    Csv,
+}
+
+impl OutputFormat {
+    /// Parse the format string, returning an error with valid options listed.
+    fn parse(s: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        match s {
+            "text" => Ok(OutputFormat::Text),
+            "json" => Ok(OutputFormat::Json),
+            "csv" => Ok(OutputFormat::Csv),
+            other => Err(format!(
+                "unknown format {:?}; valid options are: text, json, csv",
+                other
+            )
+            .into()),
+        }
+    }
 }
 
 /// Load a [`ledger::Journal`] from either a compiled `.bki` file or a raw
@@ -175,63 +204,113 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             output_xz.finish()?;
         }
-        Commands::Register { source, pattern } => {
+        Commands::Register { source, pattern, format } => {
+            let format = OutputFormat::parse(&format)?;
             let pattern = pattern.unwrap_or_default().to_lowercase();
             let journal = load_journal(&source)?;
             // Per-commodity running total across all matching postings.
             let mut running: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
 
-            for txn in journal.transactions.iter() {
-                // txn.date is Unix epoch days (1970-01-01 = 0); convert back to a
-                // human-readable date string for display.
-                let date = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
-                    .and_then(|epoch| {
-                        epoch.checked_add_signed(chrono::Duration::days(txn.date as i64))
-                    })
-                    .map(|d| d.to_string())
-                    .unwrap_or_else(|| "????-??-??".to_string());
+            match format {
+                OutputFormat::Text => {
+                    for txn in journal.transactions.iter() {
+                        // txn.date is Unix epoch days (1970-01-01 = 0); convert back to a
+                        // human-readable date string for display.
+                        let date = epoch_days_to_string(txn.date);
 
-                for posting in txn.postings.iter() {
-                    if !posting.account.to_lowercase().contains(&pattern) {
-                        continue;
-                    }
+                        for posting in txn.postings.iter() {
+                            if !posting.account.to_lowercase().contains(&pattern) {
+                                continue;
+                            }
 
-                    // Accumulate every commodity in this posting into the running total.
-                    for (commodity, amount) in posting.amount.0.iter() {
-                        *running.entry(commodity.clone()).or_default() += amount;
-                    }
+                            // Accumulate every commodity in this posting into the running total.
+                            for (commodity, amount) in posting.amount.0.iter() {
+                                *running.entry(commodity.clone()).or_default() += amount;
+                            }
 
-                    // Print one output line per commodity in the posting.
-                    // The first line carries date, description, and account;
-                    // subsequent commodity lines are blank in those columns.
-                    let mut commodities = posting.amount.0.iter();
-                    if let Some((commodity, amount)) = commodities.next() {
-                        let amount_str = format!("{} {}", commodity, amount);
-                        let running_str = format!(
-                            "{} {}",
-                            commodity,
-                            running.get(commodity).copied().unwrap_or_default()
-                        );
-                        println!(
-                            "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
-                            date,
-                            txn.description.chars().take(20).collect::<String>(),
-                            posting.account,
-                            amount_str,
-                            running_str,
-                        );
+                            // Print one output line per commodity in the posting.
+                            // The first line carries date, description, and account;
+                            // subsequent commodity lines are blank in those columns.
+                            let mut commodities = posting.amount.0.iter();
+                            if let Some((commodity, amount)) = commodities.next() {
+                                let amount_str = format!("{} {}", commodity, amount);
+                                let running_str = format!(
+                                    "{} {}",
+                                    commodity,
+                                    running.get(commodity).copied().unwrap_or_default()
+                                );
+                                println!(
+                                    "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
+                                    date,
+                                    txn.description.chars().take(20).collect::<String>(),
+                                    posting.account,
+                                    amount_str,
+                                    running_str,
+                                );
+                            }
+                            for (commodity, amount) in commodities {
+                                let amount_str = format!("{} {}", commodity, amount);
+                                let running_str = format!(
+                                    "{} {}",
+                                    commodity,
+                                    running.get(commodity).copied().unwrap_or_default()
+                                );
+                                println!(
+                                    "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
+                                    "", "", "", amount_str, running_str,
+                                );
+                            }
+                        }
                     }
-                    for (commodity, amount) in commodities {
-                        let amount_str = format!("{} {}", commodity, amount);
-                        let running_str = format!(
-                            "{} {}",
-                            commodity,
-                            running.get(commodity).copied().unwrap_or_default()
-                        );
-                        println!(
-                            "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
-                            "", "", "", amount_str, running_str,
-                        );
+                }
+                OutputFormat::Json => {
+                    let mut rows: Vec<serde_json::Value> = Vec::new();
+                    for txn in journal.transactions.iter() {
+                        let date = epoch_days_to_string(txn.date);
+                        for posting in txn.postings.iter() {
+                            if !posting.account.to_lowercase().contains(&pattern) {
+                                continue;
+                            }
+                            for (commodity, amount) in posting.amount.0.iter() {
+                                *running.entry(commodity.clone()).or_default() += amount;
+                                let running_total =
+                                    running.get(commodity).copied().unwrap_or_default();
+                                rows.push(serde_json::json!({
+                                    "date": date,
+                                    "description": txn.description,
+                                    "account": posting.account,
+                                    "commodity": commodity,
+                                    "amount": amount.to_string(),
+                                    "running_total": running_total.to_string(),
+                                }));
+                            }
+                        }
+                    }
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                }
+                OutputFormat::Csv => {
+                    println!("date,description,account,commodity,amount,running_total");
+                    for txn in journal.transactions.iter() {
+                        let date = epoch_days_to_string(txn.date);
+                        for posting in txn.postings.iter() {
+                            if !posting.account.to_lowercase().contains(&pattern) {
+                                continue;
+                            }
+                            for (commodity, amount) in posting.amount.0.iter() {
+                                *running.entry(commodity.clone()).or_default() += amount;
+                                let running_total =
+                                    running.get(commodity).copied().unwrap_or_default();
+                                println!(
+                                    "{},{},{},{},{},{}",
+                                    csv_field(&date),
+                                    csv_field(&txn.description),
+                                    csv_field(&posting.account),
+                                    csv_field(commodity),
+                                    amount,
+                                    running_total,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -326,7 +405,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cleared,
             depth,
             flat,
+            format,
         } => {
+            let format = OutputFormat::parse(&format)?;
             let journal = load_journal(&source)?;
 
             let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
@@ -399,28 +480,86 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            for (account, commodities) in balances.iter() {
-                let indent_depth = account.chars().filter(|&c| c == ':').count();
-                let label: &str = if flat || indent_depth == 0 {
-                    account.as_str()
-                } else {
-                    // Show only the last component in tree mode.
-                    account.rsplit_once(':').map(|(_, last)| last).unwrap_or(account.as_str())
-                };
-                let indent = if flat { 0 } else { indent_depth * 2 };
-                let prefix = " ".repeat(indent);
+            match format {
+                OutputFormat::Text => {
+                    for (account, commodities) in balances.iter() {
+                        let indent_depth = account.chars().filter(|&c| c == ':').count();
+                        let label: &str = if flat || indent_depth == 0 {
+                            account.as_str()
+                        } else {
+                            // Show only the last component in tree mode.
+                            account.rsplit_once(':').map(|(_, last)| last).unwrap_or(account.as_str())
+                        };
+                        let indent = if flat { 0 } else { indent_depth * 2 };
+                        let prefix = " ".repeat(indent);
 
-                let mut commodities = commodities.iter();
-                if let Some((commodity, value)) = commodities.next() {
-                    let balance = format!("{} {value}", commodity);
-                    println!("{balance:>20}  {prefix}{label}");
+                        let mut commodities = commodities.iter();
+                        if let Some((commodity, value)) = commodities.next() {
+                            let balance = format!("{} {value}", commodity);
+                            println!("{balance:>20}  {prefix}{label}");
+                        }
+                        for (commodity, value) in commodities {
+                            let balance = format!("{} {value}", commodity);
+                            println!("{balance:>20}");
+                        }
+                    }
                 }
-                for (commodity, value) in commodities {
-                    let balance = format!("{} {value}", commodity);
-                    println!("{balance:>20}");
+                OutputFormat::Json => {
+                    let rows: Vec<serde_json::Value> = balances
+                        .iter()
+                        .map(|(account, acct_balances)| {
+                            let commodity_amounts: Vec<serde_json::Value> = acct_balances
+                                .iter()
+                                .map(|(commodity, amount)| {
+                                    serde_json::json!({
+                                        "commodity": commodity,
+                                        "amount": amount.to_string(),
+                                    })
+                                })
+                                .collect();
+                            serde_json::json!({
+                                "account": account,
+                                "balances": commodity_amounts,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                }
+                OutputFormat::Csv => {
+                    println!("account,commodity,amount");
+                    for (account, acct_balances) in balances.iter() {
+                        for (commodity, amount) in acct_balances.iter() {
+                            println!(
+                                "{},{},{}",
+                                csv_field(account),
+                                csv_field(commodity),
+                                amount,
+                            );
+                        }
+                    }
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Convert Unix epoch days to a `YYYY-MM-DD` string.
+fn epoch_days_to_string(days: i32) -> String {
+    chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+        .and_then(|epoch| epoch.checked_add_signed(chrono::Duration::days(days as i64)))
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| "????-??-??".to_string())
+}
+
+/// Escape a field for CSV output.
+///
+/// If the value contains a comma, double-quote, or newline it is wrapped in
+/// double-quotes with internal double-quotes doubled per RFC 4180.
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
 }
