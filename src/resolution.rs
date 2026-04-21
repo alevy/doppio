@@ -136,10 +136,6 @@ pub struct ResolutionEntry {
 pub enum Entry {
     /// A double-entry transaction with resolved dates and extracted metadata.
     Transaction(Transaction),
-    /// A price directive (not yet elaborated; placeholder).
-    Price(()),
-    /// A balance assertion directive (not yet elaborated; placeholder).
-    Assertion(()),
 }
 
 /// A transaction with fully resolved dates, tags, and metadata.
@@ -691,7 +687,7 @@ mod resolution_tests {
         let journal = ast::Journal { entries: vec![ast::Entry::Transaction(txn_ast)] };
         let hir = HIR::try_from(journal).unwrap();
 
-        let Entry::Transaction(ref txn) = hir.entries[0].data else { panic!() };
+        let Entry::Transaction(ref txn) = hir.entries[0].data;
         assert_eq!(txn.comments, vec!["just a note"]);
         assert_eq!(txn.metadata.get("Invoice").unwrap(), "42");
         assert_eq!(txn.tags, vec!["groceries"]);

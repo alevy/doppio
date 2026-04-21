@@ -456,8 +456,6 @@ impl TryFrom<resolution::HIR> for Journal {
                         postings: resolved_postings,
                     });
                 }
-                resolution::Entry::Price(()) => todo!(),
-                resolution::Entry::Assertion(()) => todo!(),
             }
         }
 
