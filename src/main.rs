@@ -95,13 +95,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Register { source, pattern } => {
             let pattern = pattern.unwrap_or_default().to_lowercase();
             let journal = load_journal(&source)?;
+            // Per-commodity running total across all matching postings.
+            let mut running: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
+
             for txn in journal.transactions.iter() {
+                // txn.date is Unix epoch days (1970-01-01 = 0); convert back to a
+                // human-readable date string for display.
+                let date = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+                    .and_then(|epoch| {
+                        epoch.checked_add_signed(chrono::Duration::days(txn.date as i64))
+                    })
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|| "????-??-??".to_string());
+
                 for posting in txn.postings.iter() {
-                    if posting.account.to_lowercase().contains(&pattern) {
+                    if !posting.account.to_lowercase().contains(&pattern) {
+                        continue;
+                    }
+
+                    // Accumulate every commodity in this posting into the running total.
+                    for (commodity, amount) in posting.amount.0.iter() {
+                        *running.entry(commodity.clone()).or_default() += amount;
+                    }
+
+                    // Print one output line per commodity in the posting.
+                    // The first line carries date, description, and account;
+                    // subsequent commodity lines are blank in those columns.
+                    let mut commodities = posting.amount.0.iter();
+                    if let Some((commodity, amount)) = commodities.next() {
+                        let amount_str = format!("{} {}", commodity, amount);
+                        let running_str = format!(
+                            "{} {}",
+                            commodity,
+                            running.get(commodity).copied().unwrap_or_default()
+                        );
                         println!(
-                            "{:<20} {:>20}",
+                            "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
+                            date,
+                            txn.description.chars().take(20).collect::<String>(),
                             posting.account,
-                            posting.amount.0.get("$").unwrap()
+                            amount_str,
+                            running_str,
+                        );
+                    }
+                    for (commodity, amount) in commodities {
+                        let amount_str = format!("{} {}", commodity, amount);
+                        let running_str = format!(
+                            "{} {}",
+                            commodity,
+                            running.get(commodity).copied().unwrap_or_default()
+                        );
+                        println!(
+                            "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
+                            "", "", "", amount_str, running_str,
                         );
                     }
                 }
