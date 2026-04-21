@@ -1,6 +1,7 @@
 use std::{collections::{BTreeMap, BTreeSet}, fs::File, io::{Read as _, Write as _}, path::PathBuf};
 
 use clap::{Parser, Subcommand};
+use regex::Regex;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -25,7 +26,7 @@ enum Commands {
         source: PathBuf,
     },
 
-    /// Print the running balance for every account.
+    /// Print the running balance for every account, optionally filtered by account name.
     ///
     /// Accepts either a raw `.ledger` source file or a pre-compiled `.bki`
     /// file. Output is formatted with the commodity and value right-aligned,
@@ -33,8 +34,13 @@ enum Commands {
     ///
     /// By default, output is rendered in tree form with indentation. Pass
     /// `--flat` to revert to the classic single-line-per-account format.
+    /// `PATTERN` is a case-insensitive regular expression matched against the
+    /// account name. Plain substrings are valid regex and match as literals.
+    /// Omit it to show all accounts.
     Balance {
         source: PathBuf,
+        /// Optional case-insensitive regex filter on account names.
+        pattern: Option<String>,
         /// Include only transactions on or after this date (YYYY-MM-DD).
         #[arg(long)]
         begin: Option<String>,
@@ -58,8 +64,9 @@ enum Commands {
 
     /// List individual postings, optionally filtered by account name.
     ///
-    /// `PATTERN` is matched case-insensitively as a substring of the account
-    /// name. Omit it to list all postings.
+    /// `PATTERN` is a case-insensitive regular expression matched against the
+    /// account name. Plain substrings are valid regex and match as literals.
+    /// Omit it to list all postings.
     Register {
         source: PathBuf,
         pattern: Option<String>,
@@ -183,6 +190,19 @@ fn truncate_account(account: &str, depth: usize) -> &str {
     }
 }
 
+/// Compile an optional account-filter pattern into a [`Regex`].
+///
+/// If `pattern` is `None`, returns a regex that matches everything (`.*`).
+/// Otherwise wraps the pattern with `(?i)` for case-insensitive matching.
+/// Returns an error with a clear message if the regex is syntactically invalid.
+fn build_pattern_regex(pattern: Option<String>) -> Result<Regex, Box<dyn std::error::Error>> {
+    let raw = match pattern {
+        Some(p) => format!("(?i){}", p),
+        None => ".*".to_string(),
+    };
+    Regex::new(&raw).map_err(|e| format!("invalid account pattern: {e}").into())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -206,7 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Register { source, pattern, format } => {
             let format = OutputFormat::parse(&format)?;
-            let pattern = pattern.unwrap_or_default().to_lowercase();
+            let re = build_pattern_regex(pattern)?;
             let journal = load_journal(&source)?;
             // Per-commodity running total across all matching postings.
             let mut running: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
@@ -219,7 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let date = epoch_days_to_string(txn.date);
 
                         for posting in txn.postings.iter() {
-                            if !posting.account.to_lowercase().contains(&pattern) {
+                            if !re.is_match(&posting.account) {
                                 continue;
                             }
 
@@ -268,7 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for txn in journal.transactions.iter() {
                         let date = epoch_days_to_string(txn.date);
                         for posting in txn.postings.iter() {
-                            if !posting.account.to_lowercase().contains(&pattern) {
+                            if !re.is_match(&posting.account) {
                                 continue;
                             }
                             for (commodity, amount) in posting.amount.0.iter() {
@@ -293,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for txn in journal.transactions.iter() {
                         let date = epoch_days_to_string(txn.date);
                         for posting in txn.postings.iter() {
-                            if !posting.account.to_lowercase().contains(&pattern) {
+                            if !re.is_match(&posting.account) {
                                 continue;
                             }
                             for (commodity, amount) in posting.amount.0.iter() {
@@ -400,6 +420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Balance {
             source,
+            pattern,
             begin,
             end,
             cleared,
@@ -408,6 +429,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
         } => {
             let format = OutputFormat::parse(&format)?;
+            let re = build_pattern_regex(pattern)?;
             let journal = load_journal(&source)?;
 
             let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
@@ -466,6 +488,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 for posting in txn.postings.iter() {
+                    if !re.is_match(&posting.account) {
+                        continue;
+                    }
                     let account = match depth {
                         Some(d) => truncate_account(&posting.account, d).to_owned(),
                         None => posting.account.clone(),
