@@ -81,6 +81,9 @@ impl<F: Fn(&str) -> String> Parser<F> {
                 Rule::historical_price => {
                     entries.push(Entry::HistoricalPrice(parse_historical_price(pair)));
                 }
+                Rule::assertion_directive => {
+                    entries.push(Entry::Assertion(parse_assertion_directive(pair)));
+                }
                 Rule::include_directive => {
                     // Join the included path with the current base directory so
                     // relative paths (e.g. "include accounts/*.ledger") work
@@ -123,6 +126,16 @@ pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
         base_path: PathBuf::new(),
     }
     .parse(input)
+}
+
+fn parse_assertion_directive(pair: Pair<Rule>) -> AssertionDirective {
+    let mut inner = pair.into_inner();
+    let date = parse_date(&mut inner.next().unwrap().into_inner());
+    let op_pair = inner.next().unwrap();
+    let strict = op_pair.as_str() == "==";
+    let account = inner.next().unwrap().as_str().trim().to_string();
+    let amount = parse_expr(inner.next().unwrap());
+    AssertionDirective { date, account, amount, strict }
 }
 
 fn parse_historical_price(pair: Pair<Rule>) -> HistoricalPrice {
@@ -919,5 +932,36 @@ mod directed_tests {
         };
         assert_eq!(hp.date.month, 3);
         assert_eq!(hp.date.date, 17);
+    }
+
+    #[test]
+    fn test_assertion_directive_weak() {
+        let input = "2024-01-15 = Assets:Checking  $1000.00\n";
+        let journal = parse_ledger(input).unwrap();
+        assert_eq!(journal.entries.len(), 1);
+        let Entry::Assertion(ref a) = journal.entries[0] else {
+            panic!("expected Assertion, got {:?}", journal.entries[0]);
+        };
+        assert_eq!(a.date.year, Some(2024));
+        assert_eq!(a.date.month, 1);
+        assert_eq!(a.date.date, 15);
+        assert_eq!(a.account, "Assets:Checking");
+        assert!(!a.strict, "= should be non-strict");
+        assert!(matches!(
+            a.amount,
+            ValueExpr::Amount { commodity: Some(ref c), .. } if c == "$"
+        ));
+    }
+
+    #[test]
+    fn test_assertion_directive_strict() {
+        let input = "2024-06-30 == Liabilities:CreditCard  $-500.00\n";
+        let journal = parse_ledger(input).unwrap();
+        assert_eq!(journal.entries.len(), 1);
+        let Entry::Assertion(ref a) = journal.entries[0] else {
+            panic!("expected Assertion");
+        };
+        assert_eq!(a.account, "Liabilities:CreditCard");
+        assert!(a.strict, "== should be strict");
     }
 }

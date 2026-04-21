@@ -141,6 +141,25 @@ pub struct ResolutionEntry {
 pub enum Entry {
     /// A double-entry transaction with resolved dates and extracted metadata.
     Transaction(Transaction),
+    /// A standalone balance assertion directive.
+    Assertion(AssertionDirective),
+}
+
+/// A resolved standalone balance assertion directive.
+///
+/// Asserts that `account` holds `amount` on `date`. The assertion is stored
+/// in the HIR for use by the elaboration stage; enforcement is a follow-up
+/// (tracked in issue #37).
+#[derive(Debug)]
+pub struct AssertionDirective {
+    /// The date at which the balance assertion applies.
+    pub date: chrono::NaiveDate,
+    /// The account whose balance is being asserted.
+    pub account: String,
+    /// The expected balance as an unevaluated expression.
+    pub amount: ast::ValueExpr,
+    /// `true` if `==` (strict), `false` if `=` (weak).
+    pub strict: bool,
 }
 
 /// A transaction with fully resolved dates, tags, and metadata.
@@ -590,6 +609,16 @@ impl TryFrom<ast::Journal> for HIR {
                         price: hp.price,
                     });
                 }
+                ast::Entry::Assertion(a) => {
+                    let date = Self::resolve_date(&a.date, current_default_year)?;
+                    let data = Entry::Assertion(AssertionDirective {
+                        date,
+                        account: a.account,
+                        amount: a.amount,
+                        strict: a.strict,
+                    });
+                    result.entries.push(ResolutionEntry { context_id, data });
+                }
             }
 
             // If any directive modified the alias/default state, push a new
@@ -755,7 +784,9 @@ mod resolution_tests {
         let journal = ast::Journal { entries: vec![ast::Entry::Transaction(txn_ast)] };
         let hir = HIR::try_from(journal).unwrap();
 
-        let Entry::Transaction(ref txn) = hir.entries[0].data;
+        let Entry::Transaction(ref txn) = hir.entries[0].data else {
+            panic!("expected a Transaction entry");
+        };
         assert_eq!(txn.comments, vec!["just a note"]);
         assert_eq!(txn.metadata.get("Invoice").unwrap(), "42");
         assert_eq!(txn.tags, vec!["groceries"]);
@@ -898,5 +929,35 @@ mod resolution_tests {
         assert_eq!(hir.entries[0].context_id, 0, "tx before define should use context 0");
         assert_eq!(hir.entries[1].context_id, 1, "tx after define should use context 1");
         assert!(hir.contexts[1].defines.contains_key("budget"));
+    }
+
+    #[test]
+    fn test_assertion_directive_resolution() {
+        use chrono::Datelike;
+
+        let assertion_ast = ast::AssertionDirective {
+            date: ast::Date { year: Some(2024), month: 3, date: 31 },
+            account: "Assets:Checking".into(),
+            amount: ast::ValueExpr::amount(
+                rust_decimal::Decimal::from(1000),
+                "$".into(),
+            ),
+            strict: true,
+        };
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::Assertion(assertion_ast)],
+        };
+        let hir = HIR::try_from(journal).unwrap();
+
+        assert_eq!(hir.entries.len(), 1);
+        let Entry::Assertion(ref a) = hir.entries[0].data else {
+            panic!("expected Assertion entry");
+        };
+        assert_eq!(a.date.year(), 2024);
+        assert_eq!(a.date.month(), 3);
+        assert_eq!(a.date.day(), 31);
+        assert_eq!(a.account, "Assets:Checking");
+        assert!(a.strict);
+        assert!(matches!(a.amount, ast::ValueExpr::Amount { commodity: Some(ref c), .. } if c == "$"));
     }
 }
