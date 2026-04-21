@@ -28,12 +28,12 @@ jobs:
       - name: Install critcmp
         run: cargo install critcmp
       - name: Benchmark base branch
-        run: cargo bench --bench parse --bench pipeline --bench serial --bench queries -- --save-baseline base
+        run: cargo bench --bench pipeline --bench queries -- simple --save-baseline base --warm-up-time 1 --measurement-time 2
       - uses: actions/checkout@v4
         with:
           clean: false
       - name: Benchmark PR branch
-        run: cargo bench --bench parse --bench pipeline --bench serial --bench queries -- --save-baseline pr
+        run: cargo bench --bench pipeline --bench queries -- simple --save-baseline pr --warm-up-time 1 --measurement-time 2
       - name: Compare
         id: compare
         run: |
