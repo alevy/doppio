@@ -192,8 +192,9 @@ account_val = @{ (!NEWLINE ~ ANY)* }
 // A top-level "alias short = long" shorthand for account names.
 alias_directive = ${ "alias" ~ ws+ ~ account ~ ws* ~ "=" ~ ws* ~ account ~ (ws+ ~ note)? ~ (NEWLINE | EOI) }
 
-// Consumed but not elaborated.
-define_directive = @{ "define" ~ ws+ ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }
+// A define directive: "define name = expr"
+// Associates a name with a value expression usable in posting amounts.
+define_directive = ${ "define" ~ ws+ ~ identifier ~ ws* ~ "=" ~ ws* ~ value_expr ~ (NEWLINE | EOI) }
 
 // Include another file by path (glob patterns are resolved in parser.rs).
 include_directive = ${ "include" ~ ws+ ~ filename ~ (NEWLINE | EOI) }

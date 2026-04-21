@@ -75,6 +75,9 @@ impl<F: Fn(&str) -> String> Parser<F> {
                 Rule::alias_directive => {
                     entries.push(Entry::Directive(parse_alias_directive(pair)));
                 }
+                Rule::define_directive => {
+                    entries.push(Entry::Directive(parse_define_directive(pair)));
+                }
                 Rule::historical_price => {
                     entries.push(Entry::HistoricalPrice(parse_historical_price(pair)));
                 }
@@ -151,6 +154,15 @@ fn parse_alias_directive(pair: Pair<Rule>) -> Directive {
     let alias = pairs.next().unwrap().as_str().trim().to_string();
     let account = pairs.next().unwrap().as_str().trim().to_string();
     Directive::Alias { alias, account }
+}
+
+fn parse_define_directive(pair: Pair<Rule>) -> Directive {
+    let mut pairs = pair.into_inner();
+    // The grammar rule is: identifier ~ "=" ~ value_expr
+    let name = pairs.next().unwrap().as_str().to_string();
+    let expr_pair = pairs.next().unwrap();
+    let expr = parse_expr(expr_pair);
+    Directive::Define { name, expr }
 }
 
 fn parse_account_directive(pair: Pair<Rule>) -> Directive {
