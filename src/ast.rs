@@ -9,7 +9,10 @@
 use std::{collections::BTreeMap, fmt::Display};
 
 use chrono::{Datelike, NaiveDate};
+use pest::Parser as PestParser;
 use rust_decimal::Decimal;
+
+use crate::parser::{self, LedgerParser};
 
 /// The root of a parsed ledger file.
 ///
@@ -439,6 +442,22 @@ impl ValueExpr {
             commodity: Some(commodity),
         }
     }
+
+    /// Parse a Ledger value expression from a string.
+    ///
+    /// Useful for testing or standalone expression evaluation without
+    /// going through the full journal parser.
+    ///
+    /// # Example
+    /// ```
+    /// # use ledger::ast::ValueExpr;
+    /// let expr = ValueExpr::parse("100 USD").unwrap();
+    /// ```
+    pub fn parse(input: &str) -> Result<ValueExpr, pest::error::Error<parser::Rule>> {
+        let mut pairs = LedgerParser::parse(parser::Rule::value_expr, input)?;
+        let pair = pairs.next().unwrap();
+        Ok(parser::parse_expr(pair))
+    }
 }
 
 impl<S: Into<String>> From<(Decimal, S)> for ValueExpr {
@@ -519,5 +538,44 @@ mod tests {
         assert!(out.contains("    ; a note"), "note should have 4-space indent, got:\n{out}");
         // Posting line uses 4-space indent
         assert!(out.contains("    Assets:Bank"), "posting should have 4-space indent, got:\n{out}");
+    }
+
+    #[test]
+    fn test_value_expr_parse_amount() {
+        let expr = ValueExpr::parse("100 USD").unwrap();
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: "100".parse().unwrap(),
+                commodity: Some("USD".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_value_expr_parse_prefixed_commodity() {
+        let expr = ValueExpr::parse("$50").unwrap();
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: "50".parse().unwrap(),
+                commodity: Some("$".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_value_expr_parse_arithmetic() {
+        // Should parse without error and produce a Binary node
+        let expr = ValueExpr::parse("10 + 5 USD").unwrap();
+        assert!(
+            matches!(expr, ValueExpr::Binary { .. } | ValueExpr::Typed { .. }),
+            "expected Binary or Typed, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn test_value_expr_parse_error() {
+        assert!(ValueExpr::parse("@@@invalid").is_err());
     }
 }

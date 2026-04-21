@@ -399,7 +399,7 @@ static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
 /// This two-step approach is necessary because the trailing commodity is
 /// outside the `expr` rule and therefore invisible to the Pratt parser —
 /// it needs to be lifted into a `ValueExpr::Typed` wrapper here.
-fn parse_expr(pair: Pair<Rule>) -> ValueExpr {
+pub(crate) fn parse_expr(pair: Pair<Rule>) -> ValueExpr {
     let mut inner = pair.into_inner();
     let expr_pair = inner.next().expect("Empty value_expr");
     let mut ast = run_pratt(expr_pair.into_inner());
