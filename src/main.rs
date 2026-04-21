@@ -30,6 +30,9 @@ enum Commands {
     /// Accepts either a raw `.ledger` source file or a pre-compiled `.bki`
     /// file. Output is formatted with the commodity and value right-aligned,
     /// followed by the account name.
+    ///
+    /// By default, output is rendered in tree form with indentation. Pass
+    /// `--flat` to revert to the classic single-line-per-account format.
     Balance {
         source: PathBuf,
         /// Include only transactions on or after this date (YYYY-MM-DD).
@@ -41,6 +44,13 @@ enum Commands {
         /// Include only cleared transactions.
         #[arg(long)]
         cleared: bool,
+        /// Collapse accounts deeper than N colon-separated levels into their parent.
+        #[arg(long)]
+        depth: Option<usize>,
+        /// Print flat output (full account names, no indentation) instead of the
+        /// default tree view.
+        #[arg(long, default_value_t = false)]
+        flat: bool,
     },
 
     /// List individual postings, optionally filtered by account name.
@@ -111,6 +121,36 @@ fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::E
         let mut file = String::new();
         File::open(path)?.read_to_string(&mut file)?;
         Ok(ledger::compile(&file, parser)?)
+    }
+}
+
+/// Truncate an account name to at most `depth` colon-separated components.
+///
+/// Returns a subslice of `account` ending at the position of the `depth`-th
+/// colon, or the full string if it has fewer than `depth` components.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(truncate_account("Expenses:Food:Restaurants", 2), "Expenses:Food");
+/// assert_eq!(truncate_account("Assets:Checking", 1), "Assets");
+/// assert_eq!(truncate_account("Assets", 1), "Assets");
+/// ```
+fn truncate_account(account: &str, depth: usize) -> &str {
+    let mut colon_pos = None;
+    let mut count = 0;
+    for (i, c) in account.char_indices() {
+        if c == ':' {
+            count += 1;
+            if count == depth {
+                colon_pos = Some(i);
+                break;
+            }
+        }
+    }
+    match colon_pos {
+        Some(pos) => &account[..pos],
+        None => account,
     }
 }
 
@@ -284,6 +324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             begin,
             end,
             cleared,
+            depth,
+            flat,
         } => {
             let journal = load_journal(&source)?;
 
@@ -313,7 +355,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .transpose()?;
 
-            let mut balances: BTreeMap<&String, BTreeMap<&String, rust_decimal::Decimal>> =
+            // Balances keyed by owned account name so depth-truncation can
+            // produce new strings that aren't borrowed from the journal.
+            let mut balances: BTreeMap<String, BTreeMap<String, rust_decimal::Decimal>> =
                 BTreeMap::new();
 
             for txn in journal.transactions.iter() {
@@ -341,22 +385,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 for posting in txn.postings.iter() {
+                    let account = match depth {
+                        Some(d) => truncate_account(&posting.account, d).to_owned(),
+                        None => posting.account.clone(),
+                    };
                     for (commodity, amount) in posting.amount.0.iter() {
                         *(balances
-                            .entry(&posting.account)
+                            .entry(account.clone())
                             .or_default()
-                            .entry(commodity)
+                            .entry(commodity.clone())
                             .or_default()) += *amount;
                     }
                 }
             }
-            for (account, balances) in balances.iter() {
-                let mut balances = balances.iter();
-                if let Some((commodity, value)) = balances.next() {
+
+            for (account, commodities) in balances.iter() {
+                let indent_depth = account.chars().filter(|&c| c == ':').count();
+                let label: &str = if flat || indent_depth == 0 {
+                    account.as_str()
+                } else {
+                    // Show only the last component in tree mode.
+                    account.rsplit_once(':').map(|(_, last)| last).unwrap_or(account.as_str())
+                };
+                let indent = if flat { 0 } else { indent_depth * 2 };
+                let prefix = " ".repeat(indent);
+
+                let mut commodities = commodities.iter();
+                if let Some((commodity, value)) = commodities.next() {
                     let balance = format!("{} {value}", commodity);
-                    println!("{balance:>20}  {}", account,);
+                    println!("{balance:>20}  {prefix}{label}");
                 }
-                for (commodity, value) in balances {
+                for (commodity, value) in commodities {
                     let balance = format!("{} {value}", commodity);
                     println!("{balance:>20}");
                 }
