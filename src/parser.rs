@@ -1,3 +1,18 @@
+//! Parsing stage: convert raw Ledger source text into an [`ast::Journal`].
+//!
+//! This module has two layers:
+//!
+//! 1. **[`LedgerParser`]** — a `pest`-derived parser that tokenises source
+//!    text according to the grammar in `ledger.pest`.
+//! 2. **[`Parser<F>`]** — the public API that wraps `LedgerParser`, walks
+//!    the pair tree, handles `include` directives recursively, and builds
+//!    the [`ast::Journal`].
+//!
+//! Amount expressions (see [`ast::ValueExpr`]) are parsed using a **Pratt
+//! parser** ([`PRATT_PARSER`]) to apply operator precedence: `*` and `/`
+//! bind tighter than `+` and `-`. The grammar itself treats the token
+//! sequence as flat — precedence is applied as a post-processing step.
+
 use crate::ast::*;
 use pest::Parser as _;
 use pest::iterators::{Pair, Pairs};
@@ -7,16 +22,38 @@ use rust_decimal::Decimal;
 use std::path::PathBuf;
 use std::sync::LazyLock; // Or once_cell
 
+/// The raw pest parser generated from `ledger.pest` via `pest_derive`.
+///
+/// This type is only used internally by [`Parser<F>::parse`]. Callers
+/// should use [`Parser`] or the convenience function [`parse_ledger`].
 #[derive(Parser)]
 #[grammar = "ledger.pest"]
 pub struct LedgerParser;
 
+/// A stateful parser that resolves `include` directives.
+///
+/// The generic parameter `F` is the file-opener: a callable that accepts a
+/// file-system path (potentially a glob pattern) and returns its contents as
+/// a `String`. This design makes the parser testable without touching the
+/// file system — pass `|_| String::new()` for a no-op opener.
 pub struct Parser<F: Fn(&str) -> String> {
-    pub openner: F,
+    /// Called with an absolute path (or glob pattern) to load included files.
+    /// The path passed in may contain glob wildcards when the source uses
+    /// `include path/to/*.ledger`.
+    pub opener: F,
+    /// The directory of the file currently being parsed. Used to resolve
+    /// relative paths in `include` directives.
     pub base_path: PathBuf,
 }
 
 impl<F: Fn(&str) -> String> Parser<F> {
+    /// Parse `input` (Ledger-format source text) into an [`ast::Journal`].
+    ///
+    /// `include` directives are expanded inline: the included file's entries
+    /// are inserted at the position of the directive in the parent journal.
+    /// The `base_path` and `opener` fields are used to locate included files.
+    ///
+    /// Returns a `pest` parse error if the source is syntactically invalid.
     pub fn parse(&mut self, input: &str) -> Result<Journal, pest::error::Error<Rule>> {
         let pairs = LedgerParser::parse(Rule::journal, input)?;
         let mut entries = Vec::new();
@@ -39,14 +76,21 @@ impl<F: Fn(&str) -> String> Parser<F> {
                     entries.push(Entry::Directive(parse_alias_directive(pair)));
                 }
                 Rule::include_directive => {
+                    // Join the included path with the current base directory so
+                    // relative paths (e.g. "include accounts/*.ledger") work
+                    // regardless of the process working directory.
                     let include_path = self.base_path.join(pair.into_inner().as_str());
-                    let new_input = (self.openner)(include_path.as_os_str().to_str().unwrap());
+                    let new_input = (self.opener)(include_path.as_os_str().to_str().unwrap());
+                    // Temporarily update base_path to the included file's directory
+                    // so that any further includes within it are resolved correctly.
                     let new_base_path = include_path
                         .parent()
                         .map(|p| self.base_path.join(p))
                         .unwrap_or(self.base_path.clone());
                     let old_base_path = std::mem::replace(&mut self.base_path, new_base_path);
                     entries.append(&mut self.parse(&new_input)?.entries);
+                    // Restore the original base_path for subsequent entries in
+                    // the parent file.
                     let _ = std::mem::replace(&mut self.base_path, old_base_path);
                 }
                 _ => {}
@@ -57,9 +101,13 @@ impl<F: Fn(&str) -> String> Parser<F> {
     }
 }
 
+/// Convenience function: parse Ledger source with no `include` support.
+///
+/// Useful in tests and benchmarks where a self-contained string is parsed
+/// and no file I/O is needed.
 pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
     Parser {
-        openner: |_| String::new(),
+        opener: |_| String::new(),
         base_path: PathBuf::new(),
     }
     .parse(input)
@@ -268,6 +316,8 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
                         value = Some(parse_expr(p));
                     }
                     Rule::lot_price => {
+                        // Inspect the raw text to distinguish "@" from "@@"
+                        // before descending into the inner value_expr.
                         let s = p.as_str();
                         let inner_val = parse_expr(p.into_inner().next().unwrap());
                         if s.starts_with("@@") {
@@ -298,6 +348,12 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
     }
 }
 
+// The Pratt parser is constructed once at program start via LazyLock.
+//
+// Building a PrattParser allocates and organises a precedence table.
+// Since this is called for every value expression in every posting, and
+// the table never changes, it is far cheaper to build it once and share
+// the reference across all calls than to rebuild it on each invocation.
 static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
     use Rule::*;
     use pest::pratt_parser::{Assoc::*, Op};
@@ -308,6 +364,14 @@ static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
         .op(Op::prefix(prefix_op))
 });
 
+/// Parse a `value_expr` pair into a [`ValueExpr`] AST node.
+///
+/// The grammar's `value_expr` rule is `expr (ws+ commodity)?`. The Pratt
+/// parser handles the `expr` part (operator precedence), and then we check
+/// for a trailing commodity annotation *after* Pratt parsing completes.
+/// This two-step approach is necessary because the trailing commodity is
+/// outside the `expr` rule and therefore invisible to the Pratt parser —
+/// it needs to be lifted into a `ValueExpr::Typed` wrapper here.
 fn parse_expr(pair: Pair<Rule>) -> ValueExpr {
     let mut inner = pair.into_inner();
     let expr_pair = inner.next().expect("Empty value_expr");
@@ -329,15 +393,18 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
             Rule::term => run_pratt(pair.into_inner()),
             Rule::primary => {
                 let mut inner = pair.into_inner();
-                // Get the base atom (Amount, Function, String, etc.)
-                // Note: base_primary is silent, so we get its child directly
+                // base_primary is a silent rule, so its child arrives directly
+                // as the first item in `inner`. We re-enter run_pratt for the
+                // base atom so that all the match arms below can be reused.
                 let base_pair = inner.next().expect("Primary must have a base");
 
-                // Recursively parse the base using run_pratt
-                // We wrap it in a single-item iterator to reuse our logic
+                // Wrap base_pair in a single-item Pairs so we can pass it to
+                // run_pratt, which expects a Pairs iterator.
                 let mut ast = run_pratt(pest::iterators::Pairs::single(base_pair));
 
-                // 3. Fold any dot-accessors into the AST
+                // Fold dot-access chains left-to-right into nested Access nodes.
+                // Iterative rather than recursive because chains are arbitrary
+                // length and we want left-associativity without stack growth.
                 for access in inner {
                     if access.as_rule() == Rule::access {
                         let field = access.into_inner().next().unwrap().as_str().to_string();
@@ -353,6 +420,7 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
                 let mut inner = pair.into_inner();
                 let first = inner.next().unwrap();
                 match first.as_rule() {
+                    // Prefix-commodity form: "$100" — commodity comes first
                     Rule::commodity => {
                         let comm = first.as_str().to_string();
                         let val_str = inner.next().unwrap().as_str();
@@ -361,6 +429,7 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
                             commodity: Some(comm),
                         }
                     }
+                    // Number-first form: "100 USD" or bare "100"
                     Rule::number => {
                         let val = clean_parse_decimal(first.as_str());
                         let comm = inner.next().map(|c| c.as_str().to_string());
@@ -376,7 +445,8 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
             Rule::function_call => {
                 let mut inner = pair.into_inner();
                 let name = inner.next().unwrap().as_str().to_string();
-                // Function args are Rule::expr. run_pratt handles Rule::expr pairs.
+                // Each argument is a full `expr` — recurse via run_pratt so
+                // arithmetic inside function arguments is also parsed correctly.
                 let args = inner.map(|p| run_pratt(p.into_inner())).collect();
                 ValueExpr::Function { name, args }
             }
@@ -409,6 +479,12 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
         .parse(pairs)
 }
 
+/// Parse a decimal number, stripping comma thousand-separators first.
+///
+/// The Ledger format allows numbers like `1,234.56`. Rust's `Decimal::parse`
+/// does not accept commas, so we remove them before parsing. Falls back to
+/// zero if parsing still fails (which should not happen for well-formed grammar
+/// output, but avoids a panic in error paths).
 fn clean_parse_decimal(s: &str) -> Decimal {
     let cleaned = s.replace(',', "");
     cleaned.parse().unwrap_or(Decimal::ZERO)
