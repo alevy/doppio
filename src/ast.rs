@@ -81,6 +81,16 @@ pub enum Directive {
         /// The full account name it expands to.
         account: String,
     },
+    /// A `define name = expr` named value alias.
+    ///
+    /// After this directive, any occurrence of `name` in a value expression
+    /// is substituted with the stored `expr` during elaboration.
+    Define {
+        /// The alias name (a plain identifier).
+        name: String,
+        /// The value expression the name expands to.
+        expr: ValueExpr,
+    },
 }
 
 /// A single key/value item inside a `commodity` directive block.

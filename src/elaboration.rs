@@ -721,9 +721,17 @@ mod evaluator {
                 _ => Err(EvaluationError::UnknownFunctionArgs((name, args))),
             },
 
-            // A bare commodity symbol — returned as-is; the Binary handler
-            // above resolves it when combined with an adjacent number.
-            c @ ast::ValueExpr::Commodity(_) => Ok(c),
+            // A bare commodity symbol or identifier. If the name matches a
+            // `define` alias in the active context, substitute and re-evaluate
+            // the stored expression. Otherwise return the Commodity as-is;
+            // the Binary handler above resolves it when paired with a number.
+            ast::ValueExpr::Commodity(ref name) => {
+                if let Some(defined_expr) = eval_context.defines.get(name.as_str()) {
+                    eval(defined_expr.clone(), eval_context, state)
+                } else {
+                    Ok(val)
+                }
+            }
 
             ast::ValueExpr::Typed {
                 expr,
@@ -832,5 +840,114 @@ mod tests {
         assert_eq!(price.commodity, "AAPL");
         assert_eq!(price.price, rust_decimal::Decimal::from(182));
         assert_eq!(price.price_commodity, "$");
+    }
+
+    /// Parse a ledger journal string through the full pipeline and return the
+    /// elaborated `Journal`. Panics on any parse/resolution/elaboration error.
+    fn elaborate(input: &str) -> Journal {
+        use crate::{parser::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        Journal::try_from(hir).expect("elaboration failed")
+    }
+
+    #[test]
+    fn test_define_simple_amount_alias() {
+        // `monthly_rent` is defined as $1500.00 and used in a posting amount.
+        let input = "\
+define monthly_rent = $1500.00
+
+2024-01-01 Rent Payment
+    Expenses:Rent  monthly_rent
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        // The Expenses:Rent posting should have $1500.00
+        let rent_posting = tx.postings.iter().find(|p| p.account == "Expenses:Rent").unwrap();
+        assert_eq!(
+            rent_posting.amount.0.get("$").copied(),
+            Some(dec!(1500.00)),
+            "define alias should expand to $1500.00"
+        );
+        // Assets:Checking should be the balancing null posting: -$1500.00
+        let checking_posting =
+            tx.postings.iter().find(|p| p.account == "Assets:Checking").unwrap();
+        assert_eq!(
+            checking_posting.amount.0.get("$").copied(),
+            Some(dec!(-1500.00)),
+            "balancing posting should be -$1500.00"
+        );
+    }
+
+    #[test]
+    fn test_define_used_in_arithmetic_expression() {
+        // Aliases can appear inside arithmetic: `2 * base_amount`.
+        let input = "\
+define base_amount = 100 USD
+
+2024-02-01 Double Amount
+    Expenses:Food  2 * base_amount
+    Assets:Cash
+";
+        // The expression `2 * base_amount` becomes `2 * 100 USD` = `200 USD`.
+        // Note: `base_amount` parses as Commodity("base_amount"); after define
+        // substitution it becomes Amount{100, Some("USD")}.
+        // `2` parses as Amount{2, None}. Mul of (None, USD) → 200 USD.
+        let journal = elaborate(input);
+        let tx = &journal.transactions[0];
+        let food = tx.postings.iter().find(|p| p.account == "Expenses:Food").unwrap();
+        assert_eq!(
+            food.amount.0.get("USD").copied(),
+            Some(dec!(200)),
+            "2 * define alias should expand to 200 USD"
+        );
+    }
+
+    #[test]
+    fn test_define_does_not_affect_earlier_transactions() {
+        // A define directive must not retroactively affect transactions that
+        // appeared before it in the source file.
+        //
+        // We test this by parsing a transaction where `myval` is NOT yet
+        // defined — it should be treated as a bare commodity rather than an
+        // alias, causing an evaluation error (non-amount commodity alone does
+        // not balance). The transaction after the define succeeds.
+        //
+        // Actually: a bare Commodity alone won't resolve to an amount, so the
+        // first transaction would fail to elaborate. Instead, use an explicit
+        // amount for the first transaction and verify the define is only in
+        // context 1 via the HIR, not context 0.
+        use crate::{parser::parse_ledger, resolution::HIR};
+
+        let input = "\
+2024-01-01 Before Define
+    Expenses:A  $10.00
+    Assets:Cash
+
+define myval = $99.00
+
+2024-01-02 After Define
+    Expenses:B  myval
+    Assets:Cash
+";
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+
+        // There should be 2 contexts (0 = initial, 1 = after define).
+        assert_eq!(hir.contexts.len(), 2);
+        // First transaction references context 0 — no defines.
+        assert_eq!(hir.entries[0].context_id, 0);
+        assert!(hir.contexts[0].defines.is_empty());
+        // Second transaction references context 1 — has the define.
+        assert_eq!(hir.entries[1].context_id, 1);
+        assert!(hir.contexts[1].defines.contains_key("myval"));
+
+        // Elaboration should succeed end-to-end.
+        let journal = Journal::try_from(hir).expect("elaboration failed");
+        let after_tx = &journal.transactions[1];
+        let b_posting = after_tx.postings.iter().find(|p| p.account == "Expenses:B").unwrap();
+        assert_eq!(b_posting.amount.0.get("$").copied(), Some(dec!(99.00)));
     }
 }

@@ -91,6 +91,11 @@ pub struct Context {
     pub commodity_aliases: BTreeMap<String, String>,
     /// The commodity assumed when a posting amount has no explicit commodity.
     pub default_commodity: Option<String>,
+    /// Named value aliases defined with `define name = expr`.
+    ///
+    /// During elaboration, a bare identifier in a value expression is looked
+    /// up here and substituted with the stored expression.
+    pub defines: BTreeMap<String, ast::ValueExpr>,
 }
 
 /// Global properties of commodities and accounts that are shared across all
@@ -529,6 +534,13 @@ impl TryFrom<ast::Journal> for HIR {
                         ctx
                     });
                 }
+                ast::Entry::Directive(ast::Directive::Define { name, expr }) => {
+                    new_context = Some({
+                        let mut ctx = new_context.unwrap_or_else(|| context.clone());
+                        ctx.defines.insert(name, expr);
+                        ctx
+                    });
+                }
                 ast::Entry::Transaction(transaction) => {
                     let date = Self::resolve_date(&transaction.date, current_default_year)?;
                     let secondary_date = if let Some(ref d) = transaction.secondary_date {
@@ -825,5 +837,66 @@ mod resolution_tests {
         assert!(rendered.contains("10.50"), "expected '10.50' in: {rendered}");
         assert!(rendered.contains("$"), "expected '$' in: {rendered}");
         assert!(rendered.contains("Expenses:Food"), "expected account in: {rendered}");
+    }
+
+    #[test]
+    fn test_define_directive_stored_in_context() {
+        // A `define` directive should populate `Context::defines` and push
+        // a new context version, just like other alias-modifying directives.
+        let expr = ast::ValueExpr::Amount {
+            value: rust_decimal::Decimal::from(1500),
+            commodity: Some("$".into()),
+        };
+        let journal = ast::Journal {
+            entries: vec![
+                ast::Entry::Directive(ast::Directive::Define {
+                    name: "monthly_rent".into(),
+                    expr: expr.clone(),
+                }),
+            ],
+        };
+
+        let hir = HIR::try_from(journal).unwrap();
+
+        // A new context should have been pushed for the define directive.
+        assert_eq!(hir.contexts.len(), 2);
+        assert_eq!(
+            hir.contexts[1].defines.get("monthly_rent"),
+            Some(&expr),
+            "define should be stored in the new context"
+        );
+        // The original context must not be affected.
+        assert!(hir.contexts[0].defines.is_empty());
+    }
+
+    #[test]
+    fn test_define_directive_context_versioning() {
+        // Transactions before a `define` see the old context; those after see
+        // the context that includes the define.
+        let tx_ast = ast::Transaction {
+            date: ast::Date { year: Some(2024), month: 1, date: 1 },
+            description: "Tx".into(),
+            ..Default::default()
+        };
+        let expr = ast::ValueExpr::Amount {
+            value: rust_decimal::Decimal::from(500),
+            commodity: Some("$".into()),
+        };
+        let journal = ast::Journal {
+            entries: vec![
+                ast::Entry::Transaction(tx_ast.clone()),
+                ast::Entry::Directive(ast::Directive::Define {
+                    name: "budget".into(),
+                    expr: expr.clone(),
+                }),
+                ast::Entry::Transaction(tx_ast),
+            ],
+        };
+
+        let hir = HIR::try_from(journal).unwrap();
+
+        assert_eq!(hir.entries[0].context_id, 0, "tx before define should use context 0");
+        assert_eq!(hir.entries[1].context_id, 1, "tx after define should use context 1");
+        assert!(hir.contexts[1].defines.contains_key("budget"));
     }
 }
