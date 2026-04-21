@@ -425,10 +425,7 @@ pub enum ValueExpr {
     ///
     /// Only `+` and `-` are meaningful on amounts; `*` and `/` produce an
     /// [`EvaluationError`](crate::elaboration::EvaluationError).
-    Unary {
-        op: Op,
-        expr: Box<ValueExpr>,
-    },
+    Unary { op: Op, expr: Box<ValueExpr> },
 
     /// An infix binary operator applied to two sub-expressions.
     Binary {
@@ -438,10 +435,7 @@ pub enum ValueExpr {
     },
 
     /// A function call, e.g. `account("Assets:Bank")` or `scrub(100 USD)`.
-    Function {
-        name: String,
-        args: Vec<ValueExpr>,
-    },
+    Function { name: String, args: Vec<ValueExpr> },
 
     /// A bare commodity symbol that appears without an adjacent number,
     /// e.g. in `$-123` the `$` is parsed as a `Commodity` and `123` as
@@ -461,10 +455,7 @@ pub enum ValueExpr {
     Str(String),
 
     /// Field access on an object expression: `account("Foo").total`.
-    Access {
-        expr: Box<ValueExpr>,
-        field: String,
-    },
+    Access { expr: Box<ValueExpr>, field: String },
 }
 
 impl ValueExpr {
@@ -536,10 +527,26 @@ mod tests {
 
     #[test]
     fn test_date_ordering() {
-        let d1 = Date { year: Some(2024), month: 1, date: 1 };
-        let d2 = Date { year: Some(2024), month: 6, date: 15 };
-        let d3 = Date { year: Some(2025), month: 1, date: 1 };
-        let d4 = Date { year: Some(2024), month: 1, date: 1 };
+        let d1 = Date {
+            year: Some(2024),
+            month: 1,
+            date: 1,
+        };
+        let d2 = Date {
+            year: Some(2024),
+            month: 6,
+            date: 15,
+        };
+        let d3 = Date {
+            year: Some(2025),
+            month: 1,
+            date: 1,
+        };
+        let d4 = Date {
+            year: Some(2024),
+            month: 1,
+            date: 1,
+        };
 
         assert!(d1 < d2);
         assert!(d2 < d3);
@@ -555,12 +562,19 @@ mod tests {
     #[test]
     fn test_transaction_display_indentation() {
         let mut tx = Transaction::default();
-        tx.date = Date { year: Some(2024), month: 1, date: 15 };
+        tx.date = Date {
+            year: Some(2024),
+            month: 1,
+            date: 15,
+        };
         tx.description = "Test payee".to_string();
         tx.notes = vec!["a note".to_string()];
         let mut posting = Posting::new("Assets:Bank");
         posting.amount = Some(AmountDetails::Amount {
-            value: ValueExpr::Amount { value: Decimal::from(100), commodity: Some("USD".into()) },
+            value: ValueExpr::Amount {
+                value: Decimal::from(100),
+                commodity: Some("USD".into()),
+            },
             lot_pricing: None,
             balance_assertion: None,
         });
@@ -568,9 +582,15 @@ mod tests {
 
         let out = format!("{tx}");
         // Notes use 4-space indent
-        assert!(out.contains("    ; a note"), "note should have 4-space indent, got:\n{out}");
+        assert!(
+            out.contains("    ; a note"),
+            "note should have 4-space indent, got:\n{out}"
+        );
         // Posting line uses 4-space indent
-        assert!(out.contains("    Assets:Bank"), "posting should have 4-space indent, got:\n{out}");
+        assert!(
+            out.contains("    Assets:Bank"),
+            "posting should have 4-space indent, got:\n{out}"
+        );
     }
 
     #[test]

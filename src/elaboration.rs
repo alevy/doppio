@@ -388,8 +388,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                 let dec = transaction_state.0.entry(lot_commodity).or_default();
                                 *dec = *dec + lot_total;
                             } else {
-                                let dec =
-                                    transaction_state.0.entry(commodity.clone()).or_default();
+                                let dec = transaction_state.0.entry(commodity.clone()).or_default();
                                 *dec = *dec + value;
                             }
 
@@ -440,11 +439,7 @@ impl TryFrom<resolution::HIR> for Journal {
                         });
                     } else {
                         // Check that transaction state is all zeros to balance the transaction.
-                        if transaction_state
-                            .0
-                            .values()
-                            .any(|value| !value.is_zero())
-                        {
+                        if transaction_state.0.values().any(|value| !value.is_zero()) {
                             return Err(ElaborationError::TransactionDoesNotBalance(
                                 transaction_state,
                             ));
@@ -462,8 +457,7 @@ impl TryFrom<resolution::HIR> for Journal {
                             .entry(posting.account.clone())
                             .or_default();
                         for (commodity, delta) in posting.amount.0.iter() {
-                            *(balances.commodity.entry(commodity.clone()).or_default()) +=
-                                delta;
+                            *(balances.commodity.entry(commodity.clone()).or_default()) += delta;
                         }
                     }
 
@@ -483,7 +477,10 @@ impl TryFrom<resolution::HIR> for Journal {
 
         // Evaluate each historical price expression using the final (most
         // recent) context, which reflects all directives seen in the file.
-        let final_context = value.contexts.last().expect("HIR always has at least one context");
+        let final_context = value
+            .contexts
+            .last()
+            .expect("HIR always has at least one context");
         let mut prices = vec![];
         for hp in value.prices {
             let (price, price_commodity) =
@@ -786,7 +783,10 @@ mod tests {
         let raw_map: BTreeMap<&str, [u8; 16]> = BTreeMap::from([("$", decimal.serialize())]);
         let raw_bytes = postcard::to_allocvec(&raw_map).unwrap();
 
-        assert_eq!(amount_bytes, raw_bytes, "Amount wire format must match [u8;16] map");
+        assert_eq!(
+            amount_bytes, raw_bytes,
+            "Amount wire format must match [u8;16] map"
+        );
     }
 
     #[test]
@@ -811,26 +811,25 @@ mod tests {
 
         // Build an AST journal with a single P directive.
         let price_ast = ast::HistoricalPrice {
-            date: ast::Date { year: Some(2024), month: 6, date: 15 },
+            date: ast::Date {
+                year: Some(2024),
+                month: 6,
+                date: 15,
+            },
             time: Some("14:30:00".into()),
             commodity: "AAPL".into(),
-            price: ast::ValueExpr::amount(
-                rust_decimal::Decimal::from(182),
-                "$".into(),
-            ),
+            price: ast::ValueExpr::amount(rust_decimal::Decimal::from(182), "$".into()),
         };
         let journal_ast = ast::Journal {
             entries: vec![ast::Entry::HistoricalPrice(price_ast)],
         };
 
         // Resolution stage.
-        let hir = resolution::HIR::try_from(journal_ast)
-            .expect("resolution should succeed");
+        let hir = resolution::HIR::try_from(journal_ast).expect("resolution should succeed");
         assert_eq!(hir.prices.len(), 1, "HIR should contain one price");
 
         // Elaboration stage.
-        let journal = Journal::try_from(hir)
-            .expect("elaboration should succeed");
+        let journal = Journal::try_from(hir).expect("elaboration should succeed");
 
         assert_eq!(journal.prices.len(), 1, "Journal should contain one price");
         let price = &journal.prices[0];
@@ -869,15 +868,22 @@ define monthly_rent = $1500.00
         assert_eq!(journal.transactions.len(), 1);
         let tx = &journal.transactions[0];
         // The Expenses:Rent posting should have $1500.00
-        let rent_posting = tx.postings.iter().find(|p| p.account == "Expenses:Rent").unwrap();
+        let rent_posting = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Expenses:Rent")
+            .unwrap();
         assert_eq!(
             rent_posting.amount.0.get("$").copied(),
             Some(dec!(1500.00)),
             "define alias should expand to $1500.00"
         );
         // Assets:Checking should be the balancing null posting: -$1500.00
-        let checking_posting =
-            tx.postings.iter().find(|p| p.account == "Assets:Checking").unwrap();
+        let checking_posting = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Checking")
+            .unwrap();
         assert_eq!(
             checking_posting.amount.0.get("$").copied(),
             Some(dec!(-1500.00)),
@@ -901,7 +907,11 @@ define base_amount = 100 USD
         // `2` parses as Amount{2, None}. Mul of (None, USD) → 200 USD.
         let journal = elaborate(input);
         let tx = &journal.transactions[0];
-        let food = tx.postings.iter().find(|p| p.account == "Expenses:Food").unwrap();
+        let food = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Expenses:Food")
+            .unwrap();
         assert_eq!(
             food.amount.0.get("USD").copied(),
             Some(dec!(200)),
@@ -951,7 +961,11 @@ define myval = $99.00
         // Elaboration should succeed end-to-end.
         let journal = Journal::try_from(hir).expect("elaboration failed");
         let after_tx = &journal.transactions[1];
-        let b_posting = after_tx.postings.iter().find(|p| p.account == "Expenses:B").unwrap();
+        let b_posting = after_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Expenses:B")
+            .unwrap();
         assert_eq!(b_posting.amount.0.get("$").copied(), Some(dec!(99.00)));
     }
 

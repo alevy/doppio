@@ -1,4 +1,9 @@
-use std::{collections::{BTreeMap, BTreeSet}, fs::File, io::{Read as _, Write as _}, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::File,
+    io::{Read as _, Write as _},
+    path::PathBuf,
+};
 
 use clap::{Parser, Subcommand};
 use regex::Regex;
@@ -99,15 +104,11 @@ enum Commands {
     /// List all commodity symbols used in the journal, one per line.
     ///
     /// Output is sorted and deduplicated.
-    Commodities {
-        source: PathBuf,
-    },
+    Commodities { source: PathBuf },
 
     /// Print a summary of the journal: transaction count, unique accounts,
     /// unique commodities, and the date range covered.
-    Stats {
-        source: PathBuf,
-    },
+    Stats { source: PathBuf },
 }
 
 /// The set of supported output formats for `balance` and `register`.
@@ -224,7 +225,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             output_xz.finish()?;
         }
-        Commands::Register { source, pattern, format } => {
+        Commands::Register {
+            source,
+            pattern,
+            format,
+        } => {
             let format = OutputFormat::parse(&format)?;
             let re = build_pattern_regex(pattern)?;
             let journal = load_journal(&source)?;
@@ -337,11 +342,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Print { source } => {
             if let Some("bki") = source.extension().and_then(|e| e.to_str()) {
-                return Err(
-                    "print only works with .ledger source files; \
+                return Err("print only works with .ledger source files; \
                      .bki binary archives do not preserve the original transaction structure"
-                        .into(),
-                );
+                    .into());
             }
             let base_path = source.parent().unwrap().to_path_buf();
             let mut parser = ledger::parser::Parser {
@@ -387,18 +390,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // txn.date is Unix epoch days (1970-01-01 = 0).
             let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-            let first_date = journal
-                .transactions
-                .first()
-                .and_then(|txn| {
-                    unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64))
-                });
-            let last_date = journal
-                .transactions
-                .last()
-                .and_then(|txn| {
-                    unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64))
-                });
+            let first_date = journal.transactions.first().and_then(|txn| {
+                unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64))
+            });
+            let last_date = journal.transactions.last().and_then(|txn| {
+                unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64))
+            });
 
             println!("Transactions: {}", journal.transactions.len());
             println!("Accounts:     {}", journal.accounts.len());
@@ -434,10 +431,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .as_deref()
                 .map(|s| {
                     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                        format!(
-                            "invalid --begin date '{}': expected format YYYY-MM-DD",
-                            s
-                        )
+                        format!("invalid --begin date '{}': expected format YYYY-MM-DD", s)
                     })
                 })
                 .transpose()?;
@@ -446,10 +440,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .as_deref()
                 .map(|s| {
                     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                        format!(
-                            "invalid --end date '{}': expected format YYYY-MM-DD",
-                            s
-                        )
+                        format!("invalid --end date '{}': expected format YYYY-MM-DD", s)
                     })
                 })
                 .transpose()?;
@@ -460,15 +451,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 BTreeMap::new();
 
             for txn in journal.transactions.iter() {
-                if cleared
-                    && !matches!(txn.state, ledger::elaboration::TransactionState::Cleared)
-                {
+                if cleared && !matches!(txn.state, ledger::elaboration::TransactionState::Cleared) {
                     continue;
                 }
 
                 if begin_date.is_some() || end_date.is_some() {
-                    let txn_date = unix_epoch
-                        .checked_add_signed(chrono::Duration::days(txn.date as i64));
+                    let txn_date =
+                        unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64));
                     if let Some(txn_date) = txn_date {
                         if let Some(begin) = begin_date
                             && txn_date < begin
@@ -509,7 +498,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             account.as_str()
                         } else {
                             // Show only the last component in tree mode.
-                            account.rsplit_once(':').map(|(_, last)| last).unwrap_or(account.as_str())
+                            account
+                                .rsplit_once(':')
+                                .map(|(_, last)| last)
+                                .unwrap_or(account.as_str())
                         };
                         let indent = if flat { 0 } else { indent_depth * 2 };
                         let prefix = " ".repeat(indent);
@@ -550,12 +542,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("account,commodity,amount");
                     for (account, acct_balances) in balances.iter() {
                         for (commodity, amount) in acct_balances.iter() {
-                            println!(
-                                "{},{},{}",
-                                csv_field(account),
-                                csv_field(commodity),
-                                amount,
-                            );
+                            println!("{},{},{}", csv_field(account), csv_field(commodity), amount,);
                         }
                     }
                 }

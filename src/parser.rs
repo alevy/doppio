@@ -135,7 +135,12 @@ fn parse_assertion_directive(pair: Pair<Rule>) -> AssertionDirective {
     let strict = op_pair.as_str() == "==";
     let account = inner.next().unwrap().as_str().trim().to_string();
     let amount = parse_expr(inner.next().unwrap());
-    AssertionDirective { date, account, amount, strict }
+    AssertionDirective {
+        date,
+        account,
+        amount,
+        strict,
+    }
 }
 
 fn parse_historical_price(pair: Pair<Rule>) -> HistoricalPrice {

@@ -422,8 +422,7 @@ impl HIR {
             .year
             .or(fallback_year)
             .ok_or(ResolutionError::InvalidDate)?;
-        NaiveDate::from_ymd_opt(year, ast.month, ast.date)
-            .ok_or(ResolutionError::InvalidDate)
+        NaiveDate::from_ymd_opt(year, ast.month, ast.date).ok_or(ResolutionError::InvalidDate)
     }
 
     /// Parse tags and key-value metadata out of a list of note strings.
@@ -751,13 +750,14 @@ mod resolution_tests {
     fn test_historical_price_resolution() {
         use chrono::Datelike;
         let price_ast = ast::HistoricalPrice {
-            date: ast::Date { year: Some(2024), month: 6, date: 15 },
+            date: ast::Date {
+                year: Some(2024),
+                month: 6,
+                date: 15,
+            },
             time: Some("14:30:00".into()),
             commodity: "AAPL".into(),
-            price: ast::ValueExpr::amount(
-                rust_decimal::Decimal::from(182),
-                "$".into(),
-            ),
+            price: ast::ValueExpr::amount(rust_decimal::Decimal::from(182), "$".into()),
         };
         let journal = ast::Journal {
             entries: vec![ast::Entry::HistoricalPrice(price_ast)],
@@ -778,7 +778,11 @@ mod resolution_tests {
         // Build an AST transaction with mixed note types and verify that
         // after resolution the comments, tags, and metadata are separated.
         let txn_ast = ast::Transaction {
-            date: ast::Date { year: Some(2024), month: 1, date: 15 },
+            date: ast::Date {
+                year: Some(2024),
+                month: 1,
+                date: 15,
+            },
             description: "Groceries".into(),
             notes: vec![
                 "just a note".into(),
@@ -793,7 +797,9 @@ mod resolution_tests {
             ],
             ..Default::default()
         };
-        let journal = ast::Journal { entries: vec![ast::Entry::Transaction(txn_ast)] };
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::Transaction(txn_ast)],
+        };
         let hir = HIR::try_from(journal).unwrap();
 
         let Entry::Transaction(ref txn) = hir.entries[0].data else {
@@ -872,14 +878,19 @@ mod resolution_tests {
     fn test_posting_amount_from_tuple_display() {
         use rust_decimal::dec;
 
-        let posting = Posting::new("Expenses:Food")
-            .with_amount((dec!(10.50), "$"));
+        let posting = Posting::new("Expenses:Food").with_amount((dec!(10.50), "$"));
 
         let rendered = posting.to_string();
         // The amount should appear in the rendered posting
-        assert!(rendered.contains("10.50"), "expected '10.50' in: {rendered}");
+        assert!(
+            rendered.contains("10.50"),
+            "expected '10.50' in: {rendered}"
+        );
         assert!(rendered.contains("$"), "expected '$' in: {rendered}");
-        assert!(rendered.contains("Expenses:Food"), "expected account in: {rendered}");
+        assert!(
+            rendered.contains("Expenses:Food"),
+            "expected account in: {rendered}"
+        );
     }
 
     #[test]
@@ -891,12 +902,10 @@ mod resolution_tests {
             commodity: Some("$".into()),
         };
         let journal = ast::Journal {
-            entries: vec![
-                ast::Entry::Directive(ast::Directive::Define {
-                    name: "monthly_rent".into(),
-                    expr: expr.clone(),
-                }),
-            ],
+            entries: vec![ast::Entry::Directive(ast::Directive::Define {
+                name: "monthly_rent".into(),
+                expr: expr.clone(),
+            })],
         };
 
         let hir = HIR::try_from(journal).unwrap();
@@ -917,7 +926,11 @@ mod resolution_tests {
         // Transactions before a `define` see the old context; those after see
         // the context that includes the define.
         let tx_ast = ast::Transaction {
-            date: ast::Date { year: Some(2024), month: 1, date: 1 },
+            date: ast::Date {
+                year: Some(2024),
+                month: 1,
+                date: 1,
+            },
             description: "Tx".into(),
             ..Default::default()
         };
@@ -938,8 +951,14 @@ mod resolution_tests {
 
         let hir = HIR::try_from(journal).unwrap();
 
-        assert_eq!(hir.entries[0].context_id, 0, "tx before define should use context 0");
-        assert_eq!(hir.entries[1].context_id, 1, "tx after define should use context 1");
+        assert_eq!(
+            hir.entries[0].context_id, 0,
+            "tx before define should use context 0"
+        );
+        assert_eq!(
+            hir.entries[1].context_id, 1,
+            "tx after define should use context 1"
+        );
         assert!(hir.contexts[1].defines.contains_key("budget"));
     }
 
@@ -948,12 +967,13 @@ mod resolution_tests {
         use chrono::Datelike;
 
         let assertion_ast = ast::AssertionDirective {
-            date: ast::Date { year: Some(2024), month: 3, date: 31 },
+            date: ast::Date {
+                year: Some(2024),
+                month: 3,
+                date: 31,
+            },
             account: "Assets:Checking".into(),
-            amount: ast::ValueExpr::amount(
-                rust_decimal::Decimal::from(1000),
-                "$".into(),
-            ),
+            amount: ast::ValueExpr::amount(rust_decimal::Decimal::from(1000), "$".into()),
             strict: true,
         };
         let journal = ast::Journal {
@@ -970,6 +990,8 @@ mod resolution_tests {
         assert_eq!(a.date.day(), 31);
         assert_eq!(a.account, "Assets:Checking");
         assert!(a.strict);
-        assert!(matches!(a.amount, ast::ValueExpr::Amount { commodity: Some(ref c), .. } if c == "$"));
+        assert!(
+            matches!(a.amount, ast::ValueExpr::Amount { commodity: Some(ref c), .. } if c == "$")
+        );
     }
 }
