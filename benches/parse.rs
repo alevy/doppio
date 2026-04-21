@@ -1,10 +1,11 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 mod data;
 
 fn bench_parse(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse");
+    group.measurement_time(Duration::from_secs(15));
     for (name, input) in data::workloads() {
         let mut parser = ledger::parser::Parser {
             openner: |_: &str| String::new(),

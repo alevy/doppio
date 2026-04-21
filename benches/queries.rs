@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rust_decimal::Decimal;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 mod data;
 
@@ -13,6 +13,7 @@ fn make_parser() -> ledger::parser::Parser<impl Fn(&str) -> String> {
 
 fn bench_balance(c: &mut Criterion) {
     let mut group = c.benchmark_group("balance");
+    group.measurement_time(Duration::from_secs(12));
     for (name, input) in data::workloads() {
         let journal = ledger::compile(&input, make_parser()).unwrap();
         group.bench_with_input(BenchmarkId::new("balance", name), &journal, |b, journal| {
