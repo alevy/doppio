@@ -1,6 +1,28 @@
+// ============================================================
+// ledger.pest — PEG grammar for the Ledger plain-text accounting format
+//
+// Parsing is handled by pest (https://pest.rs/). This file defines the
+// *structure* of the source language. Operator precedence for value
+// expressions is NOT encoded here — it is applied by a Pratt parser in
+// parser.rs after the grammar has produced a flat token stream.
+//
+// Rule naming conventions (pest):
+//   UPPERCASE  — built-in rules (NEWLINE, EOI, ANY, ASCII_DIGIT, …)
+//   _{ … }    — silent rule: matched but not included in the pair tree
+//   @{ … }    — atomic rule: inner tokens are NOT individually paired
+//   ${ … }    — compound-atomic: inner named rules ARE paired, but
+//               implicit whitespace skipping is disabled
+// ============================================================
+
 // --- Top Level ---
+
+// The entire file is a sequence of entries separated by blank lines.
+// A compound-atomic ($) root rule is used so that leading/trailing
+// whitespace is preserved exactly as written in the source.
 journal = ${ (entry | NEWLINE)* ~ EOI }
 
+// An entry is one of: transaction, directive, comment, or budget.
+// Silent (_) so the match is transparent — callers see the inner rule.
 entry = _{
     transaction
     | directive
@@ -9,16 +31,24 @@ entry = _{
 }
 
 // --- Transactions ---
+
+// A transaction is a header line followed by zero or more postings/notes.
+// The compound-atomic modifier ($) is critical: it prevents the grammar
+// from silently swallowing the indentation that separates postings.
 transaction = ${
     header ~ NEWLINE ~
     (transaction_note | posting | empty_indented_line)*
 }
 
+// Budget entries (e.g. "~ monthly ...") share the same posting structure
+// but are not yet elaborated by the compiler.
 budget = ${
     "~" ~ ws+ ~ ("yearly" | "monthly" | "weekly") ~ NEWLINE ~
     (transaction_note | posting | empty_indented_line)*
 }
 
+// The header line: date, optional secondary date, state, code, description,
+// and an optional trailing note.
 header = ${
     date ~ (ws* ~ "=" ~ ws* ~ date)?
     ~ (ws+ ~ state)?
@@ -27,17 +57,33 @@ header = ${
     ~ (ws* ~ note)?
 }
 
+// A note line that is part of the transaction header (indented, starts with ;)
 transaction_note = ${ indent+ ~ note ~ (NEWLINE | EOI) }
+
+// A blank indented line allowed between postings — consumed silently.
 empty_indented_line = _{ indent+ ~ NEWLINE }
 
 // --- Postings ---
+
+// A posting is an indented account name, optionally followed by an amount
+// and/or a trailing note, plus zero or more indented note lines.
+//
+// The !NEWLINE lookahead prevents a truly empty indented line from being
+// matched as a posting with an empty account name.
 posting = ${
     indent+ ~ !NEWLINE ~ (state ~ ws+)? ~ account ~ (amount_logic)? ~ (ws* ~ note)? ~ (NEWLINE | EOI) ~
     posting_note*
 }
 
+// A note line indented beneath a posting.
 posting_note = ${ indent+ ~ note ~ (NEWLINE | EOI) }
 
+// The amount field of a posting.
+//
+// Two or more spaces (or a tab) are REQUIRED before the amount. This is the
+// canonical Ledger convention: it unambiguously separates the account name
+// from the amount, since account names may contain single spaces (e.g.
+// "Equity:Opening Balances").
 amount_logic = ${
     (ws{2,} | "\t") ~ (
         value_logic
@@ -45,28 +91,59 @@ amount_logic = ${
     )
 }
 
+// A value expression, optionally followed by lot pricing and/or a balance
+// assertion check.
 value_logic = ${ value_expr ~ (ws* ~ lot_price)? ~ (ws* ~ assertion)? }
 
+// A balance check or balance assignment: `= target` or `== target`.
+// Used in two ways within `amount_logic`:
+//   - After `value_logic`: a post-posting balance assertion (becomes `balance_assertion`
+//     in `AmountDetails::Amount`).
+//   - Standalone (no preceding amount): parsed by the parser as
+//     `AmountDetails::BalanceAssignment`; the posting amount is inferred to bring
+//     the account to the target balance.
 assertion = ${ "="{1, 2} ~ ws* ~ value_expr }
 
 // --- Atoms ---
+
+// A full date: YYYY/MM/DD or YYYY-MM-DD. The four-digit year is mandatory.
 date = ${ year ~ ("/" | "-") ~ monthdate ~ ("/" | "-") ~ monthdate }
 year = @{ ASCII_DIGIT{4} }
 monthdate = @{ ASCII_DIGIT{1,2} }
+
+// Cleared (*) or pending (!) state marker.
 state = { "*" | "!" }
+
+// An optional reference code in parentheses, e.g. "(INV-042)".
 code = { "(" ~ (!")" ~ ANY)* ~ ")" }
+
+// Everything after the header fields up to a semicolon or newline.
 description = { (!(";" | NEWLINE) ~ ANY)* }
+
+// An account name: any characters that are not a double-space, semicolon,
+// tab, equals sign, or newline. The double-space exclusion is what
+// makes the "two-space rule" for amounts work — the account name stops
+// as soon as two consecutive spaces are encountered.
 account = @{ (!("  " | ";" | "\t" | "=" | NEWLINE) ~ ANY)+ }
 
+// Lot pricing: "@ unit_price" or "@@ total_price".
 lot_price = ${ ("@@" | "@") ~ ws* ~ value_expr }
 
+// Whitespace helpers (silent — not included in the pair tree).
 indent = _{ " " | "\t" }
 ws = _{ " " | "\t" }
 
+// A semicolon-prefixed note. The note_str captures everything up to EOL.
 note = ${ ";" ~ note_str }
 note_str = ${ (!NEWLINE ~ ANY)* }
+
+// A full-line comment. Ledger accepts several comment characters.
 comment_line = @{ (";" | "#" | "*" | "%" | "|") ~ (!NEWLINE ~ ANY)* }
+
 // --- Directives ---
+
+// The optional leading "!" is allowed by some Ledger implementations.
+// define and tag directives are parsed but not yet elaborated.
 directive = _{ "!"? ~ (commodity_directive | account_directive | alias_directive | include_directive | define_directive | tag_directive ) }
 
 tag_directive = ${
@@ -74,6 +151,8 @@ tag_directive = ${
     (indent+ ~ (!NEWLINE ~ ANY )* ~ (NEWLINE | EOI))*
 }
 
+// A commodity block: declares properties such as aliases, display format,
+// and whether market prices are tracked.
 commodity_directive = ${
     "commodity" ~ ws+ ~ commodity ~ (ws* ~ note)? ~ NEWLINE ~
     ((indent+ ~ note ~ NEWLINE) | commodity_item)*
@@ -83,9 +162,11 @@ commodity_item = ${
     indent+ ~ commodity_key ~ (ws+ ~ commodity_val)? ~ (ws* ~ note)? ~ (NEWLINE | EOI)
 }
 
+// Known commodity keys are enumerated first; anything else is "identifier".
 commodity_key = @{ "alias" | "format" | "nomarket" | "default" | identifier }
 commodity_val = @{ (!NEWLINE ~ ANY)* }
 
+// An account block: declares an account and its properties (alias, note).
 account_directive = ${
     "account" ~ ws+ ~ account ~ (ws* ~ note)? ~ NEWLINE ~
     ((indent+ ~ note ~ NEWLINE) | account_item)*
@@ -97,19 +178,35 @@ account_item = ${
 account_key = @{ "note" | "alias" | identifier }
 account_val = @{ (!NEWLINE ~ ANY)* }
 
+// A top-level "alias short = long" shorthand for account names.
 alias_directive = ${ "alias" ~ ws+ ~ account ~ ws* ~ "=" ~ ws* ~ account ~ (ws+ ~ note)? ~ (NEWLINE | EOI) }
 
+// Consumed but not elaborated.
 define_directive = @{ "define" ~ ws+ ~ (!NEWLINE ~ ANY)* ~ (NEWLINE | EOI) }
 
+// Include another file by path (glob patterns are resolved in parser.rs).
 include_directive = ${ "include" ~ ws+ ~ filename ~ (NEWLINE | EOI) }
 filename = @{ (!NEWLINE ~ ANY)+ }
 
 // --- Expressions (Explicit Whitespace) ---
+//
+// These rules define the *syntax* of value expressions. Operator PRECEDENCE
+// is NOT handled here — the grammar produces a flat left-to-right token
+// stream that is then processed by a Pratt parser in parser.rs, which
+// applies the correct precedence (* and / bind tighter than + and -).
+
+// A value_expr is an expression optionally followed by a commodity annotation.
+// The trailing commodity form "(1 + 2) USD" creates a ValueExpr::Typed node.
 value_expr = ${ expr ~ (ws+ ~ commodity)? }
 
+// An expression is one or more terms joined by infix operators.
 expr = ${ term ~ (ws* ~ infix_op ~ ws* ~ term)* }
 
+// A term is an optional prefix operator followed by a primary atom.
 term = ${ (prefix_op ~ ws*)? ~ primary }
+
+// A primary is a base atom optionally followed by dot-access chains.
+// base_primary is silent, so the parser sees the child rule directly.
 primary = { base_primary ~ access* }
 
 base_primary = _{
@@ -120,33 +217,49 @@ base_primary = _{
     | commodity
 }
 
+// A dot-accessor: ".fieldname"
 access = ${ "." ~ identifier }
 
+// A double-quoted string literal.
 // Atomic string: matches anything between double quotes
 string = ${ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 
+// A function call: name(arg1, arg2, …). Arguments are full expr trees.
 function_call = ${ identifier ~ ws* ~ "(" ~ ws* ~ (expr ~ (ws* ~ "," ~ ws* ~ expr)*)? ~ ws* ~ ")" }
 
+// An amount literal: commodity-prefixed, number-first, or bare number.
+//   "$100"      — symbol before number (no space required)
+//   "100 USD"   — identifier commodity after number (space required)
+//   "100"       — bare number (commodity filled in from context later)
 amount = ${
     (commodity ~ ws* ~ number)
     | (number ~ ws+ ~ commodity)
     | number
 }
 
+// Numbers may use comma thousands-separators ("1,234.56") or start with a
+// decimal point (".5"). Commas are stripped in parser.rs before parsing.
 // Comma followed by 3 digits to distinguish from function arguments
 number = @{
     ASCII_DIGIT+ ~ ("," ~ ASCII_DIGIT{3})* ~ ("." ~ ASCII_DIGIT+)?
     | "." ~ ASCII_DIGIT+
 }
 
+// A commodity is either one or more currency symbols ($, €, £, ¥) or
+// an identifier-style name (USD, BTC, AAPL, …).
 commodity = @{
     symbol+
     | (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "." | ":" | "#")*
 }
 
+// Currency symbols treated as single-character commodities.
 symbol = _{ "$" | "€" | "£" | "¥" }
+
+// A plain identifier: letter or underscore, then alphanumeric or underscore.
 identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
+// Infix and prefix operators. These rules are named (not silent) so that
+// the Pratt parser in parser.rs can match on their Rule variants.
 // Operators must be visible to Pratt
 infix_op = _{ add | sub | mul | div }
     add = { "+" }
