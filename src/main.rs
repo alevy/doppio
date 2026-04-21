@@ -42,6 +42,17 @@ enum Commands {
         source: PathBuf,
         pattern: Option<String>,
     },
+
+    /// Re-emit the journal as canonical Ledger source text.
+    ///
+    /// Parses and resolves the source file, then prints each transaction in
+    /// canonical Ledger format. Only `.ledger` source files are accepted;
+    /// pre-compiled `.bki` files do not preserve the original transaction
+    /// structure needed for faithful re-emission.
+    Print {
+        /// Path to the root `.ledger` source file.
+        source: PathBuf,
+    },
 }
 
 /// Load a [`ledger::Journal`] from either a compiled `.bki` file or a raw
@@ -104,6 +115,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             posting.amount.0.get("$").unwrap()
                         );
                     }
+                }
+            }
+        }
+        Commands::Print { source } => {
+            if let Some("bki") = source.extension().and_then(|e| e.to_str()) {
+                return Err(
+                    "print only works with .ledger source files; \
+                     .bki binary archives do not preserve the original transaction structure"
+                        .into(),
+                );
+            }
+            let base_path = source.parent().unwrap().to_path_buf();
+            let mut parser = ledger::parser::Parser {
+                opener: ledger::file_opener,
+                base_path,
+            };
+            let mut file = String::new();
+            File::open(&source)?.read_to_string(&mut file)?;
+            let ast_journal: ledger::ast::Journal = parser.parse(&file)?;
+            let hir: ledger::resolution::HIR = ast_journal.try_into()?;
+            for entry in hir.entries {
+                if let ledger::resolution::Entry::Transaction(txn) = entry.data {
+                    println!("{txn}");
                 }
             }
         }
