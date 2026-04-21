@@ -32,6 +32,15 @@ enum Commands {
     /// followed by the account name.
     Balance {
         source: PathBuf,
+        /// Include only transactions on or after this date (YYYY-MM-DD).
+        #[arg(long)]
+        begin: Option<String>,
+        /// Include only transactions on or before this date (YYYY-MM-DD).
+        #[arg(long)]
+        end: Option<String>,
+        /// Include only cleared transactions.
+        #[arg(long)]
+        cleared: bool,
     },
 
     /// List individual postings, optionally filtered by account name.
@@ -270,12 +279,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Balance { source } => {
+        Commands::Balance {
+            source,
+            begin,
+            end,
+            cleared,
+        } => {
             let journal = load_journal(&source)?;
+
+            let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+
+            let begin_date = begin
+                .as_deref()
+                .map(|s| {
+                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                        format!(
+                            "invalid --begin date '{}': expected format YYYY-MM-DD",
+                            s
+                        )
+                    })
+                })
+                .transpose()?;
+
+            let end_date = end
+                .as_deref()
+                .map(|s| {
+                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                        format!(
+                            "invalid --end date '{}': expected format YYYY-MM-DD",
+                            s
+                        )
+                    })
+                })
+                .transpose()?;
+
             let mut balances: BTreeMap<&String, BTreeMap<&String, rust_decimal::Decimal>> =
                 BTreeMap::new();
 
             for txn in journal.transactions.iter() {
+                if cleared {
+                    if !matches!(txn.state, ledger::elaboration::TransactionState::Cleared) {
+                        continue;
+                    }
+                }
+
+                if begin_date.is_some() || end_date.is_some() {
+                    let txn_date = unix_epoch
+                        .checked_add_signed(chrono::Duration::days(txn.date as i64));
+                    if let Some(txn_date) = txn_date {
+                        if let Some(begin) = begin_date {
+                            if txn_date < begin {
+                                continue;
+                            }
+                        }
+                        if let Some(end) = end_date {
+                            if txn_date > end {
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 for posting in txn.postings.iter() {
                     for (commodity, amount) in posting.amount.0.iter() {
                         *(balances
