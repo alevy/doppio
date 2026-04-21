@@ -46,6 +46,24 @@ pub struct Journal {
     pub transactions: Vec<ResolvedTransaction>,
     /// All accounts referenced by any posting, with their declared properties.
     pub accounts: BTreeMap<String, AccountProperties>,
+    /// Market price quotes from `P` directives, in source order, with the
+    /// price expression fully evaluated to a concrete `(Decimal, commodity)`.
+    pub prices: Vec<HistoricalPrice>,
+}
+
+/// A fully evaluated historical price entry produced from a `P` directive.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistoricalPrice {
+    /// Days since the Unix epoch on which this price was recorded.
+    pub date: i32,
+    /// Optional wall-clock time of the price quote (`"HH:MM"` or `"HH:MM:SS"`).
+    pub time: Option<String>,
+    /// The commodity whose price is being recorded (e.g. `"AAPL"`, `"BTC"`).
+    pub commodity: String,
+    /// The evaluated price of one unit of `commodity`.
+    pub price: Decimal,
+    /// The commodity the price is expressed in (e.g. `"$"`, `"USD"`).
+    pub price_commodity: Commodity,
 }
 
 /// Properties of an account declared with an `account` directive.
@@ -459,9 +477,26 @@ impl TryFrom<resolution::HIR> for Journal {
             }
         }
 
+        // Evaluate each historical price expression using the final (most
+        // recent) context, which reflects all directives seen in the file.
+        let final_context = value.contexts.last().expect("HIR always has at least one context");
+        let mut prices = vec![];
+        for hp in value.prices {
+            let (price, price_commodity) =
+                evaluator::eval_and_normalize_amount(hp.price, final_context, &state)?;
+            prices.push(HistoricalPrice {
+                date: hp.date.to_epoch_days(),
+                time: hp.time,
+                commodity: hp.commodity,
+                price,
+                price_commodity,
+            });
+        }
+
         Ok(Journal {
             transactions,
             accounts,
+            prices,
         })
     }
 }
@@ -756,5 +791,46 @@ mod tests {
         for (k, v) in &original.0 {
             assert_eq!(recovered.0[k], *v);
         }
+    }
+
+    #[test]
+    fn test_prices_wired_through_to_journal() {
+        use crate::{ast, resolution};
+
+        // Build an AST journal with a single P directive.
+        let price_ast = ast::HistoricalPrice {
+            date: ast::Date { year: Some(2024), month: 6, date: 15 },
+            time: Some("14:30:00".into()),
+            commodity: "AAPL".into(),
+            price: ast::ValueExpr::amount(
+                rust_decimal::Decimal::from(182),
+                "$".into(),
+            ),
+        };
+        let journal_ast = ast::Journal {
+            entries: vec![ast::Entry::HistoricalPrice(price_ast)],
+        };
+
+        // Resolution stage.
+        let hir = resolution::HIR::try_from(journal_ast)
+            .expect("resolution should succeed");
+        assert_eq!(hir.prices.len(), 1, "HIR should contain one price");
+
+        // Elaboration stage.
+        let journal = Journal::try_from(hir)
+            .expect("elaboration should succeed");
+
+        assert_eq!(journal.prices.len(), 1, "Journal should contain one price");
+        let price = &journal.prices[0];
+
+        // date: 2024-06-15 → days since epoch
+        let expected_days = chrono::NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .to_epoch_days();
+        assert_eq!(price.date, expected_days);
+        assert_eq!(price.time.as_deref(), Some("14:30:00"));
+        assert_eq!(price.commodity, "AAPL");
+        assert_eq!(price.price, rust_decimal::Decimal::from(182));
+        assert_eq!(price.price_commodity, "$");
     }
 }
