@@ -128,7 +128,7 @@ pub type Commodity = String;
 /// via postcard without needing a custom codec, while preserving exact decimal
 /// precision (no floating-point rounding).
 #[derive(Deserialize, Default, Serialize, Debug)]
-pub struct Amount(pub BTreeMap<Commodity, [u8; 16]>);
+pub struct Amount(pub BTreeMap<Commodity, Decimal>);
 
 /// Cleared/pending state of a resolved transaction or posting.
 ///
@@ -344,17 +344,15 @@ impl TryFrom<resolution::HIR> for Journal {
                             // commodity) to transaction_state rather than the commodity units.
                             // This is what needs to balance with the offsetting cash posting.
                             if let Some((lot_total, lot_commodity)) = lot_pricing {
-                                let decb = transaction_state.0.entry(lot_commodity).or_default();
-                                let dec = Decimal::deserialize(*decb) + lot_total;
-                                *decb = dec.serialize();
+                                let dec = transaction_state.0.entry(lot_commodity).or_default();
+                                *dec = *dec + lot_total;
                             } else {
-                                let decb =
+                                let dec =
                                     transaction_state.0.entry(commodity.clone()).or_default();
-                                let dec = Decimal::deserialize(*decb) + value;
-                                *decb = dec.serialize();
+                                *dec = *dec + value;
                             }
 
-                            let amount = Amount(BTreeMap::from([(commodity, value.serialize())]));
+                            let amount = Amount(BTreeMap::from([(commodity, value)]));
                             resolved_postings.push(ResolvedPosting {
                                 account: account_name,
                                 payee,
@@ -387,7 +385,7 @@ impl TryFrom<resolution::HIR> for Journal {
                             transaction_state
                                 .0
                                 .iter()
-                                .map(|(c, v)| (c.clone(), (-Decimal::deserialize(*v)).serialize()))
+                                .map(|(c, v)| (c.clone(), -v))
                                 .collect(),
                         );
 
@@ -404,7 +402,7 @@ impl TryFrom<resolution::HIR> for Journal {
                         if transaction_state
                             .0
                             .values()
-                            .any(|value| !Decimal::deserialize(*value).is_zero())
+                            .any(|value| !value.is_zero())
                         {
                             return Err(ElaborationError::TransactionDoesNotBalance(
                                 transaction_state,
@@ -424,7 +422,7 @@ impl TryFrom<resolution::HIR> for Journal {
                             .or_default();
                         for (commodity, delta) in posting.amount.0.iter() {
                             *(balances.commodity.entry(commodity.clone()).or_default()) +=
-                                Decimal::deserialize(*delta);
+                                delta;
                         }
                     }
 

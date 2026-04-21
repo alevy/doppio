@@ -26,7 +26,7 @@ fn bench_balance(c: &mut Criterion) {
                                 .entry(posting.account.as_str())
                                 .or_default()
                                 .entry(commodity.as_str())
-                                .or_default() += Decimal::deserialize(*amount);
+                                .or_default() += *amount;
                         }
                     }
                 }
