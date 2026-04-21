@@ -146,7 +146,7 @@ pub enum Entry {
 ///
 /// Amount expressions are still in unevaluated [`ast::AmountDetails`] form;
 /// they are evaluated in the elaboration stage.
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct Transaction {
     /// The primary (effective) date, resolved to a full calendar date.
     pub date: NaiveDate,
@@ -158,6 +158,8 @@ pub struct Transaction {
     pub code: Option<String>,
     /// The payee / description line.
     pub description: String,
+    /// Plain note lines that are neither tags nor key-value metadata.
+    pub comments: Vec<String>,
     /// Tags extracted from header notes using the `:tag:` convention.
     pub tags: Vec<String>,
     /// Structured key-value metadata extracted from header notes.
@@ -166,10 +168,54 @@ pub struct Transaction {
     pub postings: Vec<Posting>,
 }
 
+impl std::fmt::Display for Transaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.date.fmt(f)?;
+
+        if let Some(date) = self.secondary_date {
+            write!(f, "=")?;
+            date.fmt(f)?;
+        }
+
+        match self.state {
+            ast::TransactionState::Uncleared => {}
+            ast::TransactionState::Pending => write!(f, " !")?,
+            ast::TransactionState::Cleared => write!(f, " *")?,
+        }
+
+        if let Some(ref code) = self.code {
+            write!(f, " ({code})")?;
+        }
+
+        if let Some((comment, &[])) = self.comments.split_first() {
+            writeln!(f, " {}  ; {comment}", self.description)?;
+        } else {
+            writeln!(f, " {}", self.description)?;
+            for comment in self.comments.iter() {
+                writeln!(f, "    ; {comment}")?;
+            }
+        }
+
+        for tag in self.tags.iter() {
+            writeln!(f, "    ; :{tag}:")?;
+        }
+
+        for (key, value) in self.metadata.iter() {
+            writeln!(f, "    ; {key}: {value}")?;
+        }
+
+        for posting in self.postings.iter() {
+            posting.fmt(f)?;
+        }
+
+        Ok(())
+    }
+}
+
 /// A posting with extracted tags and metadata.
 ///
 /// The `amount` field is still an unevaluated [`ast::AmountDetails`] tree.
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct Posting {
     /// The account name as written in the source (not yet alias-resolved).
     pub account: String,
@@ -181,6 +227,76 @@ pub struct Posting {
     pub tags: Vec<String>,
     /// Key-value metadata extracted from posting notes.
     pub metadata: BTreeMap<String, String>,
+    /// Plain note lines that are neither tags nor key-value metadata.
+    pub comments: Vec<String>,
+}
+
+impl Posting {
+    /// Creates a new posting for `account` with no amount, tags, or metadata.
+    pub fn new<S: Into<String>>(account: S) -> Self {
+        Self {
+            account: account.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Appends a tag to this posting (builder pattern).
+    pub fn with_tag<S: Into<String>>(mut self, tag: S) -> Self {
+        self.tags.push(tag.into());
+        self
+    }
+
+    /// Appends a plain comment to this posting (builder pattern).
+    pub fn with_comment<S: Into<String>>(mut self, comment: S) -> Self {
+        self.comments.push(comment.into());
+        self
+    }
+
+    /// Inserts a metadata key-value pair into this posting (builder pattern).
+    pub fn with_metadata<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Sets the amount for this posting (builder pattern).
+    pub fn with_amount<A: Into<ast::AmountDetails>>(mut self, amount: A) -> Self {
+        self.amount = Some(amount.into());
+        self
+    }
+}
+
+impl std::fmt::Display for Posting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "    ")?;
+        match self.state {
+            ast::TransactionState::Uncleared => {}
+            ast::TransactionState::Pending => write!(f, "! ")?,
+            ast::TransactionState::Cleared => write!(f, "* ")?,
+        }
+
+        write!(f, "{}", self.account)?;
+
+        if let Some(ref amount) = self.amount {
+            write!(f, "  {amount}")?;
+        }
+        if let Some((comment, &[])) = self.comments.split_first() {
+            writeln!(f, "  ; {comment}")?;
+        } else {
+            writeln!(f)?;
+            for comment in self.comments.iter() {
+                writeln!(f, "    ; {comment}")?;
+            }
+        }
+
+        for tag in self.tags.iter() {
+            writeln!(f, "    ; :{tag}:")?;
+        }
+
+        for (key, value) in self.metadata.iter() {
+            writeln!(f, "    ; {key}: {value}")?;
+        }
+        Ok(())
+    }
 }
 
 /// Errors that can occur during the resolution stage.
@@ -231,10 +347,14 @@ impl HIR {
     /// - **Metadata**: a note of the form `key: value` produces a key-value
     ///   pair `("key", "value")`.
     ///
-    /// Notes that match neither pattern are silently discarded.
-    fn resolve_metadata(notes: Vec<String>) -> (Vec<String>, BTreeMap<String, String>) {
+    /// Notes that match neither pattern are preserved as plain comments in the
+    /// third element of the returned tuple.
+    fn resolve_metadata(
+        notes: Vec<String>,
+    ) -> (Vec<String>, BTreeMap<String, String>, Vec<String>) {
         let mut tags: Vec<String> = vec![];
         let mut metadata: BTreeMap<String, String> = Default::default();
+        let mut comments: Vec<String> = vec![];
 
         for note in notes {
             let note = note.trim();
@@ -248,10 +368,12 @@ impl HIR {
             } else if let Some((key, value)) = note.split_once(":") {
                 // "key: value" — insert as metadata
                 metadata.insert(key.trim().into(), value.trim().into());
+            } else {
+                // Plain comment — preserve rather than discard
+                comments.push(note.to_string());
             }
-            // Plain comments are discarded
         }
-        (tags, metadata)
+        (tags, metadata, comments)
     }
 }
 
@@ -363,12 +485,12 @@ impl TryFrom<ast::Journal> for HIR {
                         None
                     };
 
-                    let (tags, metadata) = Self::resolve_metadata(transaction.notes);
+                    let (tags, metadata, comments) = Self::resolve_metadata(transaction.notes);
                     let postings = transaction
                         .postings
                         .into_iter()
                         .map(|p| {
-                            let (tags, metadata) = Self::resolve_metadata(p.notes);
+                            let (tags, metadata, comments) = Self::resolve_metadata(p.notes);
 
                             Posting {
                                 account: p.account,
@@ -376,6 +498,7 @@ impl TryFrom<ast::Journal> for HIR {
                                 state: p.state,
                                 tags,
                                 metadata,
+                                comments,
                             }
                         })
                         .collect();
@@ -386,6 +509,7 @@ impl TryFrom<ast::Journal> for HIR {
                         state: transaction.state,
                         code: transaction.code,
                         description: transaction.description,
+                        comments,
                         tags,
                         metadata,
                         postings,
@@ -466,12 +590,12 @@ mod resolution_tests {
             "  Invoice: 1234  ".to_string(),
             "Random comment".to_string(),
         ];
-        let (tags, meta) = HIR::resolve_metadata(notes);
+        let (tags, meta, comments) = HIR::resolve_metadata(notes);
 
         assert_eq!(tags, vec!["Financial", "Tax"]);
         assert_eq!(meta.get("Invoice").unwrap(), "1234");
-        // Ensure "Random comment" is discarded (it's neither a tag nor metadata)
         assert_eq!(meta.len(), 1);
+        assert_eq!(comments, vec!["Random comment"]);
     }
 
     #[test]
@@ -542,5 +666,64 @@ mod resolution_tests {
         assert_eq!(price.date.day(), 15);
         assert_eq!(price.time.as_deref(), Some("14:30:00"));
         assert_eq!(price.commodity, "AAPL");
+    }
+
+    #[test]
+    fn test_comment_preservation_roundtrip() {
+        // Build an AST transaction with mixed note types and verify that
+        // after resolution the comments, tags, and metadata are separated.
+        let txn_ast = ast::Transaction {
+            date: ast::Date { year: Some(2024), month: 1, date: 15 },
+            description: "Groceries".into(),
+            notes: vec![
+                "just a note".into(),
+                "Invoice: 42".into(),
+                ":groceries:".into(),
+            ],
+            postings: vec![
+                ast::Posting::new("Expenses:Food")
+                    .with_note("posting note")
+                    .with_amount((rust_decimal::Decimal::TEN, "$")),
+                ast::Posting::new("Assets:Checking"),
+            ],
+            ..Default::default()
+        };
+        let journal = ast::Journal { entries: vec![ast::Entry::Transaction(txn_ast)] };
+        let hir = HIR::try_from(journal).unwrap();
+
+        let Entry::Transaction(ref txn) = hir.entries[0].data else { panic!() };
+        assert_eq!(txn.comments, vec!["just a note"]);
+        assert_eq!(txn.metadata.get("Invoice").unwrap(), "42");
+        assert_eq!(txn.tags, vec!["groceries"]);
+        assert_eq!(txn.postings[0].comments, vec!["posting note"]);
+    }
+
+    #[test]
+    fn test_posting_builder() {
+        let posting = Posting::new("Expenses:Food")
+            .with_tag("groceries")
+            .with_comment("weekly shop")
+            .with_metadata("ref", "123");
+
+        assert_eq!(posting.account, "Expenses:Food");
+        assert_eq!(posting.tags, vec!["groceries"]);
+        assert_eq!(posting.comments, vec!["weekly shop"]);
+        assert_eq!(posting.metadata.get("ref").unwrap(), "123");
+        assert!(posting.amount.is_none());
+    }
+
+    #[test]
+    fn test_transaction_display_with_comment() {
+        use chrono::NaiveDate;
+        let txn = Transaction {
+            date: NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+            description: "Groceries".into(),
+            comments: vec!["weekly shop".into()],
+            postings: vec![Posting::new("Expenses:Food")],
+            ..Default::default()
+        };
+        let s = txn.to_string();
+        assert!(s.contains("Groceries  ; weekly shop"));
+        assert!(s.contains("Expenses:Food"));
     }
 }
