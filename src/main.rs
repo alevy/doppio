@@ -352,14 +352,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             File::open(&source)?.read_to_string(&mut file)?;
             let ast_journal: ledger::ast::Journal = parser.parse(&file)?;
             let hir: ledger::resolution::HIR = ast_journal.try_into()?;
-            let txns = hir.entries.into_iter().filter_map(|e| {
-                if let ledger::resolution::Entry::Transaction(txn) = e.data {
-                    Some(txn)
-                } else {
-                    None
-                }
-            });
-            ledger::write_ledger(txns, &mut std::io::stdout())?;
+            ledger::write_ledger(hir.transactions(), &mut std::io::stdout())?;
         }
         Commands::Accounts { source, pattern } => {
             let journal = load_journal(&source)?;

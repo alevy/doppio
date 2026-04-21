@@ -169,16 +169,7 @@ mod write_ledger_tests {
         };
         let ast_journal = p.parse(&source.to_string()).expect("parse failed");
         let hir: resolution::HIR = ast_journal.try_into().expect("resolution failed");
-        hir.entries
-            .into_iter()
-            .filter_map(|e| {
-                if let resolution::Entry::Transaction(txn) = e.data {
-                    Some(txn)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        hir.transactions().collect()
     }
 
     #[test]
@@ -201,11 +192,10 @@ mod write_ledger_tests {
         write_ledger([txn], &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
 
-        assert!(text.starts_with("2024-01-15 Groceries"));
-        assert!(text.contains("Expenses:Food"));
-        assert!(text.contains("Assets:Checking"));
-        // No trailing blank line for a single transaction.
-        assert!(!text.ends_with("\n\n"));
+        assert_eq!(
+            text,
+            "2024-01-15 Groceries\n    Expenses:Food  50 $\n    Assets:Checking\n"
+        );
     }
 
     #[test]
@@ -219,10 +209,7 @@ mod write_ledger_tests {
         write_ledger(txns, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
 
-        // There should be exactly one blank line separating the two transactions.
-        assert!(text.contains("\n\n"), "expected blank-line separator between transactions");
-        // But no trailing double newline after the last one.
-        assert!(!text.ends_with("\n\n"));
+        assert_eq!(text, "2024-01-01 First\n\n2024-01-02 Second\n");
     }
 
     #[test]
