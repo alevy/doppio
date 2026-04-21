@@ -1,8 +1,17 @@
-# ledger-rs Milestones 2 & 3 Requirements Summary
+# ledger-rs Requirements
 
-**Effective Date**: 2026-04-21
+**Last updated**: 2026-04-21
 
-**Scope**: Requirements articulation for ledger-rs after completing Milestone 2 (Foundation) and Milestone 3 (CLI Completeness). This document synthesizes open issues, code evidence, downstream consumer patterns (where accessible), and implied user needs to define what "done" looks like for these two phases.
+---
+
+## How to use this document
+
+This document answers **what ledger-rs needs to do and why** — grounded in downstream consumer analysis, open issues, and design decisions. GitHub issues answer **what specific work is being done and whether it's done**.
+
+- **Before starting any issue** that touches the library API or CLI behavior: read the relevant section here for context and constraints.
+- **For API design decisions**: the canonical API surface (§1, §3) is authoritative — e.g., callers construct `resolution::Transaction`, not `ast::Transaction`.
+- **Update this doc via PR** when requirements change: new downstream discovered, design decision made, or post-milestone retrospective. Do not update it as a changelog.
+- **REQ-GAP status markers**: ✅ Done · 🔧 #N open issue · ⏳ Phase N deferred · 🚫 Won't do
 
 ---
 
@@ -457,111 +466,79 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 ---
 
-**REQ-GAP-000**: **`file_opener` / `Parser.opener` spelling** *(Confirmed breakage in both downstreams)*
+**REQ-GAP-000** 🔧 *(needs issue)* — **`file_opener` / `Parser.opener` spelling** *(Confirmed breakage in both downstreams)*
 - Both downstreams use `file_openner` / `Parser { openner: ... }` (double 'n'). Library currently has `file_opener` / `Parser { opener: ... }` (single 'n'). Neither compiles against current HEAD.
 - **Recommendation**: Fix both downstreams to single-'n'. Do not add a deprecated alias to the library.
 - **Priority**: Blocking for M2.
 
-**REQ-GAP-001**: **`write_ledger<W: Write>(writer: &mut W, txns: &[resolution::Transaction]) -> Result<()>`** *(Issue #30)*
+**REQ-GAP-001** 🔧 #30 — **`write_ledger<W: Write>(writer: &mut W, txns: &[resolution::Transaction]) -> Result<()>`**
 - Both downstreams currently do `for txn in txns { println!("{txn}"); }` and rely on shell redirection to append to a ledger file. `write_ledger()` enables writing to any `Write` sink in-process.
-- **Priority**: M2 (tracked in #30).
 
-**REQ-GAP-002**: **Streaming / incremental elaboration**
+**REQ-GAP-001b** 🔧 #31 — **`eval_transaction()` bridge from resolution to elaboration**
+- See §1.1 REQ-M2-002 for full description.
+
+**REQ-GAP-002** ⏳ Phase 4 — **Streaming / incremental elaboration**
 - For large ledgers, users may want to elaborate only recent transactions or a filtered subset
-- **Current state**: Full elaboration rebuilds all balances from scratch
-- **Gap**: No API for "elaborate transactions from date X onwards" or "elaborate in-place"
-- **Priority**: Low (full elaboration is fast enough for most use cases; typical ledgers < 50k txns); consider for Phase 4
-- **Why users need this**: Long-running import daemons want to add daily transactions without recompiling entire ledger
+- **Current state**: Full elaboration rebuilds all balances from scratch; fast enough for typical ledgers (< 50k txns)
 
-**REQ-GAP-002b**: **`ast::ValueExpr::parse()` must remain public** *(from bookie's account_mapper)*
-- `bookie`'s `account_mapper.rs` deserializes amount strings from YAML config and parses them with `ledger::ast::ValueExpr::parse("$100")`. The resulting `ValueExpr` is used directly in `resolution::Posting::with_amount()`.
-- This is the one genuine public API need bookie has at the `ast` layer — not transaction construction.
-- **Required**: `ast::ValueExpr` and `ValueExpr::parse(&str)` remain public. `ValueExpr: Into<ast::AmountDetails>` must hold (or `resolution::Posting::with_amount` must accept `ValueExpr` directly).
-- **Priority**: Stability.
+**REQ-GAP-002b** ✅ *(exists; stability only)* — **`ast::ValueExpr::parse()` must remain public**
+- `bookie`'s `account_mapper.rs` parses amount strings from YAML config with `ledger::ast::ValueExpr::parse("$100")`. This is the one genuine public API need bookie has at the `ast` layer.
+- **Required**: `ast::ValueExpr` and `ValueExpr::parse(&str)` remain public. `ValueExpr: Into<ast::AmountDetails>` must hold so `resolution::Posting::with_amount(value_expr)` compiles.
 
-**REQ-GAP-003**: **Error recovery and partial parsing**
-- If one transaction has a parse error, the entire journal fails to compile
-- Users may want "best-effort" parsing: keep valid transactions, report errors on invalid ones
-- **Current state**: First error halts parsing
-- **Gap**: No error accumulation mode
-- **Priority**: Medium; useful for import scripts and validation tools that need to show user which rows failed
-- **Why users need this**: Batch imports from banks often have malformed rows; user needs to see all errors at once, not stop at first
+**REQ-GAP-003** ⏳ Phase 4 — **Error recovery and partial parsing**
+- If one transaction has a parse error, the entire journal fails. Users may want best-effort parsing (keep valid transactions, report all errors) — useful for batch import tools where malformed rows should not abort the whole run.
 
-**REQ-GAP-004**: **Query API / expression-based filtering** *(Phase 4, confirmed high-value)*
-- Users currently iterate `journal.transactions` manually. The invoice workflow in `betterbytes-org/ledger` depends on `--limit "meta('program') == '...'"` which requires expression evaluation over transactions.
-- **Confirmed need**: `ledger.py` uses `--limit "meta('program') == 'Grant:UW:HARVEST'"` to isolate grant expenses. Without this, multi-grant ledgers cannot correctly isolate per-grant costs.
-- **Phase 4 scope**: Issue #43 (JournalFilter struct), issue #45 (expression DSL spike). M2/M3 workaround: filter by account regex alone, which is sufficient for single-grant use cases.
-- **Note**: The `better-bytes-ledger-import/revenue.rs` already implements a manual version of this filter pattern in Rust, confirming the workaround is viable for M2/M3.
+**REQ-GAP-004** ⏳ Phase 4 (#43, #45) — **Query API / expression-based filtering** *(confirmed high-value)*
+- Users currently iterate `journal.transactions` manually. The invoice workflow in `betterbytes-org/ledger` depends on `--limit "meta('program') == 'Grant:UW:HARVEST'"` to isolate per-grant expenses across a multi-grant ledger.
+- M2/M3 workaround: filter by account regex alone (`/^Expenses:Grants:UW:HARVEST:/`), sufficient for single-grant ledgers.
+- Phase 4 scope: Issue #43 (JournalFilter struct), issue #45 (expression DSL spike).
 
-**REQ-GAP-004b**: **`!include` glob pattern support** *(Phase 4)*
-- `betterbytes-org/ledger` uses `!include ../people/*.ledger` to include all per-person account files without listing each one.
-- **Current ledger-rs state**: `include` supports single file paths only; no glob expansion.
-- **Required behavior**: Glob patterns match files, sort deterministically, include all matches. Error if pattern matches nothing.
-- **Why better than ledger-cli**: ledger-cli glob order is filesystem-dependent; ledger-rs should sort lexicographically for reproducibility.
+**REQ-GAP-004b** ⏳ Phase 4 — **`!include` glob pattern support**
+- `betterbytes-org/ledger` uses `!include ../people/*.ledger` to include all per-person account files.
+- **Current state**: `include` supports single file paths only. **Required**: glob expansion, deterministic (lexicographic) sort, error if no matches.
 
-**REQ-GAP-004c**: **Account-level `assert`/`check` directives** *(Phase 4)*
-- `betterbytes-org/ledger` uses account assertions heavily:
+**REQ-GAP-004c** ⏳ Phase 4 — **Account-level `assert`/`check` directives**
+- `betterbytes-org/ledger` validates every posting to an account at elaboration time:
   ```
-  account Assets:Checking:Mercury:7920
+  account Assets:Checking
       assert commodity == "$"
-      assert assetChecker(amount)
   account Income:Grants
       assert incomeChecker(amount) and tag("IncomeType") =~ /^RBI/
   ```
-- These validate every transaction posting to the account at elaboration time.
-- **Current ledger-rs state**: `AccountProperties` stores only `note`; no `assert`/`check` fields.
-- **Required**: Parse and store assertion expressions in `AccountProperties`; evaluate them during elaboration.
+- **Current state**: `AccountProperties` stores only `note`; no `assert`/`check` fields.
 
-**REQ-GAP-004d**: **`commodity`, `define`, and `tag` directives** *(Phase 4)*
-- `betterbytes-org/ledger` declares: commodity format (`commodity $\n  format $1,000.00\n  default`), user-defined macros (`define assetChecker(amt) = ...`), and tag validation (`tag Statement\n  assert value =~ /regex/`).
-- **Current ledger-rs state**: None of these are supported.
-- **Commodity**: Needed for default commodity selection and display formatting.
-- **Define**: Needed for reusable expression macros in assertions; keep scope lexical (per-include-context).
-- **Tag directives**: Needed for tag value validation in strict mode.
+**REQ-GAP-004d** ⏳ Phase 4 — **`commodity`, `define`, and `tag` directives**
+- `betterbytes-org/ledger` uses: commodity format/default declarations, `define` macros (used in account assertions), and `tag` directives with value validation.
+- **Current state**: None of these are supported in ledger-rs.
 
-**REQ-GAP-005**: **Commodity conversion / FX handling**
-- Balance assertions in mixed-commodity accounts (e.g., USD + EUR)
-- Lot pricing (`@ unit_cost`, `@@ total_cost`) affects balance calculations
-- **Current state**: Lot pricing supported in parsing/elaboration; assertions not yet enforced
-- **Gap**: Semantics unclear for multi-commodity balance assertions
-- **Priority**: Medium; clarify in issue #37 design phase
-- **Why users need this**: International accounting, currency trading, brokerage accounts all involve multiple commodities; assertions must handle these correctly
+**REQ-GAP-005** 🔧 #37 — **Commodity conversion / FX handling in balance assertions**
+- Mixed-commodity accounts (USD + EUR) raise questions about assertion semantics. Clarify in #37 design phase.
 
 ---
 
 ### 5.2 Serialization & Persistence
 
-**REQ-GAP-006**: **Snapshot and restore workflow**
-- Users want to compile a journal to `.bki`, ship it, and deserialize later
-- **Current state**: Implemented; postcard + XZ round-trip works
-- **Gap**: No `--snapshot` subcommand or explicit guidance on when to recompile
-- **Recommendation**: Document best practices for large ledgers (compile once, query from `.bki` unless source changes)
+**REQ-GAP-006** ⏳ Phase 4 (#39–#42) — **Snapshot and restore workflow**
+- Compile journal to `.bki`, ship it, deserialize for queries. Implementation tracked in #39–#42.
+- Gap: no `--snapshot` subcommand; no documented guidance on when to recompile vs. reuse `.bki`.
 
-**REQ-GAP-007**: **Incremental `.bki` updates**
-- If source ledger grows (new transactions appended), recompiling the entire `.bki` is inefficient
-- **Current state**: No support; users must recompile from scratch
-- **Gap**: No delta-encoding or incremental serialization
-- **Priority**: Low; likely Phase 4 or later
+**REQ-GAP-007** ⏳ Phase 4 — **Incremental `.bki` updates**
+- Appending new transactions to a large ledger requires full recompilation. Delta-encoding or append-only mode not yet designed.
 
 ---
 
 ### 5.3 Balance Assertion Edge Cases
 
-**REQ-GAP-008**: **Assertion on same date as transaction**
-- If a transaction and assertion both occur on 2024-01-15, what is the order?
-- **Current state**: TBD (depends on source order; no special handling)
-- **Recommendation**: Process entries in source order; assertion checks balance after all prior transactions on that date
+*(All three pending resolution of semantics in issue #37)*
 
-**REQ-GAP-009**: **Assertion failure recovery**
-- If an assertion fails, should elaboration continue or halt immediately?
-- **Current state**: TBD; likely `Err()` on first failure (fail-fast)
-- **Recommendation**: Fail-fast for simplicity; users can add/remove assertions to iterate toward a valid ledger
+**REQ-GAP-008** 🔧 #37 — **Assertion on same date as transaction**
+- If a transaction and assertion both occur on the same date, assertion checks balance *after* all same-date transactions (source order).
 
-**REQ-GAP-010**: **Rounding and tolerance in assertions**
-- Should `$1000.00 = $999.99999` pass or fail?
-- **Current state**: Likely exact match (no tolerance) pending issue #37 clarification
-- **Gap**: No tolerance mechanism or configurable epsilon
-- **Recommendation**: Start with exact match; add tolerance mode in Phase 4 if needed
+**REQ-GAP-009** 🔧 #37 — **Assertion failure recovery**
+- Recommendation: fail-fast (first failing assertion halts elaboration with a clear error).
+
+**REQ-GAP-010** 🔧 #37 — **Rounding and tolerance in assertions**
+- Recommendation: exact match to start; tolerance mode deferred to Phase 4 if needed.
 
 ---
 
