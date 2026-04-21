@@ -12,31 +12,58 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// does testing things
+    /// Parse and compile a ledger source file into a binary `.bki` archive.
+    ///
+    /// The output is a postcard-serialised, XZ-compressed snapshot of the
+    /// elaborated journal. Loading a `.bki` file is much faster than
+    /// re-parsing the source, making it suitable for large ledgers that are
+    /// queried repeatedly.
     Compile {
-        /// lists test values
+        /// Path for the output `.bki` file.
         #[arg(short, long)]
         output: PathBuf,
+        /// Path to the root `.ledger` source file (may use `include`).
         source: PathBuf,
     },
+
+    /// Print the running balance for every account.
+    ///
+    /// Accepts either a raw `.ledger` source file or a pre-compiled `.bki`
+    /// file. Output is formatted with the commodity and value right-aligned,
+    /// followed by the account name.
     Balance {
         source: PathBuf,
     },
+
+    /// List individual postings, optionally filtered by account name.
+    ///
+    /// `PATTERN` is matched case-insensitively as a substring of the account
+    /// name. Omit it to list all postings.
     Register {
         source: PathBuf,
         pattern: Option<String>,
     },
 }
 
+/// Load a [`ledger::Journal`] from either a compiled `.bki` file or a raw
+/// `.ledger` source file.
+///
+/// The file type is detected by extension:
+/// - `.bki` — decompress with XZ and deserialise with postcard.
+/// - anything else — parse as Ledger source text, resolving `include`
+///   directives relative to the file's parent directory.
 fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::Error>> {
     if let Some("bki") = path.extension().and_then(|e| e.to_str()) {
+        // Pre-compiled binary format: decompress then deserialise.
+        // The 100 KiB scratch buffer is required by postcard's `from_io` API;
+        // it does not limit the total data read.
         let input_xz = xz::read::XzDecoder::new(File::open(path)?);
         let mut buf = vec![0; 102400];
         Ok(postcard::from_io((input_xz, &mut buf))?.0)
     } else {
         let base_path = path.parent().unwrap().to_path_buf();
         let parser = ledger::parser::Parser {
-            openner: ledger::file_openner,
+            opener: ledger::file_opener,
             base_path,
         };
         let mut file = String::new();
@@ -52,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Compile { output, source } => {
             let base_path = source.parent().unwrap().to_path_buf();
             let parser = ledger::parser::Parser {
-                openner: ledger::file_openner,
+                opener: ledger::file_opener,
                 base_path,
             };
             let mut file = String::new();
