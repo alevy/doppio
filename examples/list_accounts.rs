@@ -1,31 +1,79 @@
-use std::{fs::File, io::Read};
+//! Example: print a final balance table for all accounts in a journal.
+//!
+//! Accepts either a raw `.ledger` source file or a pre-compiled `.bki` file as
+//! its sole command-line argument. Outputs one line per commodity per account,
+//! formatted to match the `balance` subcommand of the `ledger` CLI.
+//!
+//! Usage:
+//!   cargo run --example list_accounts -- path/to/journal.ledger
+//!   cargo run --example list_accounts -- path/to/journal.bki
 
-use ledger::{elaboration::Journal, resolution::HIR};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::Read as _,
+    path::PathBuf,
+};
+
+use rust_decimal::Decimal;
+
+fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::Error>> {
+    if let Some("bki") = path.extension().and_then(|e| e.to_str()) {
+        // Pre-compiled binary format: XZ-decompress then postcard-deserialise.
+        // The 100 KiB scratch buffer is required by postcard's `from_io` API.
+        let input_xz = xz::read::XzDecoder::new(File::open(path)?);
+        let mut buf = vec![0u8; 102400];
+        Ok(postcard::from_io((input_xz, &mut buf))?.0)
+    } else {
+        let base_path = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let parser = ledger::parser::Parser {
+            opener: ledger::file_opener,
+            base_path: base_path.to_path_buf(),
+        };
+        let mut source = String::new();
+        File::open(path)?.read_to_string(&mut source)?;
+        Ok(ledger::compile(&source, parser)?)
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = &std::env::args().collect::<Vec<String>>()[1];
-    let mut file = String::new();
-    File::open(&path)
-        .unwrap()
-        .read_to_string(&mut file)
-        .unwrap();
-    let mut file = file.as_str();
-    let output = ledger::parser::parse_ledger(&mut file)?;
-    let hir: HIR = output.try_into()?;
-    let journal: Journal = hir.try_into()?;
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: list_accounts <path.ledger|path.bki>");
+        std::process::exit(1);
+    }
+    let path = PathBuf::from(&args[1]);
 
-    if let Some(last_txn) = journal.transactions.last() {
-        for (account, balances) in last_txn.running_state.account_balances.iter() {
-            let mut balances = balances.commodity.iter();
-            if let Some((commodity, value)) = balances.next() {
-                let balance = format!("{} {value}", commodity);
-                println!("{balance:>20}  {}", account,);
-            }
-            for (commodity, value) in balances {
-                let balance = format!("{} {value}", commodity);
-                println!("{balance:>20}");
+    let journal = load_journal(&path)?;
+
+    // Accumulate per-account, per-commodity balances by walking every posting
+    // in every transaction.  Running state is no longer stored on individual
+    // transactions, so we compute it here from scratch.
+    let mut balances: BTreeMap<&String, BTreeMap<&String, Decimal>> = BTreeMap::new();
+    for txn in journal.transactions.iter() {
+        for posting in txn.postings.iter() {
+            for (commodity, amount) in posting.amount.0.iter() {
+                *(balances
+                    .entry(&posting.account)
+                    .or_default()
+                    .entry(commodity)
+                    .or_default()) += *amount;
             }
         }
     }
+
+    // Print: commodity + value right-aligned in a 20-char field, then account.
+    for (account, account_balances) in balances.iter() {
+        let mut iter = account_balances.iter();
+        if let Some((commodity, value)) = iter.next() {
+            let balance = format!("{} {value}", commodity);
+            println!("{balance:>20}  {}", account);
+        }
+        for (commodity, value) in iter {
+            let balance = format!("{} {value}", commodity);
+            println!("{balance:>20}");
+        }
+    }
+
     Ok(())
 }
