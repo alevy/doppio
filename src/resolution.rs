@@ -397,6 +397,18 @@ impl std::fmt::Display for ResolutionError {
 impl std::error::Error for ResolutionError {}
 
 impl HIR {
+    /// Returns an iterator over only the [`Transaction`] entries in this HIR,
+    /// skipping assertions and any other directive types.
+    pub fn transactions(self) -> impl Iterator<Item = Transaction> {
+        self.entries.into_iter().filter_map(|e| {
+            if let Entry::Transaction(txn) = e.data {
+                Some(txn)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Resolve an [`ast::Date`] to a [`NaiveDate`].
     ///
     /// If `ast.year` is `None`, `fallback_year` is used instead. Returns
