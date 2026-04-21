@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, fs::File, io::{Read as _, Write as _}, path::PathBuf};
 
 use clap::{Parser, Subcommand};
-use rust_decimal::Decimal;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
