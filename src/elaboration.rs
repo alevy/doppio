@@ -273,6 +273,10 @@ impl TryFrom<resolution::HIR> for Journal {
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
             match entry.data {
+                resolution::Entry::Assertion(_) => {
+                    // TODO: enforce balance assertions (tracked in issue #37)
+                    let _ = entry_context;
+                }
                 resolution::Entry::Transaction(mut transaction) => {
                     // `transaction_state` accumulates the running sum of all
                     // explicit posting amounts (per commodity) for balancing.

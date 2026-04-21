@@ -31,8 +31,31 @@ pub enum Entry {
     Directive(Directive),
     /// A `P` price directive recording the market price of a commodity.
     HistoricalPrice(HistoricalPrice),
+    /// A standalone balance assertion directive.
+    ///
+    /// Example: `2024-01-15 = Assets:Checking  $1000.00`
+    Assertion(AssertionDirective),
     /// A comment line starting with `;`, `#`, `*`, `%`, or `|`.
     Comment(String),
+}
+
+/// A standalone balance assertion directive outside of any transaction.
+///
+/// These directives assert that an account's balance equals a given amount
+/// at a specific date. The assertion is not enforced by the resolution stage;
+/// enforcement is handled by the elaboration stage (see issue #37).
+///
+/// Example: `2024-01-15 == Assets:Checking  $1000.00`
+#[derive(Debug, Clone)]
+pub struct AssertionDirective {
+    /// The date at which the balance assertion applies.
+    pub date: Date,
+    /// The account whose balance is being asserted.
+    pub account: String,
+    /// The expected balance expressed as a value expression.
+    pub amount: ValueExpr,
+    /// `true` if `==` (strict equality), `false` if `=` (weak/approximate).
+    pub strict: bool,
 }
 
 /// A `P` price directive: the market price of one unit of `commodity` in

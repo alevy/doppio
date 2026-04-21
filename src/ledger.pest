@@ -24,7 +24,8 @@ journal = ${ (entry | NEWLINE)* ~ EOI }
 // An entry is one of: transaction, directive, comment, or budget.
 // Silent (_) so the match is transparent — callers see the inner rule.
 entry = _{
-    transaction
+    assertion_directive
+    | transaction
     | directive
     | historical_price
     | comment_line
@@ -150,6 +151,21 @@ historical_price = ${ "P" ~ ws+ ~ date ~ ws+ ~ (time ~ ws+)? ~ commodity ~ ws+ ~
 
 // An optional wall-clock time: HH:MM or HH:MM:SS.
 time = ${ ASCII_DIGIT{2} ~ ":" ~ ASCII_DIGIT{2} ~ (":" ~ ASCII_DIGIT{2})? }
+
+// --- Standalone Balance Assertion Directives ---
+
+// A standalone balance assertion: `date = account  amount` (weak) or
+// `date == account  amount` (strict). The `=`/`==` marker takes the place
+// of the cleared-state field that appears in transaction headers.
+//
+// Two or more spaces (or a tab) separate the account from the amount,
+// matching the same convention used for posting amounts.
+assertion_directive = ${
+    date ~ ws+ ~ assertion_op ~ ws+ ~ account ~ (ws{2,} | "\t") ~ value_expr ~ (NEWLINE | EOI)
+}
+
+// `==` must be tried before `=` so that the longer token wins.
+assertion_op = @{ "==" | "=" }
 
 // --- Directives ---
 
