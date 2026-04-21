@@ -96,7 +96,7 @@ pub enum AccountItem {
 /// keeps it `Option<i32>` so the parser can represent partially-specified
 /// dates uniformly. The [`crate::resolution`] stage rejects dates where
 /// no year can be determined.
-#[derive(Clone, Default, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Default, Debug)]
 pub struct Date {
     /// The calendar year, e.g. `2024`. `None` if not present in the source.
     pub year: Option<i32>,
@@ -457,4 +457,27 @@ pub enum TransactionState {
     Pending,
     /// `*` — the transaction has been confirmed/reconciled.
     Cleared,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_date_ordering() {
+        let d1 = Date { year: Some(2024), month: 1, date: 1 };
+        let d2 = Date { year: Some(2024), month: 6, date: 15 };
+        let d3 = Date { year: Some(2025), month: 1, date: 1 };
+        let d4 = Date { year: Some(2024), month: 1, date: 1 };
+
+        assert!(d1 < d2);
+        assert!(d2 < d3);
+        assert!(d1 < d3);
+        assert_eq!(d1, d4);
+        assert!(d3 > d1);
+
+        let mut dates = vec![d3.clone(), d1.clone(), d2.clone()];
+        dates.sort();
+        assert_eq!(dates, vec![d1, d2, d3]);
+    }
 }
