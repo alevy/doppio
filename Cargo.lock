@@ -589,6 +589,7 @@ dependencies = [
  "pest",
  "pest_derive",
  "postcard",
+ "regex",
  "rust_decimal",
  "serde",
  "serde-pickle",
