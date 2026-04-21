@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs::File, io::{Read as _, Write as _}, path::PathBuf};
+use std::{collections::{BTreeMap, BTreeSet}, fs::File, io::{Read as _, Write as _}, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -51,6 +51,29 @@ enum Commands {
     /// structure needed for faithful re-emission.
     Print {
         /// Path to the root `.ledger` source file.
+        source: PathBuf,
+    },
+
+    /// List all accounts that appear in the journal, one per line.
+    ///
+    /// Output is sorted alphabetically. Pass `PATTERN` to restrict the list
+    /// to accounts whose name contains the pattern (case-insensitive).
+    Accounts {
+        source: PathBuf,
+        /// Optional case-insensitive substring filter on account names.
+        pattern: Option<String>,
+    },
+
+    /// List all commodity symbols used in the journal, one per line.
+    ///
+    /// Output is sorted and deduplicated.
+    Commodities {
+        source: PathBuf,
+    },
+
+    /// Print a summary of the journal: transaction count, unique accounts,
+    /// unique commodities, and the date range covered.
+    Stats {
         source: PathBuf,
     },
 }
@@ -184,6 +207,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for entry in hir.entries {
                 if let ledger::resolution::Entry::Transaction(txn) = entry.data {
                     println!("{txn}");
+                }
+            }
+        }
+        Commands::Accounts { source, pattern } => {
+            let journal = load_journal(&source)?;
+            let pattern = pattern.map(|p| p.to_lowercase()).unwrap_or_default();
+            for account in journal.accounts.keys() {
+                if account.to_lowercase().contains(&pattern) {
+                    println!("{}", account);
+                }
+            }
+        }
+        Commands::Commodities { source } => {
+            let journal = load_journal(&source)?;
+            let commodities: BTreeSet<&String> = journal
+                .transactions
+                .iter()
+                .flat_map(|txn| txn.postings.iter())
+                .flat_map(|posting| posting.amount.0.keys())
+                .collect();
+            for commodity in commodities {
+                println!("{}", commodity);
+            }
+        }
+        Commands::Stats { source } => {
+            let journal = load_journal(&source)?;
+
+            let commodities: BTreeSet<&String> = journal
+                .transactions
+                .iter()
+                .flat_map(|txn| txn.postings.iter())
+                .flat_map(|posting| posting.amount.0.keys())
+                .collect();
+
+            // txn.date is Unix epoch days (1970-01-01 = 0).
+            let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+            let first_date = journal
+                .transactions
+                .first()
+                .and_then(|txn| {
+                    unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64))
+                });
+            let last_date = journal
+                .transactions
+                .last()
+                .and_then(|txn| {
+                    unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64))
+                });
+
+            println!("Transactions: {}", journal.transactions.len());
+            println!("Accounts:     {}", journal.accounts.len());
+            println!("Commodities:  {}", commodities.len());
+            match (first_date, last_date) {
+                (Some(first), Some(last)) => {
+                    println!("First date:   {}", first);
+                    println!("Last date:    {}", last);
+                }
+                _ => {
+                    println!("First date:   N/A");
+                    println!("Last date:    N/A");
                 }
             }
         }
