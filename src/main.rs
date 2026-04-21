@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, fs::File, io::{Read as _, Write as _}, path::PathBuf};
 
 use clap::{Parser, Subcommand};
-use rust_decimal::Decimal;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -102,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!(
                             "{:<20} {:>20}",
                             posting.account,
-                            Decimal::deserialize(*posting.amount.0.get("$").unwrap())
+                            posting.amount.0.get("$").unwrap()
                         );
                     }
                 }
@@ -120,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .entry(&posting.account)
                             .or_default()
                             .entry(commodity)
-                            .or_default()) += Decimal::deserialize(*amount);
+                            .or_default()) += *amount;
                     }
                 }
             }

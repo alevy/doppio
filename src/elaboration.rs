@@ -120,15 +120,34 @@ pub struct ResolvedPosting {
 /// A commodity name (e.g. `"USD"`, `"BTC"`, `"$"`).
 pub type Commodity = String;
 
-/// A multi-commodity amount stored as a map from commodity to serialised decimal.
+/// A multi-commodity amount: a map from commodity symbol to a `Decimal` value.
 ///
-/// Each value is `[u8; 16]` — the binary representation produced by
-/// [`rust_decimal::Decimal::serialize`]. Using fixed-size byte arrays instead of
-/// `Decimal` directly lets the struct derive `serde::Serialize`/`Deserialize`
-/// via postcard without needing a custom codec, while preserving exact decimal
-/// precision (no floating-point rounding).
-#[derive(Deserialize, Default, Serialize, Debug)]
-pub struct Amount(pub BTreeMap<Commodity, [u8; 16]>);
+/// The serde representation uses `[u8; 16]` per value — the fixed-size binary
+/// encoding produced by [`rust_decimal::Decimal::serialize`] — so the `.bki`
+/// wire format is identical to the original byte-array storage. The conversion
+/// is handled by the manual `Serialize`/`Deserialize` impls below.
+#[derive(Default, Debug)]
+pub struct Amount(pub BTreeMap<Commodity, Decimal>);
+
+impl serde::Serialize for Amount {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let bytes_map: BTreeMap<&Commodity, [u8; 16]> =
+            self.0.iter().map(|(k, v)| (k, v.serialize())).collect();
+        bytes_map.serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Amount {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let bytes_map = BTreeMap::<Commodity, [u8; 16]>::deserialize(d)?;
+        Ok(Amount(
+            bytes_map
+                .into_iter()
+                .map(|(k, v)| (k, Decimal::deserialize(v)))
+                .collect(),
+        ))
+    }
+}
 
 /// Cleared/pending state of a resolved transaction or posting.
 ///
@@ -344,17 +363,15 @@ impl TryFrom<resolution::HIR> for Journal {
                             // commodity) to transaction_state rather than the commodity units.
                             // This is what needs to balance with the offsetting cash posting.
                             if let Some((lot_total, lot_commodity)) = lot_pricing {
-                                let decb = transaction_state.0.entry(lot_commodity).or_default();
-                                let dec = Decimal::deserialize(*decb) + lot_total;
-                                *decb = dec.serialize();
+                                let dec = transaction_state.0.entry(lot_commodity).or_default();
+                                *dec = *dec + lot_total;
                             } else {
-                                let decb =
+                                let dec =
                                     transaction_state.0.entry(commodity.clone()).or_default();
-                                let dec = Decimal::deserialize(*decb) + value;
-                                *decb = dec.serialize();
+                                *dec = *dec + value;
                             }
 
-                            let amount = Amount(BTreeMap::from([(commodity, value.serialize())]));
+                            let amount = Amount(BTreeMap::from([(commodity, value)]));
                             resolved_postings.push(ResolvedPosting {
                                 account: account_name,
                                 payee,
@@ -387,7 +404,7 @@ impl TryFrom<resolution::HIR> for Journal {
                             transaction_state
                                 .0
                                 .iter()
-                                .map(|(c, v)| (c.clone(), (-Decimal::deserialize(*v)).serialize()))
+                                .map(|(c, v)| (c.clone(), -v))
                                 .collect(),
                         );
 
@@ -404,7 +421,7 @@ impl TryFrom<resolution::HIR> for Journal {
                         if transaction_state
                             .0
                             .values()
-                            .any(|value| !Decimal::deserialize(*value).is_zero())
+                            .any(|value| !value.is_zero())
                         {
                             return Err(ElaborationError::TransactionDoesNotBalance(
                                 transaction_state,
@@ -424,7 +441,7 @@ impl TryFrom<resolution::HIR> for Journal {
                             .or_default();
                         for (commodity, delta) in posting.amount.0.iter() {
                             *(balances.commodity.entry(commodity.clone()).or_default()) +=
-                                Decimal::deserialize(*delta);
+                                delta;
                         }
                     }
 
@@ -701,6 +718,45 @@ mod evaluator {
                     .ok_or(EvaluationError::NoSuchField(field)),
                 val => Err(EvaluationError::FieldAccessTypeError(val)),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal::dec;
+
+    #[test]
+    fn test_amount_serde_wire_format() {
+        // Verify that Amount serializes identically to BTreeMap<Commodity, [u8; 16]>,
+        // preserving the binary wire format for .bki files.
+        let decimal = dec!(182.50);
+        let amount = Amount(BTreeMap::from([("$".to_string(), decimal)]));
+
+        // Serialize via our custom impl
+        let amount_bytes = postcard::to_allocvec(&amount).unwrap();
+
+        // Serialize the equivalent [u8; 16] map directly
+        let raw_map: BTreeMap<&str, [u8; 16]> = BTreeMap::from([("$", decimal.serialize())]);
+        let raw_bytes = postcard::to_allocvec(&raw_map).unwrap();
+
+        assert_eq!(amount_bytes, raw_bytes, "Amount wire format must match [u8;16] map");
+    }
+
+    #[test]
+    fn test_amount_serde_roundtrip() {
+        let decimal = dec!(42.123456789);
+        let original = Amount(BTreeMap::from([
+            ("USD".to_string(), decimal),
+            ("$".to_string(), dec!(-1.5)),
+        ]));
+        let bytes = postcard::to_allocvec(&original).unwrap();
+        let recovered: Amount = postcard::from_bytes(&bytes).unwrap();
+
+        assert_eq!(original.0.len(), recovered.0.len());
+        for (k, v) in &original.0 {
+            assert_eq!(recovered.0[k], *v);
         }
     }
 }
