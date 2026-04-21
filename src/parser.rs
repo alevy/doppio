@@ -96,6 +96,12 @@ impl<F: Fn(&str) -> String> Parser<F> {
                     // the parent file.
                     let _ = std::mem::replace(&mut self.base_path, old_base_path);
                 }
+                Rule::budget => {
+                    // Budget entries (`~ monthly ...`) are intentionally not
+                    // modelled in this implementation. They represent
+                    // planned/expected amounts in ledger-cli but have no effect
+                    // on balances or reports. See GitHub issue #13.
+                }
                 _ => {}
             }
         }
