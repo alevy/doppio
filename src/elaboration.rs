@@ -1,3 +1,30 @@
+//! Elaboration stage: evaluate expressions, balance transactions, and
+//! produce the final serialisable [`Journal`].
+//!
+//! This stage converts a [`resolution::HIR`] into an [`elaboration::Journal`]
+//! by performing the following work:
+//!
+//! - **Expression evaluation** — [`ast::ValueExpr`] trees are evaluated to
+//!   concrete `(Decimal, commodity)` pairs by the [`evaluator`] submodule.
+//!   Commodity aliases from the active [`resolution::Context`] are applied.
+//!
+//! - **Transaction balancing** — if a transaction has exactly one posting with
+//!   no explicit amount (a "null posting"), its amount is inferred as the
+//!   negation of all other postings' sum. If all postings have amounts their
+//!   sum must be zero; otherwise [`ElaborationError::TransactionDoesNotBalance`]
+//!   is returned.
+//!
+//! - **Balance assertions / assignments** — `= expected` checks are verified
+//!   against the running account balance. `= target` assignments set the
+//!   posting amount to `target − current_balance`.
+//!
+//! - **Lot pricing** — `@ unit` and `@@ total` cost annotations are converted
+//!   into a cash amount in the lot's commodity for the purpose of balancing.
+//!
+//! - **Account registration** — every account mentioned in a posting is added
+//!   to [`Journal::accounts`], merging any properties declared in `account`
+//!   directives.
+
 use std::{collections::BTreeMap, fmt::Display};
 
 use rust_decimal::Decimal;
@@ -8,58 +35,113 @@ use crate::{
     resolution,
 };
 
+/// The fully elaborated journal: the final output of the compilation pipeline.
+///
+/// `Journal` implements [`serde::Serialize`] and [`serde::Deserialize`] so it
+/// can be written to a `.bki` file (via `postcard` + XZ) and read back later
+/// without re-parsing the source.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Journal {
+    /// All transactions in source order, with amounts fully evaluated.
     pub transactions: Vec<ResolvedTransaction>,
+    /// All accounts referenced by any posting, with their declared properties.
     pub accounts: BTreeMap<String, AccountProperties>,
 }
 
+/// Properties of an account declared with an `account` directive.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AccountProperties {
+    /// A free-form note describing the account.
     pub note: Option<String>,
 }
 
+/// Per-account running balance, used during elaboration to evaluate balance
+/// assertions and the `account()` expression function.
 #[derive(Default, Clone, Debug)]
 struct AccountBalances {
+    /// The balance for each commodity held in this account.
     commodity: BTreeMap<String, Decimal>,
 }
 
+/// Mutable state threaded through the elaboration of all transactions.
+///
+/// Account balances are updated as each transaction is processed so that
+/// balance assertions and the `account()` function see the balance *before*
+/// the current posting is applied (which matches ledger-cli semantics).
 #[derive(Default, Clone, Debug)]
 struct RunningState {
     account_balances: BTreeMap<String, AccountBalances>,
 }
 
+/// A fully evaluated and balanced transaction, ready for serialisation.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ResolvedTransaction {
+    /// Days since the Unix epoch (1970-01-01 = 0).
+    ///
+    /// Stored as `i32` rather than a `NaiveDate` because `i32` serialises
+    /// compactly with postcard (4 bytes, fixed-width), is trivially sortable,
+    /// and avoids embedding chrono's internal representation in the on-disk
+    /// format.
     pub date: i32,
+    /// Optional secondary date in the same epoch-days format.
     pub secondary_date: Option<i32>,
+    /// Cleared / pending / uncleared state.
     pub state: TransactionState,
+    /// Optional reference code from the transaction header.
     pub code: Option<String>,
+    /// The payee / description.
     pub description: String,
+    /// Tags extracted from header notes.
     pub tags: Vec<String>,
+    /// Key-value metadata extracted from header notes.
     pub metadata: BTreeMap<String, String>,
+    /// The resolved postings (all amounts concrete, null posting filled in).
     pub postings: Vec<ResolvedPosting>,
 }
 
+/// A posting with a fully evaluated, concrete amount.
 #[derive(Deserialize, Serialize, Debug)]
 pub struct ResolvedPosting {
+    /// The canonical account name (after alias resolution).
     pub account: String,
+    /// The payee for this posting — taken from posting-level `payee:` metadata
+    /// if present, otherwise inherited from the transaction description.
     pub payee: String,
+    /// The posting amount, keyed by commodity.
     pub amount: Amount,
+    /// Per-posting state.
     pub state: TransactionState,
+    /// Tags extracted from posting notes.
     pub tags: Vec<String>,
+    /// Key-value metadata from posting notes.
     pub metadata: BTreeMap<String, String>,
 }
 
+/// A commodity name (e.g. `"USD"`, `"BTC"`, `"$"`).
 pub type Commodity = String;
 
+/// A multi-commodity amount stored as a map from commodity to serialised decimal.
+///
+/// Each value is `[u8; 16]` — the binary representation produced by
+/// [`rust_decimal::Decimal::serialize`]. Using fixed-size byte arrays instead of
+/// `Decimal` directly lets the struct derive `serde::Serialize`/`Deserialize`
+/// via postcard without needing a custom codec, while preserving exact decimal
+/// precision (no floating-point rounding).
 #[derive(Deserialize, Default, Serialize, Debug)]
 pub struct Amount(pub BTreeMap<Commodity, [u8; 16]>);
 
+/// Cleared/pending state of a resolved transaction or posting.
+///
+/// This is a separate type from [`ast::TransactionState`] because it derives
+/// `Serialize`/`Deserialize` for the on-disk format; `ast::TransactionState`
+/// does not need those traits.
 #[derive(Deserialize, Serialize, Debug)]
 pub enum TransactionState {
+    /// No state marker.
     Uncleared,
+    /// `!` — pending confirmation.
     Pending,
+    /// `*` — confirmed / reconciled.
     Cleared,
 }
 
@@ -73,25 +155,47 @@ impl From<ast::TransactionState> for TransactionState {
     }
 }
 
+/// Errors that can occur during the elaboration stage.
 #[derive(Debug)]
 pub enum ElaborationError {
+    /// A posting amount evaluated to a bare number with no commodity, and no
+    /// default commodity was set in the active context.
     AmountWithNoCommodity,
+    /// A value expression evaluated to a non-amount type (e.g. a string or
+    /// object) where an amount was expected.
     NonAmountWhereAmountExpected(ValueExpr),
+    /// An error from the expression evaluator.
     EvaluationError(EvaluationError),
+    /// A `= expected` balance assertion failed: the account's balance after
+    /// this posting does not equal the asserted value.
     PostingBalanceAssertionFailed,
+    /// A transaction has more than one null posting (only one is allowed, since
+    /// multiple unknowns cannot be uniquely determined).
     TooManyNullPostings,
+    /// All postings have explicit amounts but they do not sum to zero.
     TransactionDoesNotBalance(Amount),
 }
 
+/// Errors from evaluating a [`ast::ValueExpr`].
 #[derive(Debug)]
 pub enum EvaluationError {
+    /// `*` or `/` used as a unary prefix operator, which is not meaningful.
     UnaryMultiplyOrDivide,
+    /// A unary operator was applied to a non-amount value (e.g. a string).
     UnaryOnNonAmount(ValueExpr),
+    /// A binary operator was applied to incompatible types or mismatched
+    /// commodities (e.g. `USD + EUR`).
     BinaryOperationTypeError((ValueExpr, ValueExpr, crate::ast::Op)),
+    /// Field access on an object referenced a field that does not exist.
     NoSuchField(String),
+    /// Field access was attempted on a non-object value.
     FieldAccessTypeError(ValueExpr),
+    /// A function call with unrecognised name or argument count.
     UnknownFunctionArgs((String, Vec<ValueExpr>)),
+    /// A `Typed` annotation specified a commodity that is incompatible with
+    /// the inner expression's commodity.
     TypedCommodityToIncompatibleAmount((String, ValueExpr)),
+    /// A function received an argument of the wrong type.
     InvalidFunctionArgs((String, ValueExpr)),
 }
 
@@ -117,8 +221,9 @@ impl TryFrom<resolution::HIR> for Journal {
 
         let mut transactions = vec![];
 
+        // Pre-populate the accounts map from directives so that accounts
+        // declared with notes but never posted to still appear in the output.
         let mut accounts = BTreeMap::new();
-
         for (name, properties) in value.global_context.account_properties {
             accounts.insert(
                 name,
@@ -132,14 +237,25 @@ impl TryFrom<resolution::HIR> for Journal {
             let entry_context = &value.contexts[entry.context_id];
             match entry.data {
                 resolution::Entry::Transaction(mut transaction) => {
+                    // `transaction_state` accumulates the running sum of all
+                    // explicit posting amounts (per commodity) for balancing.
                     let mut transaction_state = Amount(BTreeMap::default());
 
+                    // Prefer an explicit "payee:" metadata key; fall back to
+                    // the transaction description as the default payee.
                     let payee = transaction
                         .metadata
                         .remove("payee")
                         .unwrap_or_else(|| transaction.description.clone());
+
+                    // Two-pass approach: first evaluate all postings that have
+                    // explicit amounts, accumulating the running sum. Null
+                    // postings are collected for the second pass, where the
+                    // single allowed null posting is filled in as the negation
+                    // of the total.
                     let mut null_postings = vec![];
                     let mut resolved_postings = vec![];
+
                     for mut posting in transaction.postings {
                         if let Some(amount) = posting.amount {
                             let account_name = entry_context
@@ -166,12 +282,15 @@ impl TryFrom<resolution::HIR> for Journal {
                                                 entry_context,
                                                 &state,
                                             )?;
+                                            // For a negative lot (selling), negate the cash total
+                                            // so that it offsets correctly in transaction_state.
                                             if value.is_sign_negative() {
                                                 v = -v;
                                             }
                                             Some((v, c))
                                         }
                                         Some(ast::LotPricing::Unit(expr)) => {
+                                            // "@ unit_price" — total cash = units * price
                                             let (v, c) = evaluator::eval_and_normalize_amount(
                                                 expr,
                                                 entry_context,
@@ -188,6 +307,10 @@ impl TryFrom<resolution::HIR> for Journal {
                                                 entry_context,
                                                 &state,
                                             )?;
+                                        // Assertion: current_balance + this_posting == expected.
+                                        // The assertion is checked BEFORE the posting updates the
+                                        // running state, so `account_balance` reflects the balance
+                                        // *before* this posting — consistent with ledger-cli.
                                         if !(bacommodity == commodity
                                             && account_balance
                                                 .and_then(|ab| ab.commodity.get(&commodity))
@@ -201,6 +324,8 @@ impl TryFrom<resolution::HIR> for Journal {
                                     (value, commodity, lot_pricing)
                                 }
                                 AmountDetails::BalanceAssignment(assignment) => {
+                                    // "= target_balance" — compute the delta needed to reach the
+                                    // target from the current running balance.
                                     let (newsum, commodity) = evaluator::eval_and_normalize_amount(
                                         assignment,
                                         entry_context,
@@ -215,6 +340,9 @@ impl TryFrom<resolution::HIR> for Journal {
                             };
                             let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
 
+                            // For lot-priced postings, add the *cash* total (in the lot's
+                            // commodity) to transaction_state rather than the commodity units.
+                            // This is what needs to balance with the offsetting cash posting.
                             if let Some((lot_total, lot_commodity)) = lot_pricing {
                                 let decb = transaction_state.0.entry(lot_commodity).or_default();
                                 let dec = Decimal::deserialize(*decb) + lot_total;
@@ -253,6 +381,8 @@ impl TryFrom<resolution::HIR> for Journal {
                             .unwrap_or(posting.account);
                         let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
 
+                        // The null posting's amount is the negation of the sum of all
+                        // other postings, making the transaction balance to zero.
                         let amount = Amount(
                             transaction_state
                                 .0
@@ -282,7 +412,7 @@ impl TryFrom<resolution::HIR> for Journal {
                         }
                     }
 
-                    // Finally, update account balances and names
+                    // Update running account balances and register new accounts.
                     for posting in resolved_postings.iter() {
                         if !accounts.contains_key(&posting.account) {
                             accounts.insert(posting.account.clone(), Default::default());
@@ -321,6 +451,7 @@ impl TryFrom<resolution::HIR> for Journal {
     }
 }
 
+/// Expression evaluator: reduces [`ast::ValueExpr`] trees to concrete values.
 mod evaluator {
     use std::collections::BTreeMap;
 
@@ -333,6 +464,12 @@ mod evaluator {
 
     use super::{ElaborationError, EvaluationError, RunningState};
 
+    /// Evaluate a value expression and extract the `(Decimal, commodity)` pair.
+    ///
+    /// After evaluation, commodity aliases from `eval_context` are applied so
+    /// that e.g. `"Bitcoin"` becomes `"BTC"`. If the result still has no
+    /// commodity, the context's `default_commodity` is used. Returns an error
+    /// if the result is not an amount or no commodity can be determined.
     pub fn eval_and_normalize_amount(
         val: ast::ValueExpr,
         eval_context: &resolution::Context,
@@ -341,12 +478,14 @@ mod evaluator {
         match eval(val, eval_context, running_state)? {
             ast::ValueExpr::Amount { value, commodity } => {
                 let commodity = if let Some(commodity) = commodity {
+                    // Apply commodity alias (e.g. "Bitcoin" → "BTC")
                     eval_context
                         .commodity_aliases
                         .get(&commodity)
                         .unwrap_or(&commodity)
                         .clone()
                 } else {
+                    // No commodity in the expression — use the context default
                     eval_context
                         .default_commodity
                         .clone()
@@ -358,15 +497,22 @@ mod evaluator {
         }
     }
 
+    /// Recursively evaluate a [`ast::ValueExpr`] to a simpler form.
+    ///
+    /// The evaluator reduces arithmetic, applies unary operators, resolves
+    /// function calls, and handles type annotations. It does not resolve
+    /// commodity aliases — that is done by `eval_and_normalize_amount`.
     fn eval(
         val: ast::ValueExpr,
         eval_context: &resolution::Context,
         state: &RunningState,
     ) -> Result<ast::ValueExpr, EvaluationError> {
         match val {
+            // Base cases: already-reduced values pass through unchanged.
             a @ ast::ValueExpr::Amount { .. } => Ok(a),
             s @ ast::ValueExpr::Str(_) => Ok(s),
             o @ ast::ValueExpr::Object(_) => Ok(o),
+
             ast::ValueExpr::Unary { op, expr } => match eval(*expr, eval_context, state)? {
                 ast::ValueExpr::Amount { value, commodity } => match op {
                     ast::Op::Sub => Ok(ast::ValueExpr::Amount {
@@ -374,15 +520,20 @@ mod evaluator {
                         commodity,
                     }),
                     ast::Op::Add => Ok(ast::ValueExpr::Amount { value, commodity }),
+                    // Unary * and / are not defined for amounts.
                     _ => Err(EvaluationError::UnaryMultiplyOrDivide),
                 },
                 val => Err(EvaluationError::UnaryOnNonAmount(val)),
             },
+
             ast::ValueExpr::Binary { lhs, rhs, op } => {
                 match (
                     eval(*lhs, eval_context, state)?,
                     eval(*rhs, eval_context, state)?,
                 ) {
+                    // One side has a commodity, the other is dimensionless —
+                    // the commodity propagates to the result. Both match arms
+                    // handle the two orderings (commodity first or second).
                     (
                         ast::ValueExpr::Amount {
                             value: v1,
@@ -420,6 +571,8 @@ mod evaluator {
                             commodity: c,
                         },
                     }),
+
+                    // Both sides have the same commodity — straightforward arithmetic.
                     (
                         ast::ValueExpr::Amount {
                             value: v1,
@@ -447,7 +600,11 @@ mod evaluator {
                             commodity: c,
                         },
                     }),
-                    // Case where someone wrote "-$123" or "$-123"
+
+                    // Special case: "$-123" parses as Commodity("$") sub Amount(123, None).
+                    // The grammar sees the minus sign as a binary subtraction between the
+                    // currency symbol and the following number because of how prefix_op and
+                    // the amount rule interact. We handle it by treating Sub as negation.
                     (
                         ast::ValueExpr::Commodity(commodity),
                         ast::ValueExpr::Amount {
@@ -472,11 +629,19 @@ mod evaluator {
                         }),
                         _ => Err(EvaluationError::UnaryMultiplyOrDivide),
                     },
+
                     (a, b) => Err(EvaluationError::BinaryOperationTypeError((a, b, op))),
                 }
             }
+
             ast::ValueExpr::Function { name, args } => match (name.as_str(), args.as_slice()) {
+                // scrub(x) — identity function used by some ledger-cli extensions
+                // to mark amounts as "scrubbed" (processed). Treated as a no-op.
                 ("scrub", [arg]) => eval(arg.clone(), eval_context, state),
+
+                // account("Name") — returns an object with a "total" field
+                // containing the current running balance of the named account.
+                // Only the primary commodity ($) is currently surfaced.
                 ("account", [account]) => {
                     if let ValueExpr::Str(account) = eval(account.clone(), eval_context, state)? {
                         let account = eval_context
@@ -505,11 +670,16 @@ mod evaluator {
                 }
                 _ => Err(EvaluationError::UnknownFunctionArgs((name, args))),
             },
+
+            // A bare commodity symbol — returned as-is; the Binary handler
+            // above resolves it when combined with an adjacent number.
             c @ ast::ValueExpr::Commodity(_) => Ok(c),
+
             ast::ValueExpr::Typed {
                 expr,
                 commodity: new_commodity,
             } => match eval(*expr, eval_context, state)? {
+                // Accept if the inner expression has no commodity or the same commodity.
                 ast::ValueExpr::Amount { value, commodity }
                     if commodity.is_none() || commodity.as_ref() == Some(&new_commodity) =>
                 {
@@ -523,6 +693,7 @@ mod evaluator {
                     a,
                 ))),
             },
+
             ast::ValueExpr::Access { expr, field } => match eval(*expr, eval_context, state)? {
                 ast::ValueExpr::Object(map) => map
                     .get(&field)
