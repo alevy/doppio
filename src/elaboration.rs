@@ -954,4 +954,135 @@ define myval = $99.00
         let b_posting = after_tx.postings.iter().find(|p| p.account == "Expenses:B").unwrap();
         assert_eq!(b_posting.amount.0.get("$").copied(), Some(dec!(99.00)));
     }
+
+    // -----------------------------------------------------------------------
+    // Tests for `--cleared` flag: TransactionState threading and filtering
+    // -----------------------------------------------------------------------
+
+    /// Verify that transaction state (`*` cleared, no marker uncleared) is
+    /// preserved all the way through parse → resolution → elaboration.
+    #[test]
+    fn test_transaction_state_preserved_through_pipeline() {
+        let input = "\
+2024-01-01 * Cleared Transaction
+    Expenses:Food  $10.00
+    Assets:Checking
+
+2024-01-02 Uncleared Transaction
+    Expenses:Food  $5.00
+    Assets:Checking
+
+2024-01-03 ! Pending Transaction
+    Expenses:Food  $3.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 3);
+        assert!(
+            matches!(journal.transactions[0].state, TransactionState::Cleared),
+            "first transaction should be Cleared"
+        );
+        assert!(
+            matches!(journal.transactions[1].state, TransactionState::Uncleared),
+            "second transaction should be Uncleared"
+        );
+        assert!(
+            matches!(journal.transactions[2].state, TransactionState::Pending),
+            "third transaction should be Pending"
+        );
+    }
+
+    /// Simulate the `balance --cleared` filter: only transactions with state
+    /// `Cleared` should contribute to balances.
+    ///
+    /// Mixed input: one cleared ($10), one uncleared ($5), one pending ($3).
+    /// The filtered balance for `Expenses:Food` should be $10 only.
+    #[test]
+    fn test_cleared_filter_mixed_transactions() {
+        let input = "\
+2024-01-01 * Cleared Transaction
+    Expenses:Food  $10.00
+    Assets:Checking
+
+2024-01-02 Uncleared Transaction
+    Expenses:Food  $5.00
+    Assets:Checking
+
+2024-01-03 ! Pending Transaction
+    Expenses:Food  $3.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+
+        // Reproduce the `--cleared` filter from main.rs.
+        let cleared_total: rust_decimal::Decimal = journal
+            .transactions
+            .iter()
+            .filter(|txn| matches!(txn.state, TransactionState::Cleared))
+            .flat_map(|txn| txn.postings.iter())
+            .filter(|p| p.account == "Expenses:Food")
+            .filter_map(|p| p.amount.0.get("$").copied())
+            .sum();
+
+        assert_eq!(
+            cleared_total,
+            dec!(10.00),
+            "--cleared should include only the $10.00 cleared transaction"
+        );
+    }
+
+    /// When no transactions are cleared, filtering by `--cleared` yields an
+    /// empty result (no contributions to any account balance).
+    #[test]
+    fn test_cleared_filter_no_cleared_transactions() {
+        let input = "\
+2024-01-01 Uncleared One
+    Expenses:Food  $10.00
+    Assets:Checking
+
+2024-01-02 ! Pending One
+    Expenses:Food  $5.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+
+        let count = journal
+            .transactions
+            .iter()
+            .filter(|txn| matches!(txn.state, TransactionState::Cleared))
+            .count();
+
+        assert_eq!(count, 0, "no cleared transactions should be found");
+    }
+
+    /// Without `--cleared`, all transactions (cleared and uncleared) are
+    /// included in the balance. Verifies the default behaviour is unchanged.
+    #[test]
+    fn test_no_cleared_filter_includes_all_transactions() {
+        let input = "\
+2024-01-01 * Cleared Transaction
+    Expenses:Food  $10.00
+    Assets:Checking
+
+2024-01-02 Uncleared Transaction
+    Expenses:Food  $5.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+
+        // No filter — sum all transactions.
+        let total: rust_decimal::Decimal = journal
+            .transactions
+            .iter()
+            .flat_map(|txn| txn.postings.iter())
+            .filter(|p| p.account == "Expenses:Food")
+            .filter_map(|p| p.amount.0.get("$").copied())
+            .sum();
+
+        assert_eq!(
+            total,
+            dec!(15.00),
+            "without --cleared both transactions should contribute to the balance"
+        );
+    }
 }

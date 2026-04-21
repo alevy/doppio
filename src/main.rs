@@ -464,25 +464,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 BTreeMap::new();
 
             for txn in journal.transactions.iter() {
-                if cleared {
-                    if !matches!(txn.state, ledger::elaboration::TransactionState::Cleared) {
-                        continue;
-                    }
+                if cleared
+                    && !matches!(txn.state, ledger::elaboration::TransactionState::Cleared)
+                {
+                    continue;
                 }
 
                 if begin_date.is_some() || end_date.is_some() {
                     let txn_date = unix_epoch
                         .checked_add_signed(chrono::Duration::days(txn.date as i64));
                     if let Some(txn_date) = txn_date {
-                        if let Some(begin) = begin_date {
-                            if txn_date < begin {
-                                continue;
-                            }
+                        if let Some(begin) = begin_date
+                            && txn_date < begin
+                        {
+                            continue;
                         }
-                        if let Some(end) = end_date {
-                            if txn_date > end {
-                                continue;
-                            }
+                        if let Some(end) = end_date
+                            && txn_date > end
+                        {
+                            continue;
                         }
                     }
                 }
