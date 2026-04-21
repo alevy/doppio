@@ -75,6 +75,9 @@ impl<F: Fn(&str) -> String> Parser<F> {
                 Rule::alias_directive => {
                     entries.push(Entry::Directive(parse_alias_directive(pair)));
                 }
+                Rule::historical_price => {
+                    entries.push(Entry::HistoricalPrice(parse_historical_price(pair)));
+                }
                 Rule::include_directive => {
                     // Join the included path with the current base directory so
                     // relative paths (e.g. "include accounts/*.ledger") work
@@ -111,6 +114,30 @@ pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
         base_path: PathBuf::new(),
     }
     .parse(input)
+}
+
+fn parse_historical_price(pair: Pair<Rule>) -> HistoricalPrice {
+    let mut inner = pair.into_inner();
+    let date = parse_date(&mut inner.next().unwrap().into_inner());
+    let mut time = None;
+    let mut commodity = String::new();
+    let mut price_pair = None;
+
+    for p in inner {
+        match p.as_rule() {
+            Rule::time => time = Some(p.as_str().to_string()),
+            Rule::commodity => commodity = p.as_str().to_string(),
+            Rule::value_expr => price_pair = Some(p),
+            _ => {}
+        }
+    }
+
+    HistoricalPrice {
+        date,
+        time,
+        commodity,
+        price: parse_expr(price_pair.expect("historical_price must have a price")),
+    }
 }
 
 fn parse_alias_directive(pair: Pair<Rule>) -> Directive {
@@ -210,7 +237,7 @@ fn parse_date(pairs: &mut Pairs<Rule>) -> Date {
     }
 
     let month = p.as_str().parse().unwrap();
-    let date = p.as_str().parse().unwrap();
+    let date = pairs.next().unwrap().as_str().parse().unwrap();
 
     Date { year, month, date }
 }
@@ -826,5 +853,53 @@ mod directed_tests {
         } else {
             panic!("Expected field access, got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn test_historical_price_with_time() {
+        let input = "P 2024-06-15 14:30:00 AAPL $182.50\n";
+        let journal = parse_ledger(input).unwrap();
+        assert_eq!(journal.entries.len(), 1);
+        let Entry::HistoricalPrice(ref hp) = journal.entries[0] else {
+            panic!("Expected HistoricalPrice");
+        };
+        assert_eq!(hp.date.year, Some(2024));
+        assert_eq!(hp.date.month, 6);
+        assert_eq!(hp.date.date, 15);
+        assert_eq!(hp.time.as_deref(), Some("14:30:00"));
+        assert_eq!(hp.commodity, "AAPL");
+        assert!(matches!(
+            hp.price,
+            ValueExpr::Amount {
+                commodity: Some(ref c),
+                ..
+            } if c == "$"
+        ));
+    }
+
+    #[test]
+    fn test_historical_price_without_time() {
+        let input = "P 2024-01-01 BTC $42000\n";
+        let journal = parse_ledger(input).unwrap();
+        let Entry::HistoricalPrice(ref hp) = journal.entries[0] else {
+            panic!("Expected HistoricalPrice");
+        };
+        assert_eq!(hp.date.month, 1);
+        assert_eq!(hp.date.date, 1);
+        assert!(hp.time.is_none());
+        assert_eq!(hp.commodity, "BTC");
+    }
+
+    #[test]
+    fn test_date_parsing_day_differs_from_month() {
+        // Regression test for a parse_date bug where day was not read from the
+        // third token — both month and date were set to the same monthdate pair.
+        let input = "P 2024-03-17 AAPL $100\n";
+        let journal = parse_ledger(input).unwrap();
+        let Entry::HistoricalPrice(ref hp) = journal.entries[0] else {
+            panic!()
+        };
+        assert_eq!(hp.date.month, 3);
+        assert_eq!(hp.date.date, 17);
     }
 }

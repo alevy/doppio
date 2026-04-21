@@ -44,6 +44,24 @@ pub struct HIR {
     /// Global commodity and account properties that are not context-sensitive
     /// (format strings, `nomarket` flags, notes).
     pub global_context: GlobalContext,
+    /// Market price quotes collected from `P` directives in source order.
+    pub prices: Vec<HistoricalPrice>,
+}
+
+/// A resolved `P` price directive.
+///
+/// Records the market price of one unit of `commodity` expressed as `price`
+/// at the given `date` (and optionally `time`).
+#[derive(Debug, Clone)]
+pub struct HistoricalPrice {
+    /// The date on which this price was recorded.
+    pub date: NaiveDate,
+    /// Optional wall-clock time of the price quote (`"HH:MM"` or `"HH:MM:SS"`).
+    pub time: Option<String>,
+    /// The commodity whose price is being recorded (e.g. `"AAPL"`, `"BTC"`).
+    pub commodity: String,
+    /// The price of one unit of `commodity` as a value expression.
+    pub price: ast::ValueExpr,
 }
 
 impl Default for HIR {
@@ -53,6 +71,7 @@ impl Default for HIR {
             // Start with one empty context so context_id 0 is always valid.
             contexts: vec![Context::default()],
             global_context: Default::default(),
+            prices: vec![],
         }
     }
 }
@@ -374,6 +393,15 @@ impl TryFrom<ast::Journal> for HIR {
 
                     result.entries.push(ResolutionEntry { context_id, data });
                 }
+                ast::Entry::HistoricalPrice(hp) => {
+                    let date = Self::resolve_date(&hp.date, current_default_year)?;
+                    result.prices.push(HistoricalPrice {
+                        date,
+                        time: hp.time,
+                        commodity: hp.commodity,
+                        price: hp.price,
+                    });
+                }
             }
 
             // If any directive modified the alias/default state, push a new
@@ -488,5 +516,31 @@ mod resolution_tests {
         );
         // Verify context 0 does not
         assert!(hir.contexts[0].commodity_aliases.is_empty());
+    }
+
+    #[test]
+    fn test_historical_price_resolution() {
+        use chrono::Datelike;
+        let price_ast = ast::HistoricalPrice {
+            date: ast::Date { year: Some(2024), month: 6, date: 15 },
+            time: Some("14:30:00".into()),
+            commodity: "AAPL".into(),
+            price: ast::ValueExpr::amount(
+                rust_decimal::Decimal::from(182),
+                "$".into(),
+            ),
+        };
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::HistoricalPrice(price_ast)],
+        };
+        let hir = HIR::try_from(journal).unwrap();
+
+        assert_eq!(hir.prices.len(), 1);
+        let price = &hir.prices[0];
+        assert_eq!(price.date.year(), 2024);
+        assert_eq!(price.date.month(), 6);
+        assert_eq!(price.date.day(), 15);
+        assert_eq!(price.time.as_deref(), Some("14:30:00"));
+        assert_eq!(price.commodity, "AAPL");
     }
 }
