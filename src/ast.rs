@@ -186,7 +186,7 @@ impl Display for Transaction {
         writeln!(f, " {}", self.description)?;
 
         for note in self.notes.iter() {
-            writeln!(f, "  ; {note}")?;
+            writeln!(f, "    ; {note}")?;
         }
 
         for posting in self.postings.iter() {
@@ -237,7 +237,7 @@ impl Posting {
 
 impl Display for Posting {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "  ")?;
+        write!(f, "    ")?;
         match self.state {
             TransactionState::Uncleared => {}
             TransactionState::Pending => write!(f, "! ")?,
@@ -252,7 +252,7 @@ impl Display for Posting {
         writeln!(f)?;
 
         for note in self.notes.iter() {
-            writeln!(f, "  ; {note}")?;
+            writeln!(f, "    ; {note}")?;
         }
         Ok(())
     }
@@ -480,6 +480,7 @@ pub enum TransactionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal::Decimal;
 
     #[test]
     fn test_date_ordering() {
@@ -497,5 +498,26 @@ mod tests {
         let mut dates = vec![d3.clone(), d1.clone(), d2.clone()];
         dates.sort();
         assert_eq!(dates, vec![d1, d2, d3]);
+    }
+
+    #[test]
+    fn test_transaction_display_indentation() {
+        let mut tx = Transaction::default();
+        tx.date = Date { year: Some(2024), month: 1, date: 15 };
+        tx.description = "Test payee".to_string();
+        tx.notes = vec!["a note".to_string()];
+        let mut posting = Posting::new("Assets:Bank");
+        posting.amount = Some(AmountDetails::Amount {
+            value: ValueExpr::Amount { value: Decimal::from(100), commodity: Some("USD".into()) },
+            lot_pricing: None,
+            balance_assertion: None,
+        });
+        tx.postings = vec![posting];
+
+        let out = format!("{tx}");
+        // Notes use 4-space indent
+        assert!(out.contains("    ; a note"), "note should have 4-space indent, got:\n{out}");
+        // Posting line uses 4-space indent
+        assert!(out.contains("    Assets:Bank"), "posting should have 4-space indent, got:\n{out}");
     }
 }
