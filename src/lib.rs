@@ -139,7 +139,7 @@ pub fn file_opener(pattern: &str) -> String {
 /// Returns a boxed error from the first failing stage (parse error, resolution
 /// error, or elaboration error).
 pub fn compile<F>(
-    input: &String,
+    input: &str,
     mut parser: parser::Parser<F>,
 ) -> Result<elaboration::Journal, Box<dyn std::error::Error>>
 where

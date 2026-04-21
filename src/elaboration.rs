@@ -386,10 +386,10 @@ impl TryFrom<resolution::HIR> for Journal {
                             // This is what needs to balance with the offsetting cash posting.
                             if let Some((lot_total, lot_commodity)) = lot_pricing {
                                 let dec = transaction_state.0.entry(lot_commodity).or_default();
-                                *dec = *dec + lot_total;
+                                *dec += lot_total;
                             } else {
                                 let dec = transaction_state.0.entry(commodity.clone()).or_default();
-                                *dec = *dec + value;
+                                *dec += value;
                             }
 
                             let amount = Amount(BTreeMap::from([(commodity, value)]));
