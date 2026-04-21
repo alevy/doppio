@@ -18,6 +18,7 @@ ledger-rs is a multi-stage Rust compiler and CLI for the Ledger plain-text accou
 **Confirmed downstream consumers**:
 - `alevy/better-bytes-ledger-import` — imports Mercury bank transactions, Gusto payroll CSVs, and recognizes grant revenue. Constructs `resolution::Transaction` / `resolution::Posting` values; reads `elaboration::Journal` for deduplication.
 - `alevy/bookie` — imports SimpleFIN bank transactions using `ast::Transaction` / `ast::Posting` for construction (not the resolution layer); reads `elaboration::Journal` for deduplication. Uses `ast::ValueExpr::parse()` for YAML-configured amount expressions.
+- `betterbytes-org/ledger` *(future migration target)* — the actual Better Bytes accounting books, currently using OG ledger-cli. Requires `!include` globs, account/tag/commodity directives, and an invoice generation workflow (Python + Typst + ledger-cli subprocess calls) to be ported to ledger-rs. See §5.1.3.
 
 ---
 
@@ -380,6 +381,82 @@ posting.amount.0.get("$")  // Amount(pub BTreeMap<Commodity, Decimal>)
 3. `resolution::Transaction` + `resolution::Posting` builder API — already correct, no migration needed.
 4. `write_ledger()` (#30) — replaces the current `println!("{txn}")` pattern.
 
+---
+
+#### 5.1.3 betterbytes-org/ledger (future migration target)
+
+`betterbytes-org/ledger` is the actual accounting books for Better Bytes, currently written in OG ledger-cli. It is a **future** downstream user — not yet using ledger-rs — but it represents the most demanding real-world ledger-cli usage in this project family and is the primary litmus test for what features ledger-rs must support to be a viable replacement.
+
+**Ledger file structure**: A hierarchical include tree (`books.ledger` → `config/config-npo.ledger` → individual config files → `org/main-org.ledger` → `programs/*.ledger`) plus glob includes (`!include ../people/*.ledger`). Each file is a focused unit (accounts by type, per-grant declarations, per-person accounts).
+
+**Features currently used in ledger-cli** (required for migration):
+
+| Feature | Example | ledger-rs status |
+|---------|---------|-----------------|
+| `!include <path>` | `!include config/config-npo.ledger` | Supported |
+| `!include <glob>` | `!include ../people/*.ledger` | **Not supported** |
+| `account` + `note` | `account Foo\n  note Description` | Partially (read-only via `AccountProperties.note`) |
+| `account` + `assert` | `account Foo\n  assert commodity == "$"` | **Not supported** |
+| `account` + `check` | `account Foo\n  check value =~ /regex/` | **Not supported** |
+| `commodity` directive | `commodity $\n  format $1,000.00\n  default` | **Not supported** |
+| `define` macros | `define assetChecker(amt) = (amt > -100)` | **Not supported** |
+| `tag` directives | `tag Statement\n  assert value =~ /regex/` | **Not supported** |
+| `alias` | `alias Assets:Checking = Assets:Checking:Mercury:7920` | Supported |
+| Balance assertions | `Assets:Checking =$858.89` | Partially (parsed/resolved, not enforced) |
+
+**The invoice generation workflow** (`ledger.py`):
+
+The invoice script does the following using ledger-cli subprocess calls:
+
+```python
+# Step 1: Filter expenses by metadata expression + account regex + date range
+ledger csv -E \
+  --limit "meta('program') == 'Grant:UW:HARVEST'" \
+  --begin 2025-06-01 --end 2025-08-31 \
+  "/^Expenses:Grants:UW:HARVEST:/"
+
+# Step 2: Group by account (last segment), sum amounts, compute benefits + indirect
+
+# Step 3: Append revenue recognition transaction to ledger file (raw string append)
+
+# Step 4: Get cumulative income data
+ledger csv -E -s --invert --no-rounding "Income:Grants:UW:HARVEST"
+
+# Step 5: Write Typst data files + invoke typst compile to produce PDF
+```
+
+**What ledger-rs needs to replace `ledger.py`**:
+
+The invoice workflow maps cleanly to ledger-rs primitives, some of which are M2/M3 scope and some deferred:
+
+| Step | Requirement | Milestone |
+|------|------------|-----------|
+| Filter by date range | `--begin`/`--end` already in CLI; library needs date-range query | M3 / already done for CLI |
+| Filter by account regex | `--pattern` flag already in CLI; `Regex` filter in library | M3 / already done |
+| Filter by metadata expression (`meta('program') == ...`) | Expression-based `--limit` query | **Phase 4** (issue #45) |
+| Sum amounts per account | Iterate `journal.transactions`, filter postings, accumulate | M2 (manual today, query API in Phase 4) |
+| Write revenue recognition transaction | `resolution::Transaction` + `write_ledger()` (#30) | **M2** |
+| Output cumulative income | Same query as above with inverted filter | M2 / Phase 4 |
+| PDF generation via Typst | Out of scope for ledger-rs; external tool invocation | Never — always external |
+
+The revenue recognition transaction construction (`Step 3`) is **already implemented** in `better-bytes-ledger-import/src/revenue.rs` as a library function. It can be lifted almost verbatim once `write_ledger()` (#30) exists.
+
+**Critical insight**: The `--limit "meta('program') == '...'"` metadata expression filter (issue #45) is what makes the invoice script work correctly in multi-grant ledgers. Without it, the query would have to use account regex alone (`/^Expenses:Grants:UW:HARVEST:/`), which is sufficient for single-grant filtering but fragile at scale. This confirms issue #45 (expression-based query DSL) is a **high-value Phase 4 target**, not a nice-to-have.
+
+**Features better in ledger-rs than ledger-cli** (improvement opportunities):
+
+1. **`!include` with glob**: ledger-cli's glob include (`../people/*.ledger`) is order-dependent and non-deterministic across filesystems. ledger-rs can sort glob results deterministically and report errors when the glob matches nothing.
+
+2. **Account `assert`/`check`**: ledger-cli runs these at transaction entry time with an opaque expression language. ledger-rs can provide:
+   - Clear error messages with account name, failing expression, transaction location
+   - Type-safe assertion DSL (commodity check, tag regex) vs. free-form Lisp-like expressions
+
+3. **Balance assertions** (`=$0` at end of payroll transactions): Already parsed/resolved by ledger-rs PR #55; enforcement (#37) will make this more robust than ledger-cli's sometimes-silent handling.
+
+4. **`define` macros**: ledger-cli macros are global and can shadow built-ins silently. ledger-rs can scope them to their include context and produce better error messages.
+
+---
+
 **REQ-GAP-000**: **`file_opener` / `Parser.opener` spelling** *(Confirmed breakage in both downstreams)*
 - Both downstreams use `file_openner` / `Parser { openner: ... }` (double 'n'). Library currently has `file_opener` / `Parser { opener: ... }` (single 'n'). Neither compiles against current HEAD.
 - **Recommendation**: Fix both downstreams to single-'n'. Do not add a deprecated alias to the library.
@@ -410,12 +487,37 @@ posting.amount.0.get("$")  // Amount(pub BTreeMap<Commodity, Decimal>)
 - **Priority**: Medium; useful for import scripts and validation tools that need to show user which rows failed
 - **Why users need this**: Batch imports from banks often have malformed rows; user needs to see all errors at once, not stop at first
 
-**REQ-GAP-004**: **Query API for elaborated journals**
-- Users currently iterate `journal.transactions` and filter manually
-- **Gap**: No high-level query API (e.g., `journal.balance("Assets", Some("2024-01-01"), Some("2024-12-31"))`)
-- **Note**: This is explicitly out of scope for M2/M3 (see issue #45 defer, Phase 4)
-- **Tracking**: Issue #43 (JournalFilter) deferred to Phase 4
-- **Why users need this**: Accounting apps need efficient in-memory queries; CLI can use balance/register commands, but library users need programmatic access
+**REQ-GAP-004**: **Query API / expression-based filtering** *(Phase 4, confirmed high-value)*
+- Users currently iterate `journal.transactions` manually. The invoice workflow in `betterbytes-org/ledger` depends on `--limit "meta('program') == '...'"` which requires expression evaluation over transactions.
+- **Confirmed need**: `ledger.py` uses `--limit "meta('program') == 'Grant:UW:HARVEST'"` to isolate grant expenses. Without this, multi-grant ledgers cannot correctly isolate per-grant costs.
+- **Phase 4 scope**: Issue #43 (JournalFilter struct), issue #45 (expression DSL spike). M2/M3 workaround: filter by account regex alone, which is sufficient for single-grant use cases.
+- **Note**: The `better-bytes-ledger-import/revenue.rs` already implements a manual version of this filter pattern in Rust, confirming the workaround is viable for M2/M3.
+
+**REQ-GAP-004b**: **`!include` glob pattern support** *(Phase 4)*
+- `betterbytes-org/ledger` uses `!include ../people/*.ledger` to include all per-person account files without listing each one.
+- **Current ledger-rs state**: `include` supports single file paths only; no glob expansion.
+- **Required behavior**: Glob patterns match files, sort deterministically, include all matches. Error if pattern matches nothing.
+- **Why better than ledger-cli**: ledger-cli glob order is filesystem-dependent; ledger-rs should sort lexicographically for reproducibility.
+
+**REQ-GAP-004c**: **Account-level `assert`/`check` directives** *(Phase 4)*
+- `betterbytes-org/ledger` uses account assertions heavily:
+  ```
+  account Assets:Checking:Mercury:7920
+      assert commodity == "$"
+      assert assetChecker(amount)
+  account Income:Grants
+      assert incomeChecker(amount) and tag("IncomeType") =~ /^RBI/
+  ```
+- These validate every transaction posting to the account at elaboration time.
+- **Current ledger-rs state**: `AccountProperties` stores only `note`; no `assert`/`check` fields.
+- **Required**: Parse and store assertion expressions in `AccountProperties`; evaluate them during elaboration.
+
+**REQ-GAP-004d**: **`commodity`, `define`, and `tag` directives** *(Phase 4)*
+- `betterbytes-org/ledger` declares: commodity format (`commodity $\n  format $1,000.00\n  default`), user-defined macros (`define assetChecker(amt) = ...`), and tag validation (`tag Statement\n  assert value =~ /regex/`).
+- **Current ledger-rs state**: None of these are supported.
+- **Commodity**: Needed for default commodity selection and display formatting.
+- **Define**: Needed for reusable expression macros in assertions; keep scope lexical (per-include-context).
+- **Tag directives**: Needed for tag value validation in strict mode.
 
 **REQ-GAP-005**: **Commodity conversion / FX handling**
 - Balance assertions in mixed-commodity accounts (e.g., USD + EUR)
