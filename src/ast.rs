@@ -26,8 +26,26 @@ pub enum Entry {
     Transaction(Transaction),
     /// A configuration directive (`commodity`, `account`, `alias`, …).
     Directive(Directive),
+    /// A `P` price directive recording the market price of a commodity.
+    HistoricalPrice(HistoricalPrice),
     /// A comment line starting with `;`, `#`, `*`, `%`, or `|`.
     Comment(String),
+}
+
+/// A `P` price directive: the market price of one unit of `commodity` in
+/// terms of the `price` expression at the given `date`.
+///
+/// Example: `P 2024-01-15 14:30:00 AAPL $182.50`
+#[derive(Debug, Clone)]
+pub struct HistoricalPrice {
+    /// The date on which this price was recorded.
+    pub date: Date,
+    /// Optional wall-clock time of the price quote (`HH:MM` or `HH:MM:SS`).
+    pub time: Option<String>,
+    /// The commodity whose price is being recorded (e.g. `"AAPL"`, `"BTC"`).
+    pub commodity: String,
+    /// The price of one unit of `commodity` as a value expression.
+    pub price: ValueExpr,
 }
 
 /// A configuration directive parsed from the ledger source.

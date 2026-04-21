@@ -26,6 +26,7 @@ journal = ${ (entry | NEWLINE)* ~ EOI }
 entry = _{
     transaction
     | directive
+    | historical_price
     | comment_line
     | budget
 }
@@ -139,6 +140,16 @@ note_str = ${ (!NEWLINE ~ ANY)* }
 
 // A full-line comment. Ledger accepts several comment characters.
 comment_line = @{ (";" | "#" | "*" | "%" | "|") ~ (!NEWLINE ~ ANY)* }
+
+// --- Historical Prices ---
+
+// A price directive: "P date [HH:MM[:SS]] commodity price".
+// Records the market price of a commodity at a point in time.
+// The time component is optional; when absent the price applies to the whole day.
+historical_price = ${ "P" ~ ws+ ~ date ~ ws+ ~ (time ~ ws+)? ~ commodity ~ ws+ ~ value_expr ~ (NEWLINE | EOI) }
+
+// An optional wall-clock time: HH:MM or HH:MM:SS.
+time = ${ ASCII_DIGIT{2} ~ ":" ~ ASCII_DIGIT{2} ~ (":" ~ ASCII_DIGIT{2})? }
 
 // --- Directives ---
 
