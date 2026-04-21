@@ -164,6 +164,62 @@ pub struct Transaction {
     pub postings: Vec<Posting>,
 }
 
+impl Transaction {
+    /// Creates a new transaction with the given date and description.
+    ///
+    /// All other fields are set to their defaults: empty collections, `None`
+    /// for optional fields, and [`ast::TransactionState::Uncleared`] for state.
+    pub fn new(date: chrono::NaiveDate, description: impl Into<String>) -> Self {
+        Self {
+            date,
+            description: description.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Appends a posting to this transaction (builder pattern).
+    pub fn with_posting(mut self, posting: Posting) -> Self {
+        self.postings.push(posting);
+        self
+    }
+
+    /// Appends a tag to this transaction (builder pattern).
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tags.push(tag.into());
+        self
+    }
+
+    /// Appends a plain comment to this transaction (builder pattern).
+    pub fn with_comment(mut self, comment: impl Into<String>) -> Self {
+        self.comments.push(comment.into());
+        self
+    }
+
+    /// Inserts a metadata key-value pair into this transaction (builder pattern).
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Sets the reference code for this transaction (builder pattern).
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
+    }
+
+    /// Sets the cleared/pending state for this transaction (builder pattern).
+    pub fn with_state(mut self, state: ast::TransactionState) -> Self {
+        self.state = state;
+        self
+    }
+
+    /// Sets the secondary (processing) date for this transaction (builder pattern).
+    pub fn with_secondary_date(mut self, date: chrono::NaiveDate) -> Self {
+        self.secondary_date = Some(date);
+        self
+    }
+}
+
 impl std::fmt::Display for Transaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.date.fmt(f)?;
@@ -721,5 +777,53 @@ mod resolution_tests {
         let s = txn.to_string();
         assert!(s.contains("Groceries  ; weekly shop"));
         assert!(s.contains("Expenses:Food"));
+    }
+
+    #[test]
+    fn test_transaction_builder() {
+        use chrono::NaiveDate;
+
+        let date = NaiveDate::from_ymd_opt(2024, 3, 15).unwrap();
+        let secondary = NaiveDate::from_ymd_opt(2024, 3, 16).unwrap();
+
+        let txn = Transaction::new(date, "Payroll")
+            .with_state(ast::TransactionState::Cleared)
+            .with_code("PAY-42")
+            .with_secondary_date(secondary)
+            .with_tag("income")
+            .with_comment("monthly salary")
+            .with_metadata("ref", "HR-99")
+            .with_posting(
+                Posting::new("Income:Salary")
+                    .with_amount((rust_decimal::Decimal::from(5000u32), "USD")),
+            )
+            .with_posting(Posting::new("Assets:Checking"));
+
+        assert_eq!(txn.date, date);
+        assert_eq!(txn.secondary_date, Some(secondary));
+        assert!(matches!(txn.state, ast::TransactionState::Cleared));
+        assert_eq!(txn.code.as_deref(), Some("PAY-42"));
+        assert_eq!(txn.description, "Payroll");
+        assert_eq!(txn.tags, vec!["income"]);
+        assert_eq!(txn.comments, vec!["monthly salary"]);
+        assert_eq!(txn.metadata.get("ref").map(String::as_str), Some("HR-99"));
+        assert_eq!(txn.postings.len(), 2);
+        assert_eq!(txn.postings[0].account, "Income:Salary");
+        assert!(txn.postings[0].amount.is_some());
+        assert_eq!(txn.postings[1].account, "Assets:Checking");
+    }
+
+    #[test]
+    fn test_posting_amount_from_tuple_display() {
+        use rust_decimal::dec;
+
+        let posting = Posting::new("Expenses:Food")
+            .with_amount((dec!(10.50), "$"));
+
+        let rendered = posting.to_string();
+        // The amount should appear in the rendered posting
+        assert!(rendered.contains("10.50"), "expected '10.50' in: {rendered}");
+        assert!(rendered.contains("$"), "expected '$' in: {rendered}");
+        assert!(rendered.contains("Expenses:Food"), "expected account in: {rendered}");
     }
 }
