@@ -175,6 +175,9 @@ impl From<NaiveDate> for Date {
 /// Amounts in the postings are unevaluated [`ValueExpr`] trees; the
 /// [`crate::elaboration`] stage evaluates them and ensures the transaction
 /// balances.
+///
+/// This is the raw parse-tree representation. For programmatic transaction
+/// construction, use [`crate::resolution::Transaction`] and its builder methods instead.
 #[derive(Clone, Default, Debug)]
 pub struct Transaction {
     /// The primary (effective) date.
@@ -234,6 +237,9 @@ impl Display for Transaction {
 }
 
 /// A single posting (debit or credit line) within a transaction.
+///
+/// This is the raw parse-tree representation. For programmatic posting
+/// construction, use [`crate::resolution::Posting`] and its builder methods instead.
 #[derive(Clone, Default, Debug)]
 pub struct Posting {
     /// The account name, e.g. `"Expenses:Food"`.

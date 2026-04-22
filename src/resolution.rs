@@ -25,7 +25,14 @@ use chrono::NaiveDate;
 
 use crate::ast;
 
-/// The Higher-level Intermediate Representation produced by the resolution stage.
+/// Higher-level Intermediate Representation (HIR) produced by the resolution stage.
+///
+/// The HIR holds all resolved entries (transactions, balance assertions, price
+/// directives) together with the evaluation contexts needed to elaborate them.
+/// It is the input to [`crate::elaboration::Journal`] via `TryFrom`.
+///
+/// Library callers should obtain an `HIR` via [`crate::compile`] rather than
+/// constructing one directly.
 ///
 /// All entries retain their source-order position. Each [`ResolutionEntry`]
 /// carries a `context_id` that indexes into [`HIR::contexts`], recording which

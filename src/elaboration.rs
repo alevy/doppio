@@ -92,6 +92,10 @@ struct RunningState {
 }
 
 /// A fully evaluated and balanced transaction, ready for serialisation.
+///
+/// Note: this type does not implement [`std::fmt::Display`]. To serialise
+/// transactions back to Ledger source text, use [`crate::resolution::Transaction`]
+/// with [`crate::write_ledger`].
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ResolvedTransaction {
     /// Days since the Unix epoch (1970-01-01 = 0).
@@ -228,7 +232,11 @@ pub enum ElaborationError {
     TransactionDoesNotBalance(Amount),
 }
 
-/// Errors from evaluating a [`ast::ValueExpr`].
+/// Error produced when evaluating a value expression (e.g., an amount or
+/// balance assertion expression) fails.
+///
+/// This error is always wrapped in [`ElaborationError::EvaluationError`]; it
+/// is unlikely to be matched directly by callers.
 #[derive(Debug)]
 pub enum EvaluationError {
     /// `*` or `/` used as a unary prefix operator, which is not meaningful.
