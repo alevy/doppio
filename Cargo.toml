@@ -2,7 +2,7 @@
 name = "doppio"
 version = "0.1.0"
 edition = "2024"
-description = "Compiler and query tool for the Ledger plain-text accounting format — parses .ledger files through a multi-stage pipeline and provides balance and register views"
+description = "A typed compiler pipeline for plain-text Ledger accounting — parse, resolve, and elaborate .ledger files with a library API built for programmatic use."
 repository = "https://github.com/alevy/doppio"
 license-file = "LICENSE"
 autobenches = false

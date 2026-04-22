@@ -1,16 +1,55 @@
 # doppio
 
-A compiler and query tool for the [Ledger](https://ledger-cli.org/) plain-text accounting format. It parses `.ledger` files through a multi-stage pipeline, producing a compact binary format (`.dop`) suitable for fast repeated querying, and provides simple balance and register views.
+**A typed compiler pipeline and CLI for [Ledger](https://ledger-cli.org/) plain-text accounting — built to be embedded.**
 
-## Build
+doppio parses `.ledger` files through a four-stage compiler (parse → resolution → elaboration → binary serialization), enforces double-entry balance and balance assertions, and exposes every stage as a first-class Rust library API. Use the `dop` CLI to query your journals directly, or embed the library to build importers, reporting tools, and accounting applications on a correct, type-safe foundation.
 
+## Why doppio?
+
+Most Ledger tooling treats the format as a parsing problem. doppio treats it as a compilation problem: source text goes in, a fully elaborated, validated journal comes out — along with a compact binary (`.dop`) for fast repeated queries without re-parsing.
+
+**For library users:** Construct transactions programmatically with a fluent builder API, run them through elaboration to validate balance, and serialize back to Ledger source text or the binary format. The library exposes the full pipeline at each stage (`ast`, `resolution`, `elaboration`) so you work at the right level of abstraction.
+
+**For CLI users:** Compile once to `.dop`, then query balance sheets and posting registers in milliseconds. Accepts both raw `.ledger` files and pre-compiled `.dop` files interchangeably.
+
+## Quick start
+
+**CLI:**
+
+```sh
+cargo install doppio
+dop compile --output my-journal.dop my-journal.ledger
+dop balance my-journal.dop
+dop register my-journal.dop Expenses
 ```
-cargo build --release
+
+**Library:**
+
+```rust
+use doppio::resolution::{Context, Transaction, Posting};
+use chrono::NaiveDate;
+use rust_decimal::Decimal;
+
+// Build a transaction programmatically
+let txn = Transaction::new(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(), "Groceries")
+    .with_posting(Posting::new("Expenses:Food").with_amount((Decimal::from(50u32), "$")))
+    .with_posting(Posting::new("Assets:Checking"));
+
+// Validate and elaborate it (balance is checked, null posting inferred)
+let resolved = doppio::eval_transaction(txn, &Context::default())?;
+
+// Or compile a full journal from source
+let journal = doppio::compile(&source_text, doppio::parser::Parser {
+    opener: doppio::file_opener,
+    base_path: std::path::PathBuf::from("."),
+})?;
+
+for txn in &journal.transactions {
+    println!("{}: {}", txn.date, txn.description);
+}
 ```
 
-The resulting binary is `target/release/dop`.
-
-## Usage
+## CLI reference
 
 ### `compile` — pre-process a journal file
 
@@ -24,18 +63,74 @@ Parses the source file, runs it through the full compilation pipeline, and write
 
 ```
 dop balance my-journal.ledger
-dop balance my-journal.dop
+dop balance my-journal.dop --depth 2 --begin 2024-01-01 --cleared
+dop balance my-journal.dop --pattern "^Expenses" --format json
 ```
 
-Prints the running balance for every account across all transactions, grouped by commodity. Both raw `.ledger` files and pre-compiled `.dop` files are accepted.
+Prints account balances grouped by commodity. Flags: `--depth N` (truncate hierarchy), `--flat` (single-line output), `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--pattern REGEX` (filter accounts), `--format text|json|csv`.
 
 ### `register` — posting register
 
 ```
-dop register my-journal.ledger [PATTERN]
+dop register my-journal.ledger
+dop register my-journal.dop Expenses --format csv
 ```
 
-Lists individual postings, optionally filtered to accounts whose name contains `PATTERN` (case-insensitive). Useful for inspecting the history of a specific account or category.
+Lists individual postings with running totals per commodity, optionally filtered to accounts matching a regex pattern. Flags: `--format text|json|csv`.
+
+### `print` — re-emit canonical Ledger source
+
+```
+dop print my-journal.ledger
+```
+
+Parses and re-emits the journal in canonical Ledger source format — useful for normalizing formatting or verifying round-trip fidelity.
+
+### `stats` — journal summary
+
+```
+dop stats my-journal.ledger
+```
+
+Prints transaction count, account count, commodity count, and date range.
+
+### `accounts` — list account names
+
+```
+dop accounts my-journal.ledger
+```
+
+Lists all account names found in the journal.
+
+## Library API
+
+The library exposes four modules corresponding to the pipeline stages, plus top-level entry points:
+
+| Function | Description |
+|---|---|
+| `compile(source, parser)` | Full pipeline: source text → elaborated `Journal` |
+| `eval_transaction(txn, ctx)` | Elaborate a single `resolution::Transaction` — validate balance, infer null posting, apply aliases |
+| `write_ledger(txns, writer)` | Serialize `resolution::Transaction` values to canonical Ledger source text |
+| `dop_write_header` / `dop_read_header` | Portable `.dop` header I/O with clear version-mismatch errors |
+
+The `resolution::Transaction` and `resolution::Posting` builder APIs are the intended construction layer for programmatic use:
+
+```rust
+doppio::resolution::Transaction::new(date, "Payee")
+    .with_state(doppio::ast::TransactionState::Cleared)
+    .with_metadata("import_id", &bank_transaction_id)
+    .with_posting(
+        doppio::resolution::Posting::new("Assets:Checking")
+            .with_amount((amount, "USD"))
+    )
+    .with_posting(doppio::resolution::Posting::new("Expenses:Food"))
+```
+
+Full API documentation:
+
+```
+cargo doc --no-deps --open
+```
 
 ## Pipeline
 
@@ -60,23 +155,25 @@ doppio processes source text through four sequential stages:
  └─────────────┘
       │  amounts evaluated, transactions balanced, accounts registered
       ▼
- ┌─────────────┐
+ ┌──────────────┐
  │ serialization│  postcard + XZ → .dop
- └─────────────┘
+ └──────────────┘
 ```
 
 ### Stage details
 
-**Parse** (`src/parser.rs`, `src/ledger.pest`): A [pest](https://pest.rs/) PEG grammar tokenises the source into an `ast::Journal` containing transactions, directives, and comments. Amount expressions are kept as unevaluated `ValueExpr` trees. `include` directives are resolved recursively here.
+**Parse** (`src/parser.rs`, `src/ledger.pest`): A [pest](https://pest.rs/) PEG grammar tokenizes the source into an `ast::Journal` containing transactions, directives, and comments. Amount expressions are kept as unevaluated `ValueExpr` trees. `include` directives are resolved recursively here.
 
 **Resolution** (`src/resolution.rs`): Converts `ast::Journal` to a Higher-level Intermediate Representation (`HIR`). Dates are resolved to `NaiveDate` (a full year is required). Commodity and account aliases are accumulated into a versioned `Context` stack so each transaction sees the aliases that were in effect when it was defined. Structured metadata and tags are extracted from freeform notes.
 
-**Elaboration** (`src/elaboration.rs`): Converts `HIR` to the final `elaboration::Journal`. `ValueExpr` trees are evaluated to `(Decimal, commodity)` pairs, commodity aliases are applied, and each transaction is balanced — if exactly one posting has no explicit amount its value is inferred as the negation of the sum of the rest. Balance assertions (`= amount`) and balance assignments (`=amount`) are checked or applied at this stage.
+**Elaboration** (`src/elaboration.rs`): Converts `HIR` to the final `elaboration::Journal`. `ValueExpr` trees are evaluated to `(Decimal, commodity)` pairs, commodity aliases are applied, and each transaction is balanced — if exactly one posting has no explicit amount, its value is inferred as the negation of the sum of the rest. Balance assertions (`= amount`) and balance assignments (`=amount`) are checked or applied at this stage.
 
 **Serialization**: The `Journal` implements `serde::Serialize`/`Deserialize`. The `compile` command writes it through [postcard](https://github.com/jamesmunns/postcard) into an XZ-compressed stream; the `balance` and `register` commands decompress and deserialize it in the reverse direction.
 
-## API documentation
+## Build from source
 
 ```
-cargo doc --no-deps --open
+cargo build --release
 ```
+
+The resulting binary is `target/release/dop`.
