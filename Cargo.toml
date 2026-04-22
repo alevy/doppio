@@ -2,6 +2,8 @@
 name = "doppio"
 version = "0.1.0"
 edition = "2024"
+description = "Compiler and query tool for the Ledger plain-text accounting format — parses .ledger files through a multi-stage pipeline and provides balance and register views"
+repository = "https://github.com/alevy/doppio"
 license-file = "LICENSE"
 autobenches = false
 default-run = "dop"
