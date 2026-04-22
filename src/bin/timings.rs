@@ -25,8 +25,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // disk latency on the first run (cold page cache).
     let t0 = Instant::now();
     let base_path = source.parent().unwrap().to_path_buf();
-    let mut parser = ledger::parser::Parser {
-        opener: ledger::file_opener,
+    let mut parser = doppio::parser::Parser {
+        opener: doppio::file_opener,
         base_path,
     };
     let mut file = String::new();
@@ -42,13 +42,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- resolution ---
     // Date normalisation, alias indexing, metadata extraction.
     let t2 = Instant::now();
-    let hir: ledger::resolution::HIR = ast.try_into()?;
+    let hir: doppio::resolution::HIR = ast.try_into()?;
     eprintln!("resolution:  {:>8.3}s", t2.elapsed().as_secs_f64());
 
     // --- elaboration ---
     // Expression evaluation, transaction balancing, account registration.
     let t3 = Instant::now();
-    let journal: ledger::elaboration::Journal = hir.try_into()?;
+    let journal: doppio::elaboration::Journal = hir.try_into()?;
     eprintln!("elaboration: {:>8.3}s", t3.elapsed().as_secs_f64());
 
     // --- serialize ---

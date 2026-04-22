@@ -1,7 +1,7 @@
-//! Integration tests for the `.bki` binary format header.
+//! Integration tests for the `.dop` binary format header.
 //!
-//! These tests exercise the [`ledger::bki_write_header`] /
-//! [`ledger::bki_read_header`] helpers and verify the full compile → load
+//! These tests exercise the [`doppio::dop_write_header`] /
+//! [`doppio::dop_read_header`] helpers and verify the full compile → load
 //! round-trip via the library's public API.
 
 use std::{
@@ -13,21 +13,21 @@ use tempfile::NamedTempFile;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Compile a small ledger source string into a temp `.bki` file and return the
+/// Compile a small ledger source string into a temp `.dop` file and return the
 /// file handle (positioned at offset 0 so the caller can verify raw bytes).
-fn compile_to_bki(source: &str) -> NamedTempFile {
+fn compile_to_dop(source: &str) -> NamedTempFile {
     // Build the journal in memory.
-    let mut parser = ledger::parser::Parser {
+    let mut parser = doppio::parser::Parser {
         opener: |_: &str| String::new(),
         base_path: std::path::PathBuf::new(),
     };
     let ast = parser.parse(source).expect("parse failed");
-    let hir: ledger::resolution::HIR = ast.try_into().expect("resolution failed");
-    let journal: ledger::elaboration::Journal = hir.try_into().expect("elaboration failed");
+    let hir: doppio::resolution::HIR = ast.try_into().expect("resolution failed");
+    let journal: doppio::elaboration::Journal = hir.try_into().expect("elaboration failed");
 
-    // Write to a named temp file so we can pass its path to `bki_read_header`.
+    // Write to a named temp file so we can pass its path to `dop_read_header`.
     let mut tmp = NamedTempFile::new().expect("tmp file");
-    ledger::bki_write_header(tmp.as_file_mut()).expect("write header");
+    doppio::dop_write_header(tmp.as_file_mut()).expect("write header");
     let mut xz_enc = xz::write::XzEncoder::new(tmp.as_file_mut(), 6);
     {
         let mut buf = std::io::BufWriter::new(&mut xz_enc);
@@ -44,9 +44,9 @@ fn compile_to_bki(source: &str) -> NamedTempFile {
 }
 
 /// Load a journal from a named temp file using the library header reader.
-fn load_bki(path: &Path) -> ledger::Journal {
-    let mut f = std::fs::File::open(path).expect("open bki");
-    ledger::bki_read_header(&mut f, path).expect("read header");
+fn load_dop(path: &Path) -> doppio::Journal {
+    let mut f = std::fs::File::open(path).expect("open dop");
+    doppio::dop_read_header(&mut f, path).expect("read header");
     let input_xz = xz::read::XzDecoder::new(f);
     let mut buf = vec![0u8; 102400];
     postcard::from_io((input_xz, &mut buf))
@@ -70,8 +70,8 @@ fn round_trip_compile_and_load() {
     Assets:Checking
 ";
 
-    let tmp = compile_to_bki(source);
-    let journal = load_bki(tmp.path());
+    let tmp = compile_to_dop(source);
+    let journal = load_dop(tmp.path());
 
     assert_eq!(
         journal.transactions.len(),
@@ -88,21 +88,21 @@ fn round_trip_compile_and_load() {
     );
 }
 
-/// Writing garbage bytes to a `.bki`-named file and attempting to load it
+/// Writing garbage bytes to a `.dop`-named file and attempting to load it
 /// should produce an error whose message contains "missing magic header".
 #[test]
 fn bad_magic_returns_error() {
     let mut tmp = tempfile::Builder::new()
-        .suffix(".bki")
+        .suffix(".dop")
         .tempfile()
         .expect("tmp file");
-    tmp.write_all(b"GARBAGE_NOT_BKI_FORMAT")
+    tmp.write_all(b"GARBAGE_NOT_DOP_FORMAT")
         .expect("write garbage");
     tmp.flush().expect("flush");
 
     let path = tmp.path().to_owned();
     let mut f = std::fs::File::open(&path).expect("open");
-    let err = ledger::bki_read_header(&mut f, &path).expect_err("expected an error for bad magic");
+    let err = doppio::dop_read_header(&mut f, &path).expect_err("expected an error for bad magic");
 
     assert!(
         err.to_string().contains("missing magic header"),
@@ -115,13 +115,13 @@ fn bad_magic_returns_error() {
 #[test]
 fn empty_file_returns_missing_magic_error() {
     let tmp = tempfile::Builder::new()
-        .suffix(".bki")
+        .suffix(".dop")
         .tempfile()
         .expect("tmp file");
 
     let path = tmp.path().to_owned();
     let mut f = std::fs::File::open(&path).expect("open");
-    let err = ledger::bki_read_header(&mut f, &path).expect_err("expected an error for empty file");
+    let err = doppio::dop_read_header(&mut f, &path).expect_err("expected an error for empty file");
 
     assert!(
         err.to_string().contains("missing magic header"),
@@ -134,12 +134,12 @@ fn empty_file_returns_missing_magic_error() {
 #[test]
 fn wrong_version_returns_error_with_version_number() {
     let mut tmp = tempfile::Builder::new()
-        .suffix(".bki")
+        .suffix(".dop")
         .tempfile()
         .expect("tmp file");
 
     // Write correct magic but version = 99.
-    tmp.write_all(b"BKI\0").expect("write magic");
+    tmp.write_all(b"DOP\0").expect("write magic");
     tmp.write_all(&99u16.to_le_bytes()).expect("write version");
     tmp.write_all(&0u16.to_le_bytes()).expect("write reserved");
     tmp.flush().expect("flush");
@@ -148,12 +148,12 @@ fn wrong_version_returns_error_with_version_number() {
     let mut f = std::fs::File::open(&path).expect("open");
     // Seek is not needed — file was just written and we opened a fresh handle.
     let err =
-        ledger::bki_read_header(&mut f, &path).expect_err("expected an error for wrong version");
+        doppio::dop_read_header(&mut f, &path).expect_err("expected an error for wrong version");
 
     let msg = err.to_string();
     assert!(
-        msg.contains("incompatible .bki format version"),
-        "error message should mention 'incompatible .bki format version', got: {msg}"
+        msg.contains("incompatible .dop format version"),
+        "error message should mention 'incompatible .dop format version', got: {msg}"
     );
     assert!(
         msg.contains("99"),
