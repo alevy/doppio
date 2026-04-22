@@ -7,23 +7,23 @@
 use std::{io::Write as _, process::Command};
 
 /// Write `content` to a temporary file and return the path.
-fn tmp_ledger(content: &str) -> tempfile::NamedTempFile {
+fn tmp_journal_file(content: &str) -> tempfile::NamedTempFile {
     let mut f = tempfile::NamedTempFile::with_suffix(".ledger").expect("tempfile");
     f.write_all(content.as_bytes()).expect("write");
     f
 }
 
-/// Run the `ledger` binary with the given arguments and return stdout as a
+/// Run the `dop` binary with the given arguments and return stdout as a
 /// `String`. Panics if the process exits non-zero.
 fn run(args: &[&str]) -> String {
-    let bin = env!("CARGO_BIN_EXE_ledger");
+    let bin = env!("CARGO_BIN_EXE_dop");
     let out = Command::new(bin)
         .args(args)
         .output()
-        .expect("failed to run ledger binary");
+        .expect("failed to run dop binary");
     if !out.status.success() {
         panic!(
-            "ledger exited with {}\nstderr: {}",
+            "dop exited with {}\nstderr: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr)
         );
@@ -35,8 +35,8 @@ fn run(args: &[&str]) -> String {
 // --begin / --end filtering
 // ---------------------------------------------------------------------------
 
-/// Source ledger with three transactions on three distinct dates.
-fn three_transaction_ledger() -> String {
+/// Source journal with three transactions on three distinct dates.
+fn three_transaction_journal() -> String {
     "2024-01-01 Early transaction
     Expenses:Food  10 USD
     Assets:Checking
@@ -54,7 +54,7 @@ fn three_transaction_ledger() -> String {
 
 #[test]
 fn register_no_filter_shows_all_transactions() {
-    let f = tmp_ledger(&three_transaction_ledger());
+    let f = tmp_journal_file(&three_transaction_journal());
     let out = run(&["register", f.path().to_str().unwrap()]);
     assert!(out.contains("2024-01-01"), "expected early txn: {out}");
     assert!(out.contains("2024-06-15"), "expected middle txn: {out}");
@@ -63,7 +63,7 @@ fn register_no_filter_shows_all_transactions() {
 
 #[test]
 fn register_begin_excludes_earlier_transactions() {
-    let f = tmp_ledger(&three_transaction_ledger());
+    let f = tmp_journal_file(&three_transaction_journal());
     let out = run(&[
         "register",
         f.path().to_str().unwrap(),
@@ -86,7 +86,7 @@ fn register_begin_excludes_earlier_transactions() {
 
 #[test]
 fn register_end_excludes_later_transactions() {
-    let f = tmp_ledger(&three_transaction_ledger());
+    let f = tmp_journal_file(&three_transaction_journal());
     let out = run(&[
         "register",
         f.path().to_str().unwrap(),
@@ -109,7 +109,7 @@ fn register_end_excludes_later_transactions() {
 
 #[test]
 fn register_begin_and_end_restrict_to_window() {
-    let f = tmp_ledger(&three_transaction_ledger());
+    let f = tmp_journal_file(&three_transaction_journal());
     let out = run(&[
         "register",
         f.path().to_str().unwrap(),
@@ -134,7 +134,7 @@ fn register_begin_and_end_restrict_to_window() {
 
 #[test]
 fn register_begin_after_all_dates_returns_empty() {
-    let f = tmp_ledger(&three_transaction_ledger());
+    let f = tmp_journal_file(&three_transaction_journal());
     let out = run(&[
         "register",
         f.path().to_str().unwrap(),
@@ -146,7 +146,7 @@ fn register_begin_after_all_dates_returns_empty() {
 
 #[test]
 fn register_end_before_all_dates_returns_empty() {
-    let f = tmp_ledger(&three_transaction_ledger());
+    let f = tmp_journal_file(&three_transaction_journal());
     let out = run(&[
         "register",
         f.path().to_str().unwrap(),
@@ -160,7 +160,7 @@ fn register_end_before_all_dates_returns_empty() {
 // --cleared filtering
 // ---------------------------------------------------------------------------
 
-fn mixed_cleared_ledger() -> String {
+fn mixed_cleared_journal() -> String {
     "2024-03-01 * Cleared transaction
     Expenses:Rent  1000 USD
     Assets:Checking
@@ -174,7 +174,7 @@ fn mixed_cleared_ledger() -> String {
 
 #[test]
 fn register_cleared_shows_only_cleared_transactions() {
-    let f = tmp_ledger(&mixed_cleared_ledger());
+    let f = tmp_journal_file(&mixed_cleared_journal());
     let out = run(&["register", f.path().to_str().unwrap(), "--cleared"]);
     assert!(
         out.contains("Cleared transaction"),
@@ -188,7 +188,7 @@ fn register_cleared_shows_only_cleared_transactions() {
 
 #[test]
 fn register_without_cleared_shows_all_transactions() {
-    let f = tmp_ledger(&mixed_cleared_ledger());
+    let f = tmp_journal_file(&mixed_cleared_journal());
     let out = run(&["register", f.path().to_str().unwrap()]);
     assert!(
         out.contains("Cleared transaction"),
@@ -204,7 +204,7 @@ fn register_without_cleared_shows_all_transactions() {
 // Combinations: --begin + --cleared, --end + --cleared
 // ---------------------------------------------------------------------------
 
-fn multi_filter_ledger() -> String {
+fn multi_filter_journal() -> String {
     "2024-01-10 * Cleared early
     Expenses:Food  100 USD
     Assets:Checking
@@ -226,7 +226,7 @@ fn multi_filter_ledger() -> String {
 
 #[test]
 fn register_begin_and_cleared_combined() {
-    let f = tmp_ledger(&multi_filter_ledger());
+    let f = tmp_journal_file(&multi_filter_journal());
     let out = run(&[
         "register",
         f.path().to_str().unwrap(),
@@ -254,7 +254,7 @@ fn register_begin_and_cleared_combined() {
 
 #[test]
 fn register_end_and_cleared_combined() {
-    let f = tmp_ledger(&multi_filter_ledger());
+    let f = tmp_journal_file(&multi_filter_journal());
     let out = run(&[
         "register",
         f.path().to_str().unwrap(),
@@ -288,7 +288,7 @@ fn register_end_and_cleared_combined() {
 fn register_begin_filter_resets_running_total() {
     // With --begin 2024-06-15, only the last two transactions appear.
     // The running total for the first shown row should be 20 (not 30 = 10+20).
-    let f = tmp_ledger(&three_transaction_ledger());
+    let f = tmp_journal_file(&three_transaction_journal());
     let out = run(&[
         "register",
         f.path().to_str().unwrap(),

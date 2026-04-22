@@ -4,8 +4,8 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 mod data;
 
-fn make_parser() -> ledger::parser::Parser<impl Fn(&str) -> String> {
-    ledger::parser::Parser {
+fn make_parser() -> doppio::parser::Parser<impl Fn(&str) -> String> {
+    doppio::parser::Parser {
         opener: |_: &str| String::new(),
         base_path: PathBuf::new(),
     }
@@ -15,7 +15,7 @@ fn bench_balance(c: &mut Criterion) {
     let mut group = c.benchmark_group("balance");
     group.measurement_time(Duration::from_secs(12));
     for (name, input) in data::workloads() {
-        let journal = ledger::compile(&input, make_parser()).unwrap();
+        let journal = doppio::compile(&input, make_parser()).unwrap();
         group.bench_with_input(BenchmarkId::new("balance", name), &journal, |b, journal| {
             b.iter(|| {
                 let mut balances: BTreeMap<&str, BTreeMap<&str, Decimal>> = BTreeMap::new();
@@ -40,7 +40,7 @@ fn bench_balance(c: &mut Criterion) {
 fn bench_register(c: &mut Criterion) {
     let mut group = c.benchmark_group("register");
     for (name, input) in data::workloads() {
-        let journal = ledger::compile(&input, make_parser()).unwrap();
+        let journal = doppio::compile(&input, make_parser()).unwrap();
         // Filter to a pattern that matches ~20% of postings
         let pattern = "expenses";
         group.bench_with_input(

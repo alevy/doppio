@@ -480,7 +480,7 @@ impl ValueExpr {
     ///
     /// # Example
     /// ```
-    /// # use ledger::ast::ValueExpr;
+    /// # use doppio::ast::ValueExpr;
     /// let expr = ValueExpr::parse("100 USD").unwrap();
     /// ```
     pub fn parse(input: &str) -> Result<ValueExpr, pest::error::Error<parser::Rule>> {

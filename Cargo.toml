@@ -1,8 +1,12 @@
 [package]
-name = "ledger"
+name = "doppio"
 version = "0.1.0"
 edition = "2024"
 autobenches = false
+
+[[bin]]
+name = "dop"
+path = "src/main.rs"
 
 [dependencies]
 chrono = { version = "0.4.42", default-features = false, features = ["serde"] }
