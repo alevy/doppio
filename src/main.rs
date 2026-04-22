@@ -159,8 +159,9 @@ fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::E
         // The 100 KiB scratch buffer is required by postcard's `from_io` API;
         // it does not limit the total data read.
         let input_xz = xz::read::XzDecoder::new(f);
+        let buf_input = std::io::BufReader::new(input_xz);
         let mut buf = vec![0; 102400];
-        Ok(postcard::from_io((input_xz, &mut buf))?.0)
+        Ok(postcard::from_io((buf_input, &mut buf))?.0)
     } else {
         let base_path = path.parent().unwrap().to_path_buf();
         let parser = doppio::parser::Parser {
@@ -232,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut out_file = File::create(output)?;
             // Write the 8-byte header: magic (4) + version LE (2) + reserved (2).
             doppio::dop_write_header(&mut out_file)?;
-            let mut output_xz = xz::write::XzEncoder::new(out_file, 6);
+            let mut output_xz = xz::write::XzEncoder::new(out_file, 1);
             {
                 let mut buf = std::io::BufWriter::new(&mut output_xz);
                 postcard::to_io(&journal, &mut buf)?;
