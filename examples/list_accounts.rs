@@ -12,7 +12,7 @@ use std::{collections::BTreeMap, fs::File, io::Read as _, path::PathBuf};
 
 use rust_decimal::Decimal;
 
-fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::Error>> {
+fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::Error>> {
     if let Some("bki") = path.extension().and_then(|e| e.to_str()) {
         // Pre-compiled binary format: XZ-decompress then postcard-deserialise.
         // The 100 KiB scratch buffer is required by postcard's `from_io` API.
@@ -21,13 +21,13 @@ fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::E
         Ok(postcard::from_io((input_xz, &mut buf))?.0)
     } else {
         let base_path = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let parser = ledger::parser::Parser {
-            opener: ledger::file_opener,
+        let parser = doppio::parser::Parser {
+            opener: doppio::file_opener,
             base_path: base_path.to_path_buf(),
         };
         let mut source = String::new();
         File::open(path)?.read_to_string(&mut source)?;
-        Ok(ledger::compile(&source, parser)?)
+        Ok(doppio::compile(&source, parser)?)
     }
 }
 

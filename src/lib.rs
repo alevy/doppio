@@ -1,20 +1,20 @@
-//! ledger-rs — a compiler and query library for the Ledger plain-text
+//! doppio — a compiler and query library for the Ledger plain-text
 //! accounting format.
 //!
-//! # `.bki` binary format
+//! # `.dop` binary format
 //!
-//! The `ledger compile` command serialises an elaborated journal to a `.bki`
+//! The `dop compile` command serialises an elaborated journal to a `.dop`
 //! file. The file begins with an 8-byte header followed by the postcard +
 //! XZ-compressed journal body:
 //!
 //! ```text
 //! Offset  Length  Content
-//! 0       4       Magic: b"BKI\0"
+//! 0       4       Magic: b"DOP\0"
 //! 4       2       Version: u16 LE (currently 1)
 //! 6       2       Reserved: u16 LE (write 0, ignore on read)
 //! ```
 //!
-//! Use [`bki_write_header`] / [`bki_read_header`] for portable, tested I/O of
+//! Use [`dop_write_header`] / [`dop_read_header`] for portable, tested I/O of
 //! this header.
 //!
 //! # Pipeline
@@ -26,12 +26,12 @@
 //!   → [parser]      ast::Journal        (PEG grammar + Pratt expressions)
 //!   → [resolution]  resolution::HIR     (dates, aliases, metadata)
 //!   → [elaboration] elaboration::Journal (evaluation, balancing)
-//!   → serialisation                     (postcard + XZ → .bki)
+//!   → serialisation                     (postcard + XZ → .dop)
 //! ```
 //!
 //! The top-level entry point is [`compile`], which runs all three in-memory
 //! stages and returns the elaborated [`Journal`]. For CLI usage see the
-//! `ledger` binary in `src/main.rs`.
+//! `dop` binary in `src/main.rs`.
 //!
 //! # Modules
 //!
@@ -48,7 +48,7 @@
 //! values back to canonical Ledger source text:
 //!
 //! ```rust
-//! # use ledger::resolution::{Transaction, Posting};
+//! # use doppio::resolution::{Transaction, Posting};
 //! # use chrono::NaiveDate;
 //! let txns = vec![
 //!     Transaction::new(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(), "Groceries")
@@ -58,7 +58,7 @@
 //!         .with_posting(Posting::new("Assets:Checking")),
 //! ];
 //! let mut out = Vec::new();
-//! ledger::write_ledger(txns, &mut out).unwrap();
+//! doppio::write_ledger(txns, &mut out).unwrap();
 //! ```
 
 pub mod ast;
@@ -84,7 +84,7 @@ pub use elaboration::Journal;
 /// # Example
 ///
 /// ```rust
-/// # use ledger::resolution::{Transaction, Posting};
+/// # use doppio::resolution::{Transaction, Posting};
 /// # use chrono::NaiveDate;
 /// let txns = vec![
 ///     Transaction::new(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(), "Groceries")
@@ -94,7 +94,7 @@ pub use elaboration::Journal;
 ///         .with_posting(Posting::new("Assets:Checking")),
 /// ];
 /// let mut out = Vec::new();
-/// ledger::write_ledger(txns, &mut out).unwrap();
+/// doppio::write_ledger(txns, &mut out).unwrap();
 /// let text = String::from_utf8(out).unwrap();
 /// assert!(text.starts_with("2024-01-15 Groceries"));
 /// ```
@@ -189,7 +189,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// use ledger::resolution::{Context, Transaction, Posting};
+/// use doppio::resolution::{Context, Transaction, Posting};
 /// use chrono::NaiveDate;
 /// use rust_decimal::Decimal;
 ///
@@ -202,7 +202,7 @@ where
 /// )
 /// .with_posting(Posting::new("Assets:Checking"));
 ///
-/// let resolved = ledger::eval_transaction(txn, &Context::default()).unwrap();
+/// let resolved = doppio::eval_transaction(txn, &Context::default()).unwrap();
 /// assert_eq!(resolved.description, "Groceries");
 /// assert_eq!(resolved.postings.len(), 2);
 /// ```
@@ -228,33 +228,33 @@ pub fn eval_transaction(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// .bki header helpers
+// .dop header helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Four-byte magic that identifies every `.bki` file.
-pub const BKI_MAGIC: [u8; 4] = *b"BKI\0";
+/// Four-byte magic that identifies every `.dop` file.
+pub const DOP_MAGIC: [u8; 4] = *b"DOP\0";
 
-/// Format version embedded in every `.bki` header.
+/// Format version embedded in every `.dop` header.
 ///
-/// Bump this constant (and update [`bki_read_header`]) whenever the
+/// Bump this constant (and update [`dop_read_header`]) whenever the
 /// serialisation format changes in a breaking way.
-pub const BKI_FORMAT_VERSION: u16 = 1;
+pub const DOP_FORMAT_VERSION: u16 = 1;
 
-/// Write the 8-byte `.bki` header to `writer`.
+/// Write the 8-byte `.dop` header to `writer`.
 ///
 /// Layout: magic (4 bytes) + version LE u16 (2 bytes) + reserved u16 (2 bytes).
 ///
 /// # Errors
 ///
 /// Propagates any [`std::io::Error`] from `writer`.
-pub fn bki_write_header<W: std::io::Write>(writer: &mut W) -> std::io::Result<()> {
-    writer.write_all(&BKI_MAGIC)?;
-    writer.write_all(&BKI_FORMAT_VERSION.to_le_bytes())?;
+pub fn dop_write_header<W: std::io::Write>(writer: &mut W) -> std::io::Result<()> {
+    writer.write_all(&DOP_MAGIC)?;
+    writer.write_all(&DOP_FORMAT_VERSION.to_le_bytes())?;
     writer.write_all(&0u16.to_le_bytes())?;
     Ok(())
 }
 
-/// Read and validate the 8-byte `.bki` header from `reader`.
+/// Read and validate the 8-byte `.dop` header from `reader`.
 ///
 /// `path` is used only for error messages; it should be the path of the file
 /// being opened so diagnostics point to the right location.
@@ -263,8 +263,8 @@ pub fn bki_write_header<W: std::io::Write>(writer: &mut W) -> std::io::Result<()
 ///
 /// Returns a boxed error with a user-actionable message if:
 /// - the magic bytes are missing or incorrect,
-/// - the format version is not [`BKI_FORMAT_VERSION`].
-pub fn bki_read_header<R: std::io::Read>(
+/// - the format version is not [`DOP_FORMAT_VERSION`].
+pub fn dop_read_header<R: std::io::Read>(
     reader: &mut R,
     path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -272,15 +272,15 @@ pub fn bki_read_header<R: std::io::Read>(
     // A short read here means the file is too small to be valid.
     reader.read_exact(&mut magic).map_err(|_| {
         format!(
-            "{}: not a valid .bki file (missing magic header); \
-             recompile from source with `ledger compile`",
+            "{}: not a valid .dop file (missing magic header); \
+             recompile from source with `dop compile`",
             path.display()
         )
     })?;
-    if magic != BKI_MAGIC {
+    if magic != DOP_MAGIC {
         return Err(format!(
-            "{}: not a valid .bki file (missing magic header); \
-             recompile from source with `ledger compile`",
+            "{}: not a valid .dop file (missing magic header); \
+             recompile from source with `dop compile`",
             path.display()
         )
         .into());
@@ -289,14 +289,14 @@ pub fn bki_read_header<R: std::io::Read>(
     let mut version_bytes = [0u8; 2];
     reader.read_exact(&mut version_bytes)?;
     let version = u16::from_le_bytes(version_bytes);
-    if version != BKI_FORMAT_VERSION {
+    if version != DOP_FORMAT_VERSION {
         return Err(format!(
-            "{}: incompatible .bki format version {} \
+            "{}: incompatible .dop format version {} \
              (this binary supports version {}); \
-             recompile from source with `ledger compile`",
+             recompile from source with `dop compile`",
             path.display(),
             version,
-            BKI_FORMAT_VERSION,
+            DOP_FORMAT_VERSION,
         )
         .into());
     }

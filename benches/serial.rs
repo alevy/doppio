@@ -3,8 +3,8 @@ use std::{io::Write as _, path::PathBuf};
 
 mod data;
 
-fn make_parser() -> ledger::parser::Parser<impl Fn(&str) -> String> {
-    ledger::parser::Parser {
+fn make_parser() -> doppio::parser::Parser<impl Fn(&str) -> String> {
+    doppio::parser::Parser {
         opener: |_: &str| String::new(),
         base_path: PathBuf::new(),
     }
@@ -13,7 +13,7 @@ fn make_parser() -> ledger::parser::Parser<impl Fn(&str) -> String> {
 fn bench_serialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("serialize");
     for (name, input) in data::workloads() {
-        let journal = ledger::compile(&input, make_parser()).unwrap();
+        let journal = doppio::compile(&input, make_parser()).unwrap();
         group.bench_with_input(
             BenchmarkId::new("serialize", name),
             &journal,
@@ -32,10 +32,10 @@ fn bench_serialize(c: &mut Criterion) {
 fn bench_deserialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("deserialize");
     for (name, input) in data::workloads() {
-        let journal = ledger::compile(&input, make_parser()).unwrap();
+        let journal = doppio::compile(&input, make_parser()).unwrap();
         let bytes = postcard::to_allocvec(&journal).unwrap();
         group.bench_with_input(BenchmarkId::new("deserialize", name), &bytes, |b, bytes| {
-            b.iter(|| postcard::from_bytes::<ledger::Journal>(bytes).unwrap())
+            b.iter(|| postcard::from_bytes::<doppio::Journal>(bytes).unwrap())
         });
     }
     group.finish();

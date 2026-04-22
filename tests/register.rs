@@ -13,17 +13,17 @@ fn tmp_ledger(content: &str) -> tempfile::NamedTempFile {
     f
 }
 
-/// Run the `ledger` binary with the given arguments and return stdout as a
+/// Run the `dop` binary with the given arguments and return stdout as a
 /// `String`. Panics if the process exits non-zero.
 fn run(args: &[&str]) -> String {
-    let bin = env!("CARGO_BIN_EXE_ledger");
+    let bin = env!("CARGO_BIN_EXE_dop");
     let out = Command::new(bin)
         .args(args)
         .output()
-        .expect("failed to run ledger binary");
+        .expect("failed to run dop binary");
     if !out.status.success() {
         panic!(
-            "ledger exited with {}\nstderr: {}",
+            "dop exited with {}\nstderr: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr)
         );

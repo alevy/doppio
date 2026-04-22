@@ -1,4 +1,4 @@
-# ledger-rs Requirements
+# doppio Requirements
 
 **Last updated**: 2026-04-21
 
@@ -6,7 +6,7 @@
 
 ## How to use this document
 
-This document answers **what ledger-rs needs to do and why** — grounded in downstream consumer analysis, open issues, and design decisions. GitHub issues answer **what specific work is being done and whether it's done**.
+This document answers **what doppio needs to do and why** — grounded in downstream consumer analysis, open issues, and design decisions. GitHub issues answer **what specific work is being done and whether it's done**.
 
 - **Before starting any issue** that touches the library API or CLI behavior: read the relevant section here for context and constraints.
 - **For API design decisions**: the canonical API surface (§1, §3) is authoritative — e.g., callers construct `resolution::Transaction`, not `ast::Transaction`.
@@ -17,17 +17,17 @@ This document answers **what ledger-rs needs to do and why** — grounded in dow
 
 ## Executive Summary
 
-ledger-rs is a multi-stage Rust compiler and CLI for the Ledger plain-text accounting format. After Milestones 2 and 3, the library will expose ergonomic APIs for programmatic ledger construction and evaluation, and the CLI will support complete balance sheet filtering and reporting. The system will enforce balance assertions during elaboration and provide structured query output (JSON, CSV) alongside the default text format.
+doppio is a multi-stage Rust compiler and CLI for the Ledger plain-text accounting format. After Milestones 2 and 3, the library will expose ergonomic APIs for programmatic ledger construction and evaluation, and the CLI will support complete balance sheet filtering and reporting. The system will enforce balance assertions during elaboration and provide structured query output (JSON, CSV) alongside the default text format.
 
 **Primary users**:
-1. **Library users**: Developers embedding ledger-rs to build accounting applications, tax tools, or import scripts
+1. **Library users**: Developers embedding doppio to build accounting applications, tax tools, or import scripts
 2. **CLI users**: Accountants and individuals querying ledger files via command line
 3. **Integration users**: Systems importing ledger data from bank APIs or other sources, then writing validated ledgers
 
 **Confirmed downstream consumers**:
 - `alevy/better-bytes-ledger-import` — imports Mercury bank transactions, Gusto payroll CSVs, and recognizes grant revenue. Constructs `resolution::Transaction` / `resolution::Posting` values; reads `elaboration::Journal` for deduplication.
 - `alevy/bookie` — imports SimpleFIN bank transactions using `ast::Transaction` / `ast::Posting` for construction (not the resolution layer); reads `elaboration::Journal` for deduplication. Uses `ast::ValueExpr::parse()` for YAML-configured amount expressions.
-- `betterbytes-org/ledger` *(future migration target)* — the actual Better Bytes accounting books, currently using OG ledger-cli. Requires `!include` globs, account/tag/commodity directives, and an invoice generation workflow (Python + Typst + ledger-cli subprocess calls) to be ported to ledger-rs. See §5.1.3.
+- `betterbytes-org/ledger` *(future migration target)* — the actual Better Bytes accounting books, currently using OG ledger-cli. Requires `!include` globs, account/tag/commodity directives, and an invoice generation workflow (Python + Typst + ledger-cli subprocess calls) to be ported to doppio. See §5.1.3.
 
 ---
 
@@ -140,9 +140,9 @@ let txn = resolution::Transaction::new(date, "Payee")
   - Account name and date
 - **Status**: Not yet implemented
 
-**REQ-M3-005**: **No balance assertions in compiled `.bki` files**
+**REQ-M3-005**: **No balance assertions in compiled `.dop` files**
 - Balance assertions are checked at elaboration time but not persisted in the serialized `elaboration::Journal`
-- Deserialized `.bki` files cannot replay assertions
+- Deserialized `.dop` files cannot replay assertions
 - **Rationale**: Assertions are validation artifacts, not data to carry forward
 - **Status**: Implied by architecture; not yet tested
 
@@ -224,15 +224,15 @@ let txn = resolution::Transaction::new(date, "Payee")
 - Target: 100k+ transactions should parse in < 5 seconds on commodity hardware
 - **Evidence**: Benchmarks exist in `benches/parse.rs`, `benches/pipeline.rs`; compiled binary should be optimized with `--release`
 
-**REQ-NF-002**: **Compiled `.bki` files deserialize rapidly**
+**REQ-NF-002**: **Compiled `.dop` files deserialize rapidly**
 - Deserialization should be order-of-magnitude faster than parsing source
 - **Target**: 100k transactions in < 100ms
 - **Status**: XZ decompression + postcard deserialization; performance TBD
 
 **REQ-NF-003**: **Minimal memory footprint for queries**
 - Balance and register commands should not require re-compiling the journal
-- Load from `.bki` once, execute multiple queries without re-parsing
-- **Evidence**: CLI design accepts both `.ledger` and `.bki`
+- Load from `.dop` once, execute multiple queries without re-parsing
+- **Evidence**: CLI design accepts both `.ledger` and `.dop`
 
 ---
 
@@ -277,7 +277,7 @@ let txn = resolution::Transaction::new(date, "Payee")
 **REQ-NF-010**: **Round-trip fidelity for source files**
 - Ledger files loaded, compiled, printed should maintain semantic equivalence
 - Comments, tags, and metadata preserved
-- **Status**: Partially; comments preserved in resolution (issue #5), but `.bki` deserialization cannot restore source form
+- **Status**: Partially; comments preserved in resolution (issue #5), but `.dop` deserialization cannot restore source form
 
 ---
 
@@ -303,7 +303,7 @@ let txn = resolution::Transaction::new(date, "Payee")
 
 ### 5.1 Downstream Consumer Needs (Analysis of bookie & better-bytes-ledger-import)
 
-Both `alevy/bookie` and `alevy/better-bytes-ledger-import` were read via GitHub API in April 2026. Both use ledger-rs as a local path dependency. The analysis below documents what each downstream currently does, assesses whether that reflects genuine requirements or an accidental API choice, and recommends the canonical API each should target.
+Both `alevy/bookie` and `alevy/better-bytes-ledger-import` were read via GitHub API in April 2026. Both use doppio as a local path dependency. The analysis below documents what each downstream currently does, assesses whether that reflects genuine requirements or an accidental API choice, and recommends the canonical API each should target.
 
 **Canonical construction API: `resolution::Transaction`**
 
@@ -394,13 +394,13 @@ posting.amount.0.get("$")  // Amount(pub BTreeMap<Commodity, Decimal>)
 
 #### 5.1.3 betterbytes-org/ledger (future migration target)
 
-`betterbytes-org/ledger` is the actual accounting books for Better Bytes, currently written in OG ledger-cli. It is a **future** downstream user — not yet using ledger-rs — but it represents the most demanding real-world ledger-cli usage in this project family and is the primary litmus test for what features ledger-rs must support to be a viable replacement.
+`betterbytes-org/ledger` is the actual accounting books for Better Bytes, currently written in OG ledger-cli. It is a **future** downstream user — not yet using doppio — but it represents the most demanding real-world ledger-cli usage in this project family and is the primary litmus test for what features doppio must support to be a viable replacement.
 
 **Ledger file structure**: A hierarchical include tree (`books.ledger` → `config/config-npo.ledger` → individual config files → `org/main-org.ledger` → `programs/*.ledger`) plus glob includes (`!include ../people/*.ledger`). Each file is a focused unit (accounts by type, per-grant declarations, per-person accounts).
 
 **Features currently used in ledger-cli** (required for migration):
 
-| Feature | Example | ledger-rs status |
+| Feature | Example | doppio status |
 |---------|---------|-----------------|
 | `!include <path>` | `!include config/config-npo.ledger` | Supported |
 | `!include <glob>` | `!include ../people/*.ledger` | **Not supported** |
@@ -434,9 +434,9 @@ ledger csv -E -s --invert --no-rounding "Income:Grants:UW:HARVEST"
 # Step 5: Write Typst data files + invoke typst compile to produce PDF
 ```
 
-**What ledger-rs needs to replace `ledger.py`**:
+**What doppio needs to replace `ledger.py`**:
 
-The invoice workflow maps cleanly to ledger-rs primitives, some of which are M2/M3 scope and some deferred:
+The invoice workflow maps cleanly to doppio primitives, some of which are M2/M3 scope and some deferred:
 
 | Step | Requirement | Milestone |
 |------|------------|-----------|
@@ -446,23 +446,23 @@ The invoice workflow maps cleanly to ledger-rs primitives, some of which are M2/
 | Sum amounts per account | Iterate `journal.transactions`, filter postings, accumulate | M2 (manual today, query API in Phase 4) |
 | Write revenue recognition transaction | `resolution::Transaction` + `write_ledger()` (#30) | **M2** |
 | Output cumulative income | Same query as above with inverted filter | M2 / Phase 4 |
-| PDF generation via Typst | Out of scope for ledger-rs; external tool invocation | Never — always external |
+| PDF generation via Typst | Out of scope for doppio; external tool invocation | Never — always external |
 
 The revenue recognition transaction construction (`Step 3`) is **already implemented** in `better-bytes-ledger-import/src/revenue.rs` as a library function. It can be lifted almost verbatim once `write_ledger()` (#30) exists.
 
 **Critical insight**: The `--limit "meta('program') == '...'"` metadata expression filter (issue #45) is what makes the invoice script work correctly in multi-grant ledgers. Without it, the query would have to use account regex alone (`/^Expenses:Grants:UW:HARVEST:/`), which is sufficient for single-grant filtering but fragile at scale. This confirms issue #45 (expression-based query DSL) is a **high-value Phase 4 target**, not a nice-to-have.
 
-**Features better in ledger-rs than ledger-cli** (improvement opportunities):
+**Features better in doppio than ledger-cli** (improvement opportunities):
 
-1. **`!include` with glob**: ledger-cli's glob include (`../people/*.ledger`) is order-dependent and non-deterministic across filesystems. ledger-rs can sort glob results deterministically and report errors when the glob matches nothing.
+1. **`!include` with glob**: ledger-cli's glob include (`../people/*.ledger`) is order-dependent and non-deterministic across filesystems. doppio can sort glob results deterministically and report errors when the glob matches nothing.
 
-2. **Account `assert`/`check`**: ledger-cli runs these at transaction entry time with an opaque expression language. ledger-rs can provide:
+2. **Account `assert`/`check`**: ledger-cli runs these at transaction entry time with an opaque expression language. doppio can provide:
    - Clear error messages with account name, failing expression, transaction location
    - Type-safe assertion DSL (commodity check, tag regex) vs. free-form Lisp-like expressions
 
-3. **Balance assertions** (`=$0` at end of payroll transactions): Already parsed/resolved by ledger-rs PR #55; enforcement (#37) will make this more robust than ledger-cli's sometimes-silent handling.
+3. **Balance assertions** (`=$0` at end of payroll transactions): Already parsed/resolved by doppio PR #55; enforcement (#37) will make this more robust than ledger-cli's sometimes-silent handling.
 
-4. **`define` macros**: ledger-cli macros are global and can shadow built-ins silently. ledger-rs can scope them to their include context and produce better error messages.
+4. **`define` macros**: ledger-cli macros are global and can shadow built-ins silently. doppio can scope them to their include context and produce better error messages.
 
 ---
 
@@ -509,7 +509,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 **REQ-GAP-004d** ⏳ Phase 4 — **`commodity`, `define`, and `tag` directives**
 - `betterbytes-org/ledger` uses: commodity format/default declarations, `define` macros (used in account assertions), and `tag` directives with value validation.
-- **Current state**: None of these are supported in ledger-rs.
+- **Current state**: None of these are supported in doppio.
 
 **REQ-GAP-005** 🔧 #37 — **Commodity conversion / FX handling in balance assertions**
 - Mixed-commodity accounts (USD + EUR) raise questions about assertion semantics. Clarify in #37 design phase.
@@ -519,10 +519,10 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 ### 5.2 Serialization & Persistence
 
 **REQ-GAP-006** ⏳ Phase 4 (#39–#42) — **Snapshot and restore workflow**
-- Compile journal to `.bki`, ship it, deserialize for queries. Implementation tracked in #39–#42.
-- Gap: no `--snapshot` subcommand; no documented guidance on when to recompile vs. reuse `.bki`.
+- Compile journal to `.dop`, ship it, deserialize for queries. Implementation tracked in #39–#42.
+- Gap: no `--snapshot` subcommand; no documented guidance on when to recompile vs. reuse `.dop`.
 
-**REQ-GAP-007** ⏳ Phase 4 — **Incremental `.bki` updates**
+**REQ-GAP-007** ⏳ Phase 4 — **Incremental `.dop` updates**
 - Appending new transactions to a large ledger requires full recompilation. Delta-encoding or append-only mode not yet designed.
 
 ---
@@ -562,7 +562,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 ### 6.2 Design Decisions Establishing Boundaries
 
-**No retaining original source in `.bki`** — Serialized journals cannot round-trip to source form. This is intentional: `.bki` is optimized for queries, not authoring.
+**No retaining original source in `.dop`** — Serialized journals cannot round-trip to source form. This is intentional: `.dop` is optimized for queries, not authoring.
 
 **No in-place mutation of deserialized journals** — `elaboration::Journal` is immutable. Modifications require re-elaboration from source.
 
@@ -654,7 +654,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 **Overall**:
 - [ ] CLI `--help` text is complete and accurate
 - [ ] All new flags have short + long forms (where sensible)
-- [ ] Performance targets met: balance/register on 100k txn < 1 sec from `.bki`
+- [ ] Performance targets met: balance/register on 100k txn < 1 sec from `.dop`
 
 ---
 
@@ -706,7 +706,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 **For library users**:
 - Quickstart: "Building transactions programmatically" with builder examples
 - API reference: Generated from doc comments; `cargo doc --no-deps`
-- Round-trip workflow: "Compiling ledgers to `.bki` and querying"
+- Round-trip workflow: "Compiling ledgers to `.dop` and querying"
 
 **For CLI users**:
 - Updated `--help` text for each subcommand
@@ -788,7 +788,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 | **Context** | Immutable snapshot of active aliases and default commodity at a point in the journal |
 | **Elaboration** | Third stage: evaluating expressions, balancing txns, enforcing assertions, producing final journal |
 | **HIR** | Higher-level Intermediate Representation; output of resolution stage |
-| **.bki** | Binary ledger-rs format; postcard-serialized, XZ-compressed |
+| **.dop** | Binary doppio format; postcard-serialized, XZ-compressed |
 | **Null posting** | A posting with no explicit amount; inferred as negation of sum of other postings |
 | **Resolution** | Second stage: normalizing dates, indexing aliases, extracting metadata |
 | **ValueExpr** | Unevaluated expression tree (numbers, operators, functions, field access) |

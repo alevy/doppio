@@ -17,14 +17,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Parse and compile a ledger source file into a binary `.bki` archive.
+    /// Parse and compile a ledger source file into a binary `.dop` archive.
     ///
     /// The output is a postcard-serialised, XZ-compressed snapshot of the
-    /// elaborated journal. Loading a `.bki` file is much faster than
+    /// elaborated journal. Loading a `.dop` file is much faster than
     /// re-parsing the source, making it suitable for large ledgers that are
     /// queried repeatedly.
     Compile {
-        /// Path for the output `.bki` file.
+        /// Path for the output `.dop` file.
         #[arg(short, long)]
         output: PathBuf,
         /// Path to the root `.ledger` source file (may use `include`).
@@ -33,7 +33,7 @@ enum Commands {
 
     /// Print the running balance for every account, optionally filtered by account name.
     ///
-    /// Accepts either a raw `.ledger` source file or a pre-compiled `.bki`
+    /// Accepts either a raw `.ledger` source file or a pre-compiled `.dop`
     /// file. Output is formatted with the commodity and value right-aligned,
     /// followed by the account name.
     ///
@@ -93,7 +93,7 @@ enum Commands {
     ///
     /// Parses and resolves the source file, then prints each transaction in
     /// canonical Ledger format. Only `.ledger` source files are accepted;
-    /// pre-compiled `.bki` files do not preserve the original transaction
+    /// pre-compiled `.dop` files do not preserve the original transaction
     /// structure needed for faithful re-emission.
     Print {
         /// Path to the root `.ledger` source file.
@@ -143,19 +143,19 @@ impl OutputFormat {
     }
 }
 
-/// Load a [`ledger::Journal`] from either a compiled `.bki` file or a raw
+/// Load a [`doppio::Journal`] from either a compiled `.dop` file or a raw
 /// `.ledger` source file.
 ///
 /// The file type is detected by extension:
-/// - `.bki` — decompress with XZ and deserialise with postcard.
+/// - `.dop` — decompress with XZ and deserialise with postcard.
 /// - anything else — parse as Ledger source text, resolving `include`
 ///   directives relative to the file's parent directory.
-fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::Error>> {
-    if let Some("bki") = path.extension().and_then(|e| e.to_str()) {
+fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::Error>> {
+    if let Some("dop") = path.extension().and_then(|e| e.to_str()) {
         // Pre-compiled binary format: validate 8-byte header, then decompress
         // and deserialise.
         let mut f = File::open(path)?;
-        ledger::bki_read_header(&mut f, path)?;
+        doppio::dop_read_header(&mut f, path)?;
         // The 100 KiB scratch buffer is required by postcard's `from_io` API;
         // it does not limit the total data read.
         let input_xz = xz::read::XzDecoder::new(f);
@@ -163,13 +163,13 @@ fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::E
         Ok(postcard::from_io((input_xz, &mut buf))?.0)
     } else {
         let base_path = path.parent().unwrap().to_path_buf();
-        let parser = ledger::parser::Parser {
-            opener: ledger::file_opener,
+        let parser = doppio::parser::Parser {
+            opener: doppio::file_opener,
             base_path,
         };
         let mut file = String::new();
         File::open(path)?.read_to_string(&mut file)?;
-        Ok(ledger::compile(&file, parser)?)
+        Ok(doppio::compile(&file, parser)?)
     }
 }
 
@@ -222,16 +222,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Compile { output, source } => {
             let base_path = source.parent().unwrap().to_path_buf();
-            let parser = ledger::parser::Parser {
-                opener: ledger::file_opener,
+            let parser = doppio::parser::Parser {
+                opener: doppio::file_opener,
                 base_path,
             };
             let mut file = String::new();
             File::open(source)?.read_to_string(&mut file)?;
-            let journal = ledger::compile(&file, parser)?;
+            let journal = doppio::compile(&file, parser)?;
             let mut out_file = File::create(output)?;
             // Write the 8-byte header: magic (4) + version LE (2) + reserved (2).
-            ledger::bki_write_header(&mut out_file)?;
+            doppio::dop_write_header(&mut out_file)?;
             let mut output_xz = xz::write::XzEncoder::new(out_file, 6);
             {
                 let mut buf = std::io::BufWriter::new(&mut output_xz);
@@ -281,7 +281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .filter(|txn| {
                     if cleared
-                        && !matches!(txn.state, ledger::elaboration::TransactionState::Cleared)
+                        && !matches!(txn.state, doppio::elaboration::TransactionState::Cleared)
                     {
                         return false;
                     }
@@ -410,21 +410,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Print { source } => {
-            if let Some("bki") = source.extension().and_then(|e| e.to_str()) {
+            if let Some("dop") = source.extension().and_then(|e| e.to_str()) {
                 return Err("print only works with .ledger source files; \
-                     .bki binary archives do not preserve the original transaction structure"
+                     .dop binary archives do not preserve the original transaction structure"
                     .into());
             }
             let base_path = source.parent().unwrap().to_path_buf();
-            let mut parser = ledger::parser::Parser {
-                opener: ledger::file_opener,
+            let mut parser = doppio::parser::Parser {
+                opener: doppio::file_opener,
                 base_path,
             };
             let mut file = String::new();
             File::open(&source)?.read_to_string(&mut file)?;
-            let ast_journal: ledger::ast::Journal = parser.parse(&file)?;
-            let hir: ledger::resolution::HIR = ast_journal.try_into()?;
-            ledger::write_ledger(hir.transactions(), &mut std::io::stdout())?;
+            let ast_journal: doppio::ast::Journal = parser.parse(&file)?;
+            let hir: doppio::resolution::HIR = ast_journal.try_into()?;
+            doppio::write_ledger(hir.transactions(), &mut std::io::stdout())?;
         }
         Commands::Accounts { source, pattern } => {
             let journal = load_journal(&source)?;
@@ -520,7 +520,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 BTreeMap::new();
 
             for txn in journal.transactions.iter() {
-                if cleared && !matches!(txn.state, ledger::elaboration::TransactionState::Cleared) {
+                if cleared && !matches!(txn.state, doppio::elaboration::TransactionState::Cleared) {
                     continue;
                 }
 
