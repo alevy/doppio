@@ -2,6 +2,7 @@
 name = "doppio"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
 autobenches = false
 default-run = "dop"
 
