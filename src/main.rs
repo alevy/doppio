@@ -152,10 +152,13 @@ impl OutputFormat {
 ///   directives relative to the file's parent directory.
 fn load_journal(path: &PathBuf) -> Result<ledger::Journal, Box<dyn std::error::Error>> {
     if let Some("bki") = path.extension().and_then(|e| e.to_str()) {
-        // Pre-compiled binary format: decompress then deserialise.
+        // Pre-compiled binary format: validate 8-byte header, then decompress
+        // and deserialise.
+        let mut f = File::open(path)?;
+        ledger::bki_read_header(&mut f, path)?;
         // The 100 KiB scratch buffer is required by postcard's `from_io` API;
         // it does not limit the total data read.
-        let input_xz = xz::read::XzDecoder::new(File::open(path)?);
+        let input_xz = xz::read::XzDecoder::new(f);
         let mut buf = vec![0; 102400];
         Ok(postcard::from_io((input_xz, &mut buf))?.0)
     } else {
@@ -226,7 +229,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut file = String::new();
             File::open(source)?.read_to_string(&mut file)?;
             let journal = ledger::compile(&file, parser)?;
-            let mut output_xz = xz::write::XzEncoder::new(File::create(output)?, 6);
+            let mut out_file = File::create(output)?;
+            // Write the 8-byte header: magic (4) + version LE (2) + reserved (2).
+            ledger::bki_write_header(&mut out_file)?;
+            let mut output_xz = xz::write::XzEncoder::new(out_file, 6);
             {
                 let mut buf = std::io::BufWriter::new(&mut output_xz);
                 postcard::to_io(&journal, &mut buf)?;

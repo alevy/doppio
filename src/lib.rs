@@ -1,6 +1,22 @@
 //! ledger-rs — a compiler and query library for the Ledger plain-text
 //! accounting format.
 //!
+//! # `.bki` binary format
+//!
+//! The `ledger compile` command serialises an elaborated journal to a `.bki`
+//! file. The file begins with an 8-byte header followed by the postcard +
+//! XZ-compressed journal body:
+//!
+//! ```text
+//! Offset  Length  Content
+//! 0       4       Magic: b"BKI\0"
+//! 4       2       Version: u16 LE (currently 1)
+//! 6       2       Reserved: u16 LE (write 0, ignore on read)
+//! ```
+//!
+//! Use [`bki_write_header`] / [`bki_read_header`] for portable, tested I/O of
+//! this header.
+//!
 //! # Pipeline
 //!
 //! Source text is processed through four stages:
@@ -209,6 +225,86 @@ pub fn eval_transaction(
         .into_iter()
         .next()
         .expect("journal should contain exactly one transaction"))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// .bki header helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Four-byte magic that identifies every `.bki` file.
+pub const BKI_MAGIC: [u8; 4] = *b"BKI\0";
+
+/// Format version embedded in every `.bki` header.
+///
+/// Bump this constant (and update [`bki_read_header`]) whenever the
+/// serialisation format changes in a breaking way.
+pub const BKI_FORMAT_VERSION: u16 = 1;
+
+/// Write the 8-byte `.bki` header to `writer`.
+///
+/// Layout: magic (4 bytes) + version LE u16 (2 bytes) + reserved u16 (2 bytes).
+///
+/// # Errors
+///
+/// Propagates any [`std::io::Error`] from `writer`.
+pub fn bki_write_header<W: std::io::Write>(writer: &mut W) -> std::io::Result<()> {
+    writer.write_all(&BKI_MAGIC)?;
+    writer.write_all(&BKI_FORMAT_VERSION.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    Ok(())
+}
+
+/// Read and validate the 8-byte `.bki` header from `reader`.
+///
+/// `path` is used only for error messages; it should be the path of the file
+/// being opened so diagnostics point to the right location.
+///
+/// # Errors
+///
+/// Returns a boxed error with a user-actionable message if:
+/// - the magic bytes are missing or incorrect,
+/// - the format version is not [`BKI_FORMAT_VERSION`].
+pub fn bki_read_header<R: std::io::Read>(
+    reader: &mut R,
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut magic = [0u8; 4];
+    // A short read here means the file is too small to be valid.
+    reader.read_exact(&mut magic).map_err(|_| {
+        format!(
+            "{}: not a valid .bki file (missing magic header); \
+             recompile from source with `ledger compile`",
+            path.display()
+        )
+    })?;
+    if magic != BKI_MAGIC {
+        return Err(format!(
+            "{}: not a valid .bki file (missing magic header); \
+             recompile from source with `ledger compile`",
+            path.display()
+        )
+        .into());
+    }
+
+    let mut version_bytes = [0u8; 2];
+    reader.read_exact(&mut version_bytes)?;
+    let version = u16::from_le_bytes(version_bytes);
+    if version != BKI_FORMAT_VERSION {
+        return Err(format!(
+            "{}: incompatible .bki format version {} \
+             (this binary supports version {}); \
+             recompile from source with `ledger compile`",
+            path.display(),
+            version,
+            BKI_FORMAT_VERSION,
+        )
+        .into());
+    }
+
+    // Skip the 2 reserved bytes — ignore their value on read.
+    let mut reserved = [0u8; 2];
+    reader.read_exact(&mut reserved)?;
+    Ok(())
 }
 
 #[cfg(test)]
