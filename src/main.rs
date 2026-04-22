@@ -75,6 +75,15 @@ enum Commands {
     Register {
         source: PathBuf,
         pattern: Option<String>,
+        /// Only include transactions on or after this date (YYYY-MM-DD).
+        #[arg(long)]
+        begin: Option<String>,
+        /// Only include transactions on or before this date (YYYY-MM-DD).
+        #[arg(long)]
+        end: Option<String>,
+        /// Include only cleared transactions.
+        #[arg(long, default_value_t = false)]
+        cleared: bool,
         /// Output format: text (default), json, or csv.
         #[arg(long, default_value = "text")]
         format: String,
@@ -228,17 +237,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Register {
             source,
             pattern,
+            begin,
+            end,
+            cleared,
             format,
         } => {
             let format = OutputFormat::parse(&format)?;
             let re = build_pattern_regex(pattern)?;
             let journal = load_journal(&source)?;
+
+            let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+
+            let begin_date = begin
+                .as_deref()
+                .map(|s| {
+                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                        format!("invalid --begin date '{}': expected format YYYY-MM-DD", s)
+                    })
+                })
+                .transpose()?;
+
+            let end_date = end
+                .as_deref()
+                .map(|s| {
+                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                        format!("invalid --end date '{}': expected format YYYY-MM-DD", s)
+                    })
+                })
+                .transpose()?;
+
             // Per-commodity running total across all matching postings.
             let mut running: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
 
+            // Build an iterator over transactions filtered by cleared/begin/end.
+            let filtered_txns: Vec<_> = journal
+                .transactions
+                .iter()
+                .filter(|txn| {
+                    if cleared
+                        && !matches!(txn.state, ledger::elaboration::TransactionState::Cleared)
+                    {
+                        return false;
+                    }
+                    if begin_date.is_some() || end_date.is_some() {
+                        let txn_date =
+                            unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64));
+                        if let Some(txn_date) = txn_date {
+                            if let Some(begin) = begin_date
+                                && txn_date < begin
+                            {
+                                return false;
+                            }
+                            if let Some(end) = end_date
+                                && txn_date > end
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                })
+                .collect();
+
             match format {
                 OutputFormat::Text => {
-                    for txn in journal.transactions.iter() {
+                    for txn in &filtered_txns {
                         // txn.date is Unix epoch days (1970-01-01 = 0); convert back to a
                         // human-readable date string for display.
                         let date = epoch_days_to_string(txn.date);
@@ -290,7 +353,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 OutputFormat::Json => {
                     let mut rows: Vec<serde_json::Value> = Vec::new();
-                    for txn in journal.transactions.iter() {
+                    for txn in &filtered_txns {
                         let date = epoch_days_to_string(txn.date);
                         for posting in txn.postings.iter() {
                             if !re.is_match(&posting.account) {
@@ -315,7 +378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 OutputFormat::Csv => {
                     println!("date,description,account,commodity,amount,running_total");
-                    for txn in journal.transactions.iter() {
+                    for txn in &filtered_txns {
                         let date = epoch_days_to_string(txn.date);
                         for posting in txn.postings.iter() {
                             if !re.is_match(&posting.account) {
