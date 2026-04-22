@@ -406,7 +406,7 @@ mod write_ledger_tests {
 #[cfg(test)]
 mod eval_transaction_tests {
     use chrono::NaiveDate;
-    use rust_decimal::{dec, Decimal};
+    use rust_decimal::{Decimal, dec};
 
     use super::*;
 
@@ -418,8 +418,7 @@ mod eval_transaction_tests {
     fn simple_two_posting_transaction() {
         let txn = resolution::Transaction::new(date(2024, 1, 15), "Groceries")
             .with_posting(
-                resolution::Posting::new("Expenses:Food")
-                    .with_amount((Decimal::from(50u32), "$")),
+                resolution::Posting::new("Expenses:Food").with_amount((Decimal::from(50u32), "$")),
             )
             .with_posting(resolution::Posting::new("Assets:Checking"));
 
@@ -486,8 +485,7 @@ mod eval_transaction_tests {
     fn unbalanced_transaction_returns_error() {
         let txn = resolution::Transaction::new(date(2024, 4, 1), "Bad")
             .with_posting(
-                resolution::Posting::new("Expenses:Food")
-                    .with_amount((Decimal::from(100u32), "$")),
+                resolution::Posting::new("Expenses:Food").with_amount((Decimal::from(100u32), "$")),
             )
             .with_posting(
                 resolution::Posting::new("Assets:Checking")
@@ -541,9 +539,7 @@ mod eval_transaction_tests {
             commodity: None,
         };
         let txn = resolution::Transaction::new(date(2024, 6, 1), "Bare amount")
-            .with_posting(
-                resolution::Posting::new("Expenses:Food").with_amount(bare),
-            )
+            .with_posting(resolution::Posting::new("Expenses:Food").with_amount(bare))
             .with_posting(resolution::Posting::new("Assets:Cash"));
 
         let resolved = eval_transaction(txn, &context).unwrap();
