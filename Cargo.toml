@@ -8,6 +8,13 @@ license-file = "LICENSE"
 autobenches = false
 default-run = "dop"
 
+[profile.release]
+panic = "abort"    # Removes unwinding code, shrinking binary size and slightly boosting speed
+strip = true       # Automatically strips debug symbols from the final binary
+debug = false      # Tells the compiler not to generate debug symbols in the first place
+lto = "fat"      # Performs heavy cross-crate optimization
+codegen-units = 1 # Better optimization at the cost of longer compile times
+
 [[bin]]
 name = "dop"
 path = "src/main.rs"
