@@ -139,7 +139,7 @@ pub fn file_opener(pattern: &str) -> String {
 /// Returns a boxed error from the first failing stage (parse error, resolution
 /// error, or elaboration error).
 pub fn compile<F>(
-    input: &String,
+    input: &str,
     mut parser: parser::Parser<F>,
 ) -> Result<elaboration::Journal, Box<dyn std::error::Error>>
 where
@@ -183,8 +183,7 @@ mod write_ledger_tests {
     fn write_single_transaction_basic() {
         let txn = resolution::Transaction::new(date(2024, 1, 15), "Groceries")
             .with_posting(
-                resolution::Posting::new("Expenses:Food")
-                    .with_amount((Decimal::from(50u32), "$")),
+                resolution::Posting::new("Expenses:Food").with_amount((Decimal::from(50u32), "$")),
             )
             .with_posting(resolution::Posting::new("Assets:Checking"));
 
@@ -263,7 +262,10 @@ mod write_ledger_tests {
         assert_eq!(parsed.len(), 1);
         let rt = &parsed[0];
 
-        assert!(rt.tags.contains(&"income".to_string()), "tag 'income' missing from {rt:?}");
+        assert!(
+            rt.tags.contains(&"income".to_string()),
+            "tag 'income' missing from {rt:?}"
+        );
         assert!(
             rt.comments.contains(&"Q2 payment".to_string()),
             "comment 'Q2 payment' missing from {rt:?}",
@@ -272,7 +274,10 @@ mod write_ledger_tests {
             rt.comments.contains(&"approved".to_string()),
             "comment 'approved' missing from {rt:?}",
         );
-        assert_eq!(rt.metadata.get("program").map(String::as_str), Some("Grant:UW:HARVEST"));
+        assert_eq!(
+            rt.metadata.get("program").map(String::as_str),
+            Some("Grant:UW:HARVEST")
+        );
         assert_eq!(rt.metadata.get("ref").map(String::as_str), Some("INV-001"));
     }
 
@@ -329,7 +334,10 @@ mod write_ledger_tests {
         let posting = &parsed[0].postings[0];
 
         assert_eq!(posting.account, "Expenses:Salary");
-        assert_eq!(posting.metadata.get("employee").map(String::as_str), Some("alice"));
+        assert_eq!(
+            posting.metadata.get("employee").map(String::as_str),
+            Some("alice")
+        );
         assert!(posting.tags.contains(&"payroll".to_string()));
     }
 }

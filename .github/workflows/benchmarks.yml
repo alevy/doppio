@@ -1,0 +1,83 @@
+name: Benchmarks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    name: Compare benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench
+      - name: Install critcmp
+        run: cargo install critcmp
+      - name: Benchmark base branch
+        run: cargo bench --bench pipeline -- "compile/compile/simple" --save-baseline base --warm-up-time 1 --measurement-time 2
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Benchmark PR branch
+        run: cargo bench --bench pipeline -- "compile/compile/simple" --save-baseline pr --warm-up-time 1 --measurement-time 2
+      - name: Compare
+        id: compare
+        run: |
+          echo 'result<<EOF' >> "$GITHUB_OUTPUT"
+          critcmp base pr >> "$GITHUB_OUTPUT"
+          echo 'EOF' >> "$GITHUB_OUTPUT"
+      - name: Post benchmark comparison
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const result = process.env.RESULT;
+            const body = [
+              '## Benchmark comparison',
+              '',
+              '<details>',
+              '<summary>Click to expand</summary>',
+              '',
+              '```',
+              result,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.startsWith('## Benchmark comparison'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+        env:
+          RESULT: ${{ steps.compare.outputs.result }}

@@ -8,12 +8,7 @@
 //!   cargo run --example list_accounts -- path/to/journal.ledger
 //!   cargo run --example list_accounts -- path/to/journal.bki
 
-use std::{
-    collections::BTreeMap,
-    fs::File,
-    io::Read as _,
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, fs::File, io::Read as _, path::PathBuf};
 
 use rust_decimal::Decimal;
 

@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::{io::Write as _, path::PathBuf};
 
 mod data;
@@ -14,13 +14,17 @@ fn bench_serialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("serialize");
     for (name, input) in data::workloads() {
         let journal = ledger::compile(&input, make_parser()).unwrap();
-        group.bench_with_input(BenchmarkId::new("serialize", name), &journal, |b, journal| {
-            b.iter(|| {
-                let mut out = std::io::BufWriter::new(std::io::sink());
-                postcard::to_io(journal, &mut out).unwrap();
-                out.flush().unwrap();
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("serialize", name),
+            &journal,
+            |b, journal| {
+                b.iter(|| {
+                    let mut out = std::io::BufWriter::new(std::io::sink());
+                    postcard::to_io(journal, &mut out).unwrap();
+                    out.flush().unwrap();
+                })
+            },
+        );
     }
     group.finish();
 }

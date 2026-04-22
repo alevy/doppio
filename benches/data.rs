@@ -23,7 +23,13 @@ pub fn simple(n: usize) -> String {
         let year = 2020 + i / 336;
         out.push_str(&format!(
             "{:04}/{:02}/{:02} Payee {}\n    {}  $ {}\n    {}\n\n",
-            year, month, day, i % 100, debit, amount, credit,
+            year,
+            month,
+            day,
+            i % 100,
+            debit,
+            amount,
+            credit,
         ));
     }
     out
@@ -41,7 +47,12 @@ pub fn wide(n: usize) -> String {
         let year = 2020 + i / 336;
         out.push_str(&format!(
             "{:04}/{:02}/{:02} Payee {}\n    {}  $ {}\n    Assets:Bank:Checking\n\n",
-            year, month, day, i % 100, acct, amount,
+            year,
+            month,
+            day,
+            i % 100,
+            acct,
+            amount,
         ));
     }
     out
@@ -63,7 +74,10 @@ pub fn deep(n: usize) -> String {
         let year = 2020 + i / 336;
         out.push_str(&format!(
             "{:04}/{:02}/{:02} Payee {}\n",
-            year, month, day, i % 100
+            year,
+            month,
+            day,
+            i % 100
         ));
         for (j, acct) in accounts.iter().enumerate() {
             out.push_str(&format!("    {}  $ {}\n", acct, 10 + (i + j) % 90));

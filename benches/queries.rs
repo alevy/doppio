@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rust_decimal::Decimal;
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
@@ -43,16 +43,20 @@ fn bench_register(c: &mut Criterion) {
         let journal = ledger::compile(&input, make_parser()).unwrap();
         // Filter to a pattern that matches ~20% of postings
         let pattern = "expenses";
-        group.bench_with_input(BenchmarkId::new("register", name), &journal, |b, journal| {
-            b.iter(|| {
-                journal
-                    .transactions
-                    .iter()
-                    .flat_map(|txn| txn.postings.iter())
-                    .filter(|p| p.account.to_lowercase().contains(pattern))
-                    .count()
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("register", name),
+            &journal,
+            |b, journal| {
+                b.iter(|| {
+                    journal
+                        .transactions
+                        .iter()
+                        .flat_map(|txn| txn.postings.iter())
+                        .filter(|p| p.account.to_lowercase().contains(pattern))
+                        .count()
+                })
+            },
+        );
     }
     group.finish();
 }

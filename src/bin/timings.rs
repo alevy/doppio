@@ -10,7 +10,12 @@
 //! This tool is useful for identifying which stage dominates compile time
 //! for a given ledger file, particularly when tuning the parser or evaluator.
 
-use std::{fs::File, io::{Read as _, Write as _}, path::PathBuf, time::Instant};
+use std::{
+    fs::File,
+    io::{Read as _, Write as _},
+    path::PathBuf,
+    time::Instant,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = PathBuf::from(std::env::args().nth(1).expect("usage: timings <source>"));
