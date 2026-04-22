@@ -150,6 +150,67 @@ where
     Ok(hir.try_into()?)
 }
 
+/// Evaluate a single [`resolution::Transaction`] through the elaboration stage.
+///
+/// This is the bridge between programmatic transaction construction (via the
+/// [`resolution::Transaction`] builder API) and full elaboration. It resolves
+/// aliases, evaluates amount expressions, balances postings, and applies cost
+/// basis — returning a fully resolved transaction or an error.
+///
+/// The `context` parameter supplies alias definitions, commodity aliases, and
+/// the default commodity. Use [`resolution::Context::default()`] when no
+/// aliases or default commodity are needed.
+///
+/// Internally this constructs a minimal [`resolution::HIR`] containing the
+/// single transaction, runs the elaboration pipeline, and extracts the result.
+///
+/// # Errors
+///
+/// Returns an [`elaboration::ElaborationError`] if the transaction cannot be
+/// elaborated (e.g. unbalanced postings, expression evaluation failure, or
+/// too many null postings).
+///
+/// # Example
+///
+/// ```rust
+/// use ledger::resolution::{Context, Transaction, Posting};
+/// use chrono::NaiveDate;
+/// use rust_decimal::Decimal;
+///
+/// let txn = Transaction::new(
+///     NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+///     "Groceries",
+/// )
+/// .with_posting(
+///     Posting::new("Expenses:Food").with_amount((Decimal::from(50u32), "$")),
+/// )
+/// .with_posting(Posting::new("Assets:Checking"));
+///
+/// let resolved = ledger::eval_transaction(txn, &Context::default()).unwrap();
+/// assert_eq!(resolved.description, "Groceries");
+/// assert_eq!(resolved.postings.len(), 2);
+/// ```
+pub fn eval_transaction(
+    txn: resolution::Transaction,
+    context: &resolution::Context,
+) -> Result<elaboration::ResolvedTransaction, elaboration::ElaborationError> {
+    let hir = resolution::HIR {
+        entries: vec![resolution::ResolutionEntry {
+            context_id: 0,
+            data: resolution::Entry::Transaction(txn),
+        }],
+        contexts: vec![context.clone()],
+        ..Default::default()
+    };
+    let journal = elaboration::Journal::try_from(hir)?;
+    // The HIR contained exactly one transaction, so the journal has exactly one.
+    Ok(journal
+        .transactions
+        .into_iter()
+        .next()
+        .expect("journal should contain exactly one transaction"))
+}
+
 #[cfg(test)]
 mod write_ledger_tests {
     use chrono::NaiveDate;
@@ -339,5 +400,207 @@ mod write_ledger_tests {
             Some("alice")
         );
         assert!(posting.tags.contains(&"payroll".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod eval_transaction_tests {
+    use chrono::NaiveDate;
+    use rust_decimal::{dec, Decimal};
+
+    use super::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn simple_two_posting_transaction() {
+        let txn = resolution::Transaction::new(date(2024, 1, 15), "Groceries")
+            .with_posting(
+                resolution::Posting::new("Expenses:Food")
+                    .with_amount((Decimal::from(50u32), "$")),
+            )
+            .with_posting(resolution::Posting::new("Assets:Checking"));
+
+        let resolved = eval_transaction(txn, &resolution::Context::default()).unwrap();
+
+        assert_eq!(resolved.description, "Groceries");
+        assert_eq!(resolved.postings.len(), 2);
+
+        let food = resolved
+            .postings
+            .iter()
+            .find(|p| p.account == "Expenses:Food")
+            .unwrap();
+        assert_eq!(food.amount.0.get("$").copied(), Some(dec!(50)));
+
+        let checking = resolved
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Checking")
+            .unwrap();
+        assert_eq!(checking.amount.0.get("$").copied(), Some(dec!(-50)));
+    }
+
+    #[test]
+    fn null_posting_inferred() {
+        let txn = resolution::Transaction::new(date(2024, 2, 1), "Rent")
+            .with_posting(
+                resolution::Posting::new("Expenses:Rent")
+                    .with_amount((Decimal::from(1200u32), "$")),
+            )
+            .with_posting(resolution::Posting::new("Assets:Checking"));
+
+        let resolved = eval_transaction(txn, &resolution::Context::default()).unwrap();
+
+        let checking = resolved
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Checking")
+            .unwrap();
+        assert_eq!(
+            checking.amount.0.get("$").copied(),
+            Some(dec!(-1200)),
+            "null posting should be inferred as -$1200"
+        );
+    }
+
+    #[test]
+    fn explicit_balanced_amounts() {
+        let txn = resolution::Transaction::new(date(2024, 3, 1), "Transfer")
+            .with_posting(
+                resolution::Posting::new("Assets:Savings")
+                    .with_amount((Decimal::from(500u32), "$")),
+            )
+            .with_posting(
+                resolution::Posting::new("Assets:Checking")
+                    .with_amount((Decimal::from(-500i32), "$")),
+            );
+
+        let resolved = eval_transaction(txn, &resolution::Context::default()).unwrap();
+        assert_eq!(resolved.postings.len(), 2);
+    }
+
+    #[test]
+    fn unbalanced_transaction_returns_error() {
+        let txn = resolution::Transaction::new(date(2024, 4, 1), "Bad")
+            .with_posting(
+                resolution::Posting::new("Expenses:Food")
+                    .with_amount((Decimal::from(100u32), "$")),
+            )
+            .with_posting(
+                resolution::Posting::new("Assets:Checking")
+                    .with_amount((Decimal::from(-50i32), "$")),
+            );
+
+        let result = eval_transaction(txn, &resolution::Context::default());
+        assert!(
+            result.is_err(),
+            "unbalanced transaction should return an error"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            elaboration::ElaborationError::TransactionDoesNotBalance(_)
+        ));
+    }
+
+    #[test]
+    fn account_alias_resolved_via_context() {
+        let mut context = resolution::Context::default();
+        context
+            .account_aliases
+            .insert("Checking".into(), "Assets:Checking:Mercury:7920".into());
+
+        let txn = resolution::Transaction::new(date(2024, 5, 1), "Deposit")
+            .with_posting(
+                resolution::Posting::new("Income:Salary")
+                    .with_amount((Decimal::from(5000u32), "$")),
+            )
+            .with_posting(resolution::Posting::new("Checking"));
+
+        let resolved = eval_transaction(txn, &context).unwrap();
+
+        let checking = resolved
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Checking:Mercury:7920")
+            .expect("alias should resolve to canonical account name");
+        assert_eq!(checking.amount.0.get("$").copied(), Some(dec!(-5000)));
+    }
+
+    #[test]
+    fn default_commodity_from_context() {
+        let mut context = resolution::Context::default();
+        context.default_commodity = Some("USD".into());
+
+        // Amount with no commodity — should use the context default.
+        // Use ValueExpr::Amount with commodity: None to produce a bare amount.
+        let bare = ast::ValueExpr::Amount {
+            value: Decimal::from(25u32),
+            commodity: None,
+        };
+        let txn = resolution::Transaction::new(date(2024, 6, 1), "Bare amount")
+            .with_posting(
+                resolution::Posting::new("Expenses:Food").with_amount(bare),
+            )
+            .with_posting(resolution::Posting::new("Assets:Cash"));
+
+        let resolved = eval_transaction(txn, &context).unwrap();
+
+        let food = resolved
+            .postings
+            .iter()
+            .find(|p| p.account == "Expenses:Food")
+            .unwrap();
+        assert_eq!(
+            food.amount.0.get("USD").copied(),
+            Some(dec!(25)),
+            "bare amount should use default commodity from context"
+        );
+    }
+
+    #[test]
+    fn resolved_transaction_preserves_fields() {
+        let txn = resolution::Transaction::new(date(2024, 7, 4), "Independence Day")
+            .with_state(ast::TransactionState::Cleared)
+            .with_code("IND-04")
+            .with_secondary_date(date(2024, 7, 5))
+            .with_tag("holiday")
+            .with_metadata("ref", "USA")
+            .with_posting(
+                resolution::Posting::new("Expenses:Celebration")
+                    .with_amount((Decimal::from(200u32), "$")),
+            )
+            .with_posting(resolution::Posting::new("Assets:Checking"));
+
+        let resolved = eval_transaction(txn, &resolution::Context::default()).unwrap();
+
+        assert_eq!(resolved.description, "Independence Day");
+        assert!(matches!(
+            resolved.state,
+            elaboration::TransactionState::Cleared
+        ));
+        assert_eq!(resolved.code.as_deref(), Some("IND-04"));
+        assert!(resolved.secondary_date.is_some());
+        assert!(resolved.tags.contains(&"holiday".to_string()));
+        assert_eq!(
+            resolved.metadata.get("ref").map(String::as_str),
+            Some("USA")
+        );
+    }
+
+    #[test]
+    fn too_many_null_postings_returns_error() {
+        let txn = resolution::Transaction::new(date(2024, 8, 1), "Ambiguous")
+            .with_posting(resolution::Posting::new("Expenses:A"))
+            .with_posting(resolution::Posting::new("Expenses:B"));
+
+        let result = eval_transaction(txn, &resolution::Context::default());
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            elaboration::ElaborationError::TooManyNullPostings
+        ));
     }
 }
