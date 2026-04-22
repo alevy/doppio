@@ -424,7 +424,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             File::open(&source)?.read_to_string(&mut file)?;
             let ast_journal: doppio::ast::Journal = parser.parse(&file)?;
             let hir: doppio::resolution::HIR = ast_journal.try_into()?;
-            doppio::write_journal(hir.transactions(), &mut std::io::stdout())?;
+            doppio::write_ledger(hir.transactions(), &mut std::io::stdout())?;
         }
         Commands::Accounts { source, pattern } => {
             let journal = load_journal(&source)?;

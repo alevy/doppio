@@ -14,7 +14,7 @@ First tagged release.
 ### Library API (`src/lib.rs`)
 
 - `compile(source, parser)` — full pipeline, returns `elaboration::Journal`
-- `write_journal(txns, writer)` — serialise a sequence of `resolution::Transaction` to any `Write` sink
+- `write_ledger(txns, writer)` — serialise a sequence of `resolution::Transaction` to any `Write` sink
 - `eval_transaction(txn, context)` — evaluate a single transaction through elaboration without a full journal
 - `dop_write_header(writer)` / `dop_read_header(reader, path)` — portable `.dop` header I/O with clear version-mismatch errors
 - `resolution::Transaction` and `resolution::Posting` builder APIs (`new`, `with_posting`, `with_tag`, `with_comment`, `with_metadata`, `with_amount`, `with_code`, `with_state`)

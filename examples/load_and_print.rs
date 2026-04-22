@@ -8,7 +8,7 @@ fn main() {
         .read_to_string(&mut file)
         .unwrap();
     let mut file = file.as_str();
-    let output = doppio::parser::parse_journal(&mut file).unwrap();
+    let output = doppio::parser::parse_ledger(&mut file).unwrap();
 
     println!("{:?}", output);
 }

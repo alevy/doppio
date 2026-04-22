@@ -55,7 +55,7 @@ let txn = resolution::Transaction::new(date, "Payee")
 
 **Remaining Requirements** (Issues #30, #31):
 
-**REQ-M2-001**: **`write_journal<W: Write>(&mut W, &[resolution::Transaction]) -> Result<()>`** *(#30)*
+**REQ-M2-001**: **`write_ledger<W: Write>(&mut W, &[resolution::Transaction]) -> Result<()>`** *(#30)*
 - Convert a slice of `resolution::Transaction` to canonical Ledger source format
 - Write to any `Write` sink (file, string buffer, stdout)
 - Preserve transaction metadata, tags, and comments in output
@@ -75,7 +75,7 @@ let txn = resolution::Transaction::new(date, "Payee")
 **Design notes**:
 - Both functions should integrate cleanly with the existing 4-stage pipeline
 - `eval_transaction` likely creates a minimal `HIR` internally, runs elaboration, and extracts the result
-- `write_journal` should produce output that round-trips: `write_journal(txns)` → parse → should yield equivalent transactions
+- `write_ledger` should produce output that round-trips: `write_ledger(txns)` → parse → should yield equivalent transactions
 
 ---
 
@@ -388,7 +388,7 @@ posting.amount.0.get("$")  // Amount(pub BTreeMap<Commodity, Decimal>)
 1. `journal.accounts: BTreeMap<String, AccountProperties>` with `AccountProperties { note: Option<String> }` — used by `GustoLedger` to export account-to-code mappings. **Must remain stable public API.**
 2. `elaboration::ResolvedPosting.amount: Amount` where `Amount(pub BTreeMap<Commodity, Decimal>)` — accessed as `.amount.0.get("$")` for revenue calculations. **Must remain stable.**
 3. `resolution::Transaction` + `resolution::Posting` builder API — already correct, no migration needed.
-4. `write_journal()` (#30) — replaces the current `println!("{txn}")` pattern.
+4. `write_ledger()` (#30) — replaces the current `println!("{txn}")` pattern.
 
 ---
 
@@ -444,11 +444,11 @@ The invoice workflow maps cleanly to doppio primitives, some of which are M2/M3 
 | Filter by account regex | `--pattern` flag already in CLI; `Regex` filter in library | M3 / already done |
 | Filter by metadata expression (`meta('program') == ...`) | Expression-based `--limit` query | **Phase 4** (issue #45) |
 | Sum amounts per account | Iterate `journal.transactions`, filter postings, accumulate | M2 (manual today, query API in Phase 4) |
-| Write revenue recognition transaction | `resolution::Transaction` + `write_journal()` (#30) | **M2** |
+| Write revenue recognition transaction | `resolution::Transaction` + `write_ledger()` (#30) | **M2** |
 | Output cumulative income | Same query as above with inverted filter | M2 / Phase 4 |
 | PDF generation via Typst | Out of scope for doppio; external tool invocation | Never — always external |
 
-The revenue recognition transaction construction (`Step 3`) is **already implemented** in `better-bytes-ledger-import/src/revenue.rs` as a library function. It can be lifted almost verbatim once `write_journal()` (#30) exists.
+The revenue recognition transaction construction (`Step 3`) is **already implemented** in `better-bytes-ledger-import/src/revenue.rs` as a library function. It can be lifted almost verbatim once `write_ledger()` (#30) exists.
 
 **Critical insight**: The `--limit "meta('program') == '...'"` metadata expression filter (issue #45) is what makes the invoice script work correctly in multi-grant ledgers. Without it, the query would have to use account regex alone (`/^Expenses:Grants:UW:HARVEST:/`), which is sufficient for single-grant filtering but fragile at scale. This confirms issue #45 (expression-based query DSL) is a **high-value Phase 4 target**, not a nice-to-have.
 
@@ -471,8 +471,8 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 - **Recommendation**: Fix both downstreams to single-'n'. Do not add a deprecated alias to the library.
 - **Priority**: Blocking for M2.
 
-**REQ-GAP-001** 🔧 #30 — **`write_journal<W: Write>(writer: &mut W, txns: &[resolution::Transaction]) -> Result<()>`**
-- Both downstreams currently do `for txn in txns { println!("{txn}"); }` and rely on shell redirection to append to a ledger file. `write_journal()` enables writing to any `Write` sink in-process.
+**REQ-GAP-001** 🔧 #30 — **`write_ledger<W: Write>(writer: &mut W, txns: &[resolution::Transaction]) -> Result<()>`**
+- Both downstreams currently do `for txn in txns { println!("{txn}"); }` and rely on shell redirection to append to a ledger file. `write_ledger()` enables writing to any `Write` sink in-process.
 
 **REQ-GAP-001b** 🔧 #31 — **`eval_transaction()` bridge from resolution to elaboration**
 - See §1.1 REQ-M2-002 for full description.
@@ -602,7 +602,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 - **Action**: Clarify in issue #37; add test cases
 
 **Q3: Write_Ledger Round-Trip Semantics**
-- After `write_journal()`, if the output is parsed again, should transactions be identical?
+- After `write_ledger()`, if the output is parsed again, should transactions be identical?
 - What about comment formatting, whitespace, metadata ordering?
 - **Hypothesis**: Semantic equivalence (same accounts, amounts, dates, metadata) but formatting may differ
 - **Action**: Define round-trip test in issue #30 PR
@@ -622,10 +622,10 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 ### 8.1 Acceptance Criteria for Milestone 2 (Foundation)
 
-- [ ] `write_journal<W: Write>(&mut W, &[resolution::Transaction]) -> Result<()>` implemented and tested
+- [ ] `write_ledger<W: Write>(&mut W, &[resolution::Transaction]) -> Result<()>` implemented and tested
 - [ ] `eval_transaction()` bridge function implemented and tested
 - [ ] All builder methods compile and produce semantically correct transactions
-- [ ] Round-trip test: programmatically constructed txn → write_journal → parse → same semantics
+- [ ] Round-trip test: programmatically constructed txn → write_ledger → parse → same semantics
 - [ ] 100% test coverage for new APIs (builder integration)
 - [ ] API documentation complete (doc comments + examples)
 
@@ -669,7 +669,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 **Integration tests**:
 - Full M2 workflow: build txn → eval → verify amounts
 - Full M3 workflow: load ledger → query with all flags → verify output
-- Round-trip: write_journal → parse → elaborate → same as original
+- Round-trip: write_ledger → parse → elaborate → same as original
 
 **Property-based tests** (if time permits):
 - Commodity algebra: multi-commodity balance calculations
@@ -682,7 +682,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 **Critical path**:
 1. **Issue #37** (Enforce balance assertions) — blocks #38 (tests)
-2. Issues #30, #31 (write_journal, eval_transaction) — parallel; no dependency
+2. Issues #30, #31 (write_ledger, eval_transaction) — parallel; no dependency
 3. Issue #33 (`--cleared` flag) — likely trivial; no dependency
 4. Issue #38 (Assertion tests) — blocks nothing; can be done after #37
 
@@ -691,7 +691,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 - CLI flags (#33, output formats) do not block library API
 
 **Suggested order**:
-1. **Week 1**: Implement #30 (write_journal), #31 (eval_transaction), #33 (--cleared)
+1. **Week 1**: Implement #30 (write_ledger), #31 (eval_transaction), #33 (--cleared)
    - Small, orthogonal, can be tested independently
 2. **Week 2**: Implement #37 (assertion enforcement) + #38 (tests)
    - Larger feature; needs spec clarification first
@@ -716,7 +716,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 ### 10.2 Internal Documentation
 
 - Issue #37: Spec for balance assertion enforcement (strict vs. weak, multi-commodity handling, error messages)
-- Design doc for `write_journal()` round-trip semantics
+- Design doc for `write_ledger()` round-trip semantics
 - Test plan for assertion edge cases (same-day txn + assertion, sequential assertions, etc.)
 
 ---
@@ -729,7 +729,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 - **Mitigation**: Block #37 on issue discussion; require consensus before implementation
 - **Owner**: Project manager / issue #37 discussion
 
-**Risk**: `write_journal()` round-trip semantics may be ambiguous
+**Risk**: `write_ledger()` round-trip semantics may be ambiguous
 - **Mitigation**: Define round-trip test cases in PR #30; clarify formatting expectations upfront
 - **Owner**: Feature implementer for #30
 
@@ -746,7 +746,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 **Currently**, no tests exist for:
 - Balance assertion enforcement
 - Multi-commodity balance assertions
-- `write_journal()` round-trip
+- `write_ledger()` round-trip
 - `eval_transaction()` with various expression types
 - JSON/CSV output format schema compliance
 
@@ -764,7 +764,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 | #22 | register command improvements | Parent | | X | Partially deferred to M4 |
 | #28 | Transaction builder | Done | X | | PR #50 |
 | #29 | Typed amount shorthand | Done | X | | PR #50 |
-| #30 | Add `write_journal<W: Write>()` | Open | X | | #18 sub |
+| #30 | Add `write_ledger<W: Write>()` | Open | X | | #18 sub |
 | #31 | Add `eval_transaction()` bridge | Open | X | | #18 sub |
 | #32 | `--begin`/`--end` date range | Done | | X | PR #48 |
 | #33 | `--cleared` flag | In Progress | | X | #21 sub |
