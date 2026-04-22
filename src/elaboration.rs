@@ -203,9 +203,24 @@ pub enum ElaborationError {
     NonAmountWhereAmountExpected(ValueExpr),
     /// An error from the expression evaluator.
     EvaluationError(EvaluationError),
-    /// A `= expected` balance assertion failed: the account's balance after
-    /// this posting does not equal the asserted value.
+    /// A `= expected` balance assertion on a posting failed: the account's
+    /// balance after this posting does not equal the asserted value.
     PostingBalanceAssertionFailed,
+    /// A standalone balance assertion directive failed: the account's balance
+    /// at the assertion's position in the file does not match the expected
+    /// amount.
+    BalanceAssertionFailed {
+        /// The account whose balance was asserted.
+        account: String,
+        /// The date of the assertion directive.
+        date: chrono::NaiveDate,
+        /// The amount the assertion expected.
+        expected_amount: Decimal,
+        /// The commodity of the expected amount.
+        expected_commodity: String,
+        /// The actual balance of the account in that commodity.
+        actual_amount: Decimal,
+    },
     /// A transaction has more than one null posting (only one is allowed, since
     /// multiple unknowns cannot be uniquely determined).
     TooManyNullPostings,
@@ -245,8 +260,41 @@ impl From<EvaluationError> for ElaborationError {
 impl std::error::Error for ElaborationError {}
 
 impl Display for ElaborationError {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Ok(())
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ElaborationError::AmountWithNoCommodity => {
+                write!(f, "amount has no commodity and no default commodity is set")
+            }
+            ElaborationError::NonAmountWhereAmountExpected(expr) => {
+                write!(f, "expected an amount but got: {expr:?}")
+            }
+            ElaborationError::EvaluationError(e) => {
+                write!(f, "evaluation error: {e:?}")
+            }
+            ElaborationError::PostingBalanceAssertionFailed => {
+                write!(f, "posting balance assertion failed")
+            }
+            ElaborationError::BalanceAssertionFailed {
+                account,
+                date,
+                expected_amount,
+                expected_commodity,
+                actual_amount,
+            } => {
+                write!(
+                    f,
+                    "balance assertion failed for account {account} on {date}: \
+                     expected {expected_amount} {expected_commodity}, \
+                     actual {actual_amount} {expected_commodity}"
+                )
+            }
+            ElaborationError::TooManyNullPostings => {
+                write!(f, "transaction has more than one null posting")
+            }
+            ElaborationError::TransactionDoesNotBalance(_) => {
+                write!(f, "transaction does not balance")
+            }
+        }
     }
 }
 
@@ -273,9 +321,39 @@ impl TryFrom<resolution::HIR> for Journal {
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
             match entry.data {
-                resolution::Entry::Assertion(_) => {
-                    // TODO: enforce balance assertions (tracked in issue #37)
-                    let _ = entry_context;
+                resolution::Entry::Assertion(assertion) => {
+                    // Evaluate the expected amount expression.
+                    let (expected_amount, expected_commodity) =
+                        evaluator::eval_and_normalize_amount(
+                            assertion.amount,
+                            entry_context,
+                            &state,
+                        )?;
+
+                    // Look up the account's current balance for this commodity.
+                    let actual_amount = state
+                        .account_balances
+                        .get(&assertion.account)
+                        .and_then(|ab| ab.commodity.get(&expected_commodity))
+                        .copied()
+                        .unwrap_or(Decimal::ZERO);
+
+                    // NOTE: strict (`==`) is currently treated identically to
+                    // weak (`=`). Both check that the account balance for the
+                    // specified commodity matches exactly. A future enhancement
+                    // could make strict assertions also verify that the account
+                    // holds no *other* commodities.
+                    let _ = assertion.strict;
+
+                    if actual_amount != expected_amount {
+                        return Err(ElaborationError::BalanceAssertionFailed {
+                            account: assertion.account,
+                            date: assertion.date,
+                            expected_amount,
+                            expected_commodity,
+                            actual_amount,
+                        });
+                    }
                 }
                 resolution::Entry::Transaction(mut transaction) => {
                     // `transaction_state` accumulates the running sum of all
@@ -1098,5 +1176,182 @@ define myval = $99.00
             dec!(15.00),
             "without --cleared both transactions should contribute to the balance"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for standalone balance assertion enforcement (issue #37)
+    // -----------------------------------------------------------------------
+
+    /// Try to elaborate a ledger input string, returning the elaboration
+    /// result (including errors) rather than panicking.
+    fn try_elaborate(input: &str) -> Result<Journal, ElaborationError> {
+        use crate::{parser::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        Journal::try_from(hir)
+    }
+
+    #[test]
+    fn test_balance_assertion_succeeds_when_balance_matches() {
+        let input = "\
+2024-01-01 Opening
+    Assets:Checking  $1000.00
+    Equity:Opening
+
+2024-01-01 = Assets:Checking  $1000.00
+";
+        // Should elaborate without error.
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    #[test]
+    fn test_balance_assertion_fails_when_balance_mismatches() {
+        let input = "\
+2024-01-01 Opening
+    Assets:Checking  $1000.00
+    Equity:Opening
+
+2024-01-01 = Assets:Checking  $500.00
+";
+        let result = try_elaborate(input);
+        assert!(result.is_err(), "assertion should fail");
+        let err = result.unwrap_err();
+        match err {
+            ElaborationError::BalanceAssertionFailed {
+                ref account,
+                expected_amount,
+                actual_amount,
+                ..
+            } => {
+                assert_eq!(account, "Assets:Checking");
+                assert_eq!(expected_amount, dec!(500.00));
+                assert_eq!(actual_amount, dec!(1000.00));
+            }
+            other => panic!("expected BalanceAssertionFailed, got: {other:?}"),
+        }
+        // Verify Display produces a useful message.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Assets:Checking"),
+            "error should name the account: {msg}"
+        );
+        assert!(
+            msg.contains("500"),
+            "error should show expected amount: {msg}"
+        );
+        assert!(
+            msg.contains("1000"),
+            "error should show actual amount: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_balance_assertion_zero_balance_at_start() {
+        // Asserting zero for an account that has never been posted to should succeed.
+        let input = "\
+2024-01-01 = Assets:Checking  $0.00
+";
+        let journal = elaborate(input);
+        assert!(journal.transactions.is_empty());
+    }
+
+    #[test]
+    fn test_balance_assertion_nonzero_at_start_fails() {
+        // Asserting a nonzero amount for an account with no postings should fail.
+        let input = "\
+2024-01-01 = Assets:Checking  $100.00
+";
+        let result = try_elaborate(input);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ElaborationError::BalanceAssertionFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_balance_assertion_after_multiple_transactions() {
+        let input = "\
+2024-01-01 First deposit
+    Assets:Checking  $500.00
+    Income:Salary
+
+2024-01-15 Second deposit
+    Assets:Checking  $300.00
+    Income:Salary
+
+2024-01-31 = Assets:Checking  $800.00
+";
+        // $500 + $300 = $800 — assertion should pass.
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+    }
+
+    #[test]
+    fn test_balance_assertion_with_expression() {
+        let input = "\
+2024-01-01 Opening
+    Assets:Checking  $1000.00
+    Equity:Opening
+
+2024-01-01 = Assets:Checking  $500.00 + $500.00
+";
+        // $500 + $500 = $1000 — assertion should pass.
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    #[test]
+    fn test_balance_assertion_weak_ignores_other_commodities() {
+        // Account holds both $ and EUR. A weak assertion on $ only should pass
+        // as long as the $ balance matches — EUR is ignored.
+        let input = "\
+2024-01-01 USD deposit
+    Assets:Multi  $1000.00
+    Equity:Opening
+
+2024-01-02 EUR deposit
+    Assets:Multi  500.00 EUR
+    Equity:Opening
+
+2024-01-02 = Assets:Multi  $1000.00
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+    }
+
+    #[test]
+    fn test_balance_assertion_between_transactions() {
+        // Assertion between two transactions: checks balance at that point.
+        let input = "\
+2024-01-01 First
+    Assets:Checking  $100.00
+    Equity:Opening
+
+2024-01-01 = Assets:Checking  $100.00
+
+2024-01-02 Second
+    Assets:Checking  $50.00
+    Income:Salary
+
+2024-01-02 = Assets:Checking  $150.00
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+    }
+
+    #[test]
+    fn test_balance_assertion_strict_treated_as_weak() {
+        // Strict (`==`) currently behaves the same as weak (`=`).
+        let input = "\
+2024-01-01 Opening
+    Assets:Checking  $1000.00
+    Equity:Opening
+
+2024-01-01 == Assets:Checking  $1000.00
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
     }
 }
