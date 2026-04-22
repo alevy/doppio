@@ -3,6 +3,7 @@ name = "doppio"
 version = "0.1.0"
 edition = "2024"
 autobenches = false
+default-run = "dop"
 
 [[bin]]
 name = "dop"
