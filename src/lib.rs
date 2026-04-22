@@ -42,9 +42,9 @@
 //! - [`elaboration`] — expression evaluation, transaction balancing, and the
 //!   final serialisable [`Journal`] type.
 //!
-//! # Writing ledger text
+//! # Serialising transactions as Ledger text
 //!
-//! Use [`write_ledger`] to serialise a sequence of [`resolution::Transaction`]
+//! Use [`write_journal`] to serialise a sequence of [`resolution::Transaction`]
 //! values back to canonical Ledger source text:
 //!
 //! ```rust
@@ -58,7 +58,7 @@
 //!         .with_posting(Posting::new("Assets:Checking")),
 //! ];
 //! let mut out = Vec::new();
-//! doppio::write_ledger(txns, &mut out).unwrap();
+//! doppio::write_journal(txns, &mut out).unwrap();
 //! ```
 
 pub mod ast;
@@ -74,7 +74,7 @@ pub use elaboration::Journal;
 /// Each transaction is formatted using its [`std::fmt::Display`] impl and
 /// separated from the next by a blank line. The output is suitable for
 /// appending to or creating a `.ledger` source file and round-trips correctly
-/// through the parser: `write_ledger(txns)` → parse → resolve should yield
+/// through the parser: `write_journal(txns)` → parse → resolve should yield
 /// semantically equivalent transactions.
 ///
 /// # Errors
@@ -94,11 +94,11 @@ pub use elaboration::Journal;
 ///         .with_posting(Posting::new("Assets:Checking")),
 /// ];
 /// let mut out = Vec::new();
-/// doppio::write_ledger(txns, &mut out).unwrap();
+/// doppio::write_journal(txns, &mut out).unwrap();
 /// let text = String::from_utf8(out).unwrap();
 /// assert!(text.starts_with("2024-01-15 Groceries"));
 /// ```
-pub fn write_ledger<W>(
+pub fn write_journal<W>(
     entries: impl IntoIterator<Item = resolution::Transaction>,
     writer: &mut W,
 ) -> std::io::Result<()>
@@ -148,7 +148,7 @@ pub fn file_opener(pattern: &str) -> String {
 ///
 /// The `parser` argument supplies the file-opener for `include` directives and
 /// the base path for relative path resolution. For single-file inputs without
-/// includes, use [`parser::parse_ledger`] instead.
+/// includes, use [`parser::parse_journal`] instead.
 ///
 /// # Errors
 ///
@@ -308,7 +308,7 @@ pub fn dop_read_header<R: std::io::Read>(
 }
 
 #[cfg(test)]
-mod write_ledger_tests {
+mod write_journal_tests {
     use chrono::NaiveDate;
     use rust_decimal::Decimal;
 
@@ -318,7 +318,7 @@ mod write_ledger_tests {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
     }
 
-    /// Parse a ledger source string and return the resolved transactions.
+    /// Parse a Ledger-format source string and return the resolved transactions.
     fn parse_transactions(source: &str) -> Vec<resolution::Transaction> {
         let mut p = parser::Parser {
             opener: |_: &str| String::new(),
@@ -332,7 +332,7 @@ mod write_ledger_tests {
     #[test]
     fn write_empty_iterator_produces_no_output() {
         let mut out: Vec<u8> = Vec::new();
-        write_ledger(std::iter::empty::<resolution::Transaction>(), &mut out).unwrap();
+        write_journal(std::iter::empty::<resolution::Transaction>(), &mut out).unwrap();
         assert!(out.is_empty());
     }
 
@@ -345,7 +345,7 @@ mod write_ledger_tests {
             .with_posting(resolution::Posting::new("Assets:Checking"));
 
         let mut out: Vec<u8> = Vec::new();
-        write_ledger([txn], &mut out).unwrap();
+        write_journal([txn], &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
 
         assert_eq!(
@@ -362,7 +362,7 @@ mod write_ledger_tests {
         ];
 
         let mut out: Vec<u8> = Vec::new();
-        write_ledger(txns, &mut out).unwrap();
+        write_journal(txns, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
 
         assert_eq!(text, "2024-01-01 First\n\n2024-01-02 Second\n");
@@ -379,7 +379,7 @@ mod write_ledger_tests {
             .with_posting(resolution::Posting::new("Assets:Checking"));
 
         let mut out: Vec<u8> = Vec::new();
-        write_ledger([original], &mut out).unwrap();
+        write_journal([original], &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
 
         let parsed = parse_transactions(&text);
@@ -412,7 +412,7 @@ mod write_ledger_tests {
             .with_posting(resolution::Posting::new("Assets:Checking"));
 
         let mut out: Vec<u8> = Vec::new();
-        write_ledger([original], &mut out).unwrap();
+        write_journal([original], &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
 
         let parsed = parse_transactions(&text);
@@ -457,7 +457,7 @@ mod write_ledger_tests {
         ];
 
         let mut out: Vec<u8> = Vec::new();
-        write_ledger(txns, &mut out).unwrap();
+        write_journal(txns, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
 
         let parsed = parse_transactions(&text);
@@ -483,7 +483,7 @@ mod write_ledger_tests {
             .with_posting(resolution::Posting::new("Assets:Bank"));
 
         let mut out: Vec<u8> = Vec::new();
-        write_ledger([original], &mut out).unwrap();
+        write_journal([original], &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
 
         let parsed = parse_transactions(&text);

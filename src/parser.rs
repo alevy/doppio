@@ -25,7 +25,7 @@ use std::sync::LazyLock; // Or once_cell
 /// The raw pest parser generated from `ledger.pest` via `pest_derive`.
 ///
 /// This type is only used internally by [`Parser<F>::parse`]. Callers
-/// should use [`Parser`] or the convenience function [`parse_ledger`].
+/// should use [`Parser`] or the convenience function [`parse_journal`].
 #[derive(Parser)]
 #[grammar = "ledger.pest"]
 pub struct LedgerParser;
@@ -120,7 +120,7 @@ impl<F: Fn(&str) -> String> Parser<F> {
 ///
 /// Useful in tests and benchmarks where a self-contained string is parsed
 /// and no file I/O is needed.
-pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
+pub fn parse_journal(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
     Parser {
         opener: |_| String::new(),
         base_path: PathBuf::new(),
@@ -571,7 +571,7 @@ mod tests {
     fn test_simple_transaction() {
         let input =
             "2023-01-01 * (123) Grocery Store\n  Expenses:Food  $50.00\n  Assets:Checking\n";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
 
         assert_eq!(journal.entries.len(), 1);
         if let Entry::Transaction(tx) = &journal.entries[0] {
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn test_lot_and_assertion() {
         let input = "2023-01-01 * Stock Purchase\n  Assets:Brokerage  10 AAPL @ $150.00 = $1500.00\n  Assets:Checking\n";
-        let journal = parse_ledger(input).expect("Should parse successfully");
+        let journal = parse_journal(input).expect("Should parse successfully");
 
         if let Entry::Transaction(ref tx) = journal.entries[0] {
             let p = &tx.postings[0];
@@ -637,7 +637,7 @@ mod tests {
   ; Posting note
   Assets:Checking
 ";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
 
         // Entry 0 is an empty line (optional depending on grammar strictness)
         // Entry 1 is the comment
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn test_invalid_date() {
         let input = "23-01-01 * Missing Year Century\n  Expenses:Food  $10.00\n  Assets:Cash\n";
-        let result = parse_ledger(input);
+        let result = parse_journal(input);
         assert!(result.is_err(), "Should fail due to strict date format");
     }
 
@@ -674,7 +674,7 @@ mod tests {
     Expenses:Food  (1,000.00 + 200) * 2 USD
     Assets:Cash    $-1,234.56
 ";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
         let tx = match &journal.entries[0] {
             Entry::Transaction(t) => t,
             _ => panic!("Expected transaction"),
@@ -715,7 +715,7 @@ mod tests {
     Expenses:Travel  market(100, 2023-01-01)
     Assets:Checking
 ";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
         let tx = match &journal.entries[0] {
             Entry::Transaction(t) => t,
             _ => panic!("Expected transaction"),
@@ -810,7 +810,7 @@ mod directed_tests {
         Assets:Bank:Checking    =$21,966.08
         Equity:Opening Balances";
 
-        let journal = parse_ledger(input).expect("Should parse balance assignment");
+        let journal = parse_journal(input).expect("Should parse balance assignment");
         let Entry::Transaction(tx) = &journal.entries[0] else {
             panic!()
         };
@@ -837,7 +837,7 @@ mod directed_tests {
     nomarket
     default
 ";
-        let journal = parse_ledger(input).expect("Should parse commodity directive");
+        let journal = parse_journal(input).expect("Should parse commodity directive");
 
         if let Entry::Directive(Directive::Commodity { name, notes, items }) = &journal.entries[0] {
             assert_eq!(name, "BTC");
@@ -894,7 +894,7 @@ mod directed_tests {
     #[test]
     fn test_historical_price_with_time() {
         let input = "P 2024-06-15 14:30:00 AAPL $182.50\n";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
         assert_eq!(journal.entries.len(), 1);
         let Entry::HistoricalPrice(ref hp) = journal.entries[0] else {
             panic!("Expected HistoricalPrice");
@@ -916,7 +916,7 @@ mod directed_tests {
     #[test]
     fn test_historical_price_without_time() {
         let input = "P 2024-01-01 BTC $42000\n";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
         let Entry::HistoricalPrice(ref hp) = journal.entries[0] else {
             panic!("Expected HistoricalPrice");
         };
@@ -931,7 +931,7 @@ mod directed_tests {
         // Regression test for a parse_date bug where day was not read from the
         // third token — both month and date were set to the same monthdate pair.
         let input = "P 2024-03-17 AAPL $100\n";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
         let Entry::HistoricalPrice(ref hp) = journal.entries[0] else {
             panic!()
         };
@@ -942,7 +942,7 @@ mod directed_tests {
     #[test]
     fn test_assertion_directive_weak() {
         let input = "2024-01-15 = Assets:Checking  $1000.00\n";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
         assert_eq!(journal.entries.len(), 1);
         let Entry::Assertion(ref a) = journal.entries[0] else {
             panic!("expected Assertion, got {:?}", journal.entries[0]);
@@ -961,7 +961,7 @@ mod directed_tests {
     #[test]
     fn test_assertion_directive_strict() {
         let input = "2024-06-30 == Liabilities:CreditCard  $-500.00\n";
-        let journal = parse_ledger(input).unwrap();
+        let journal = parse_journal(input).unwrap();
         assert_eq!(journal.entries.len(), 1);
         let Entry::Assertion(ref a) = journal.entries[0] else {
             panic!("expected Assertion");

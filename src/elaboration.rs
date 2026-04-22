@@ -95,7 +95,7 @@ struct RunningState {
 ///
 /// Note: this type does not implement [`std::fmt::Display`]. To serialise
 /// transactions back to Ledger source text, use [`crate::resolution::Transaction`]
-/// with [`crate::write_ledger`].
+/// with [`crate::write_journal`].
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ResolvedTransaction {
     /// Days since the Unix epoch (1970-01-01 = 0).
@@ -934,8 +934,8 @@ mod tests {
     /// Parse a ledger journal string through the full pipeline and return the
     /// elaborated `Journal`. Panics on any parse/resolution/elaboration error.
     fn elaborate(input: &str) -> Journal {
-        use crate::{parser::parse_ledger, resolution::HIR};
-        let ast = parse_ledger(input).expect("parse failed");
+        use crate::{parser::parse_journal, resolution::HIR};
+        let ast = parse_journal(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
         Journal::try_from(hir).expect("elaboration failed")
     }
@@ -1019,7 +1019,7 @@ define base_amount = 100 USD
         // first transaction would fail to elaborate. Instead, use an explicit
         // amount for the first transaction and verify the define is only in
         // context 1 via the HIR, not context 0.
-        use crate::{parser::parse_ledger, resolution::HIR};
+        use crate::{parser::parse_journal, resolution::HIR};
 
         let input = "\
 2024-01-01 Before Define
@@ -1032,7 +1032,7 @@ define myval = $99.00
     Expenses:B  myval
     Assets:Cash
 ";
-        let ast = parse_ledger(input).expect("parse failed");
+        let ast = parse_journal(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
 
         // There should be 2 contexts (0 = initial, 1 = after define).
@@ -1193,8 +1193,8 @@ define myval = $99.00
     /// Try to elaborate a ledger input string, returning the elaboration
     /// result (including errors) rather than panicking.
     fn try_elaborate(input: &str) -> Result<Journal, ElaborationError> {
-        use crate::{parser::parse_ledger, resolution::HIR};
-        let ast = parse_ledger(input).expect("parse failed");
+        use crate::{parser::parse_journal, resolution::HIR};
+        let ast = parse_journal(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
         Journal::try_from(hir)
     }

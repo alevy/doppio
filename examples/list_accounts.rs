@@ -1,20 +1,20 @@
 //! Example: print a final balance table for all accounts in a journal.
 //!
-//! Accepts either a raw `.ledger` source file or a pre-compiled `.bki` file as
+//! Accepts either a raw `.ledger` source file or a pre-compiled `.dop` file as
 //! its sole command-line argument. Outputs one line per commodity per account,
-//! formatted to match the `balance` subcommand of the `ledger` CLI.
+//! formatted to match the `balance` subcommand of the `dop` CLI.
 //!
 //! Usage:
 //!   cargo run --example list_accounts -- path/to/journal.ledger
-//!   cargo run --example list_accounts -- path/to/journal.bki
+//!   cargo run --example list_accounts -- path/to/journal.dop
 
 use std::{collections::BTreeMap, fs::File, io::Read as _, path::PathBuf};
 
 use rust_decimal::Decimal;
 
 fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::Error>> {
-    if let Some("bki") = path.extension().and_then(|e| e.to_str()) {
-        // Pre-compiled binary format: XZ-decompress then postcard-deserialise.
+    if let Some("dop") = path.extension().and_then(|e| e.to_str()) {
+        // Pre-compiled '.dop' format: XZ-decompress then postcard-deserialise.
         // The 100 KiB scratch buffer is required by postcard's `from_io` API.
         let input_xz = xz::read::XzDecoder::new(File::open(path)?);
         let mut buf = vec![0u8; 102400];
@@ -34,7 +34,7 @@ fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::E
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
-        eprintln!("Usage: list_accounts <path.ledger|path.bki>");
+        eprintln!("Usage: list_accounts <path.ledger|path.dop>");
         std::process::exit(1);
     }
     let path = PathBuf::from(&args[1]);
