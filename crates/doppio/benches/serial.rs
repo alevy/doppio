@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use std::{io::Write as _, path::PathBuf};
+use std::path::PathBuf;
 
 mod data;
 
@@ -11,18 +11,17 @@ fn make_parser()
     }
 }
 
-fn bench_serialize(c: &mut Criterion) {
+fn bench_write_dop(c: &mut Criterion) {
     let mut group = c.benchmark_group("serialize");
     for (name, input) in data::workloads() {
         let journal = doppio::compile(&input, make_parser()).unwrap();
         group.bench_with_input(
-            BenchmarkId::new("serialize", name),
+            BenchmarkId::new("write_dop", name),
             &journal,
             |b, journal| {
                 b.iter(|| {
-                    let mut out = std::io::BufWriter::new(std::io::sink());
-                    postcard::to_io(journal, &mut out).unwrap();
-                    out.flush().unwrap();
+                    let mut out = std::io::sink();
+                    doppio::write_dop(journal, &mut out, doppio::Compression::Deflate).unwrap();
                 })
             },
         );
@@ -30,17 +29,5 @@ fn bench_serialize(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_deserialize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("deserialize");
-    for (name, input) in data::workloads() {
-        let journal = doppio::compile(&input, make_parser()).unwrap();
-        let bytes = postcard::to_allocvec(&journal).unwrap();
-        group.bench_with_input(BenchmarkId::new("deserialize", name), &bytes, |b, bytes| {
-            b.iter(|| postcard::from_bytes::<doppio::Journal>(bytes).unwrap())
-        });
-    }
-    group.finish();
-}
-
-criterion_group!(benches, bench_serialize, bench_deserialize);
+criterion_group!(benches, bench_write_dop);
 criterion_main!(benches);

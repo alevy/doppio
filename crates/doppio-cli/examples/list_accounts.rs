@@ -14,11 +14,8 @@ use rust_decimal::Decimal;
 
 fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::Error>> {
     if let Some("dop") = path.extension().and_then(|e| e.to_str()) {
-        // Pre-compiled '.dop' format: XZ-decompress then postcard-deserialise.
-        // The 100 KiB scratch buffer is required by postcard's `from_io` API.
-        let input_xz = xz::read::XzDecoder::new(File::open(path)?);
-        let mut buf = vec![0u8; 102400];
-        Ok(postcard::from_io((input_xz, &mut buf))?.0)
+        let mut f = File::open(path)?;
+        Ok(doppio::read_dop(&mut f, path)?)
     } else {
         let base_path = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         let parser = doppio::parser::Parser {

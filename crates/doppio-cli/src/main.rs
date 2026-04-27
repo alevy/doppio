@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::{Read as _, Write as _},
+    io::Read as _,
     path::PathBuf,
 };
 
@@ -19,16 +19,19 @@ struct Cli {
 enum Commands {
     /// Parse and compile a ledger source file into a binary `.dop` archive.
     ///
-    /// The output is a postcard-serialised, XZ-compressed snapshot of the
-    /// elaborated journal. Loading a `.dop` file is much faster than
-    /// re-parsing the source, making it suitable for large ledgers that are
-    /// queried repeatedly.
+    /// The output is a Protocol Buffers snapshot of the elaborated journal,
+    /// compressed with deflate by default. Loading a `.dop` file is much
+    /// faster than re-parsing the source, making it suitable for large ledgers
+    /// that are queried repeatedly.
     Compile {
         /// Path for the output `.dop` file.
         #[arg(short, long)]
         output: PathBuf,
         /// Path to the root `.ledger` source file (may use `include`).
         source: PathBuf,
+        /// Write raw (uncompressed) protobuf instead of the default deflate.
+        #[arg(long, default_value_t = false)]
+        no_compression: bool,
     },
 
     /// Print the running balance for every account, optionally filtered by account name.
@@ -153,22 +156,14 @@ impl OutputFormat {
 /// source file.
 ///
 /// The file type is detected by extension:
-/// - `.dop` — decompress with XZ and deserialise with postcard.
+/// - `.dop` — validate header, decompress (if needed), and decode protobuf.
 /// - anything else — select a [`doppio::Frontend`] via
 ///   [`doppio::frontend_for_extension`] and parse as source text, resolving
 ///   `include` directives relative to the file's parent directory.
 fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::Error>> {
     if let Some("dop") = path.extension().and_then(|e| e.to_str()) {
-        // Pre-compiled binary format: validate 8-byte header, then decompress
-        // and deserialise.
         let mut f = File::open(path)?;
-        doppio::dop_read_header(&mut f, path)?;
-        // The 100 KiB scratch buffer is required by postcard's `from_io` API;
-        // it does not limit the total data read.
-        let input_xz = xz::read::XzDecoder::new(f);
-        let buf_input = std::io::BufReader::new(input_xz);
-        let mut buf = vec![0; 102400];
-        Ok(postcard::from_io((buf_input, &mut buf))?.0)
+        Ok(doppio::read_dop(&mut f, path)?)
     } else {
         let ext = path.extension().and_then(|e| e.to_str());
         let frontend = doppio::frontend_for_extension(ext);
@@ -310,7 +305,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Compile { output, source } => {
+        Commands::Compile {
+            output,
+            source,
+            no_compression,
+        } => {
             let ext = source.extension().and_then(|e| e.to_str());
             let frontend = doppio::frontend_for_extension(ext);
             let base_path = source.parent().unwrap_or(std::path::Path::new(""));
@@ -319,16 +318,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
             let hir: doppio::resolution::HIR = ast_journal.try_into()?;
             let journal: doppio::elaboration::Journal = hir.try_into()?;
+            let compression = if no_compression {
+                doppio::Compression::None
+            } else {
+                doppio::Compression::Deflate
+            };
             let mut out_file = File::create(output)?;
-            // Write the 8-byte header: magic (4) + version LE (2) + reserved (2).
-            doppio::dop_write_header(&mut out_file)?;
-            let mut output_xz = xz::write::XzEncoder::new(out_file, 1);
-            {
-                let mut buf = std::io::BufWriter::new(&mut output_xz);
-                postcard::to_io(&journal, &mut buf)?;
-                buf.flush()?;
-            }
-            output_xz.finish()?;
+            doppio::write_dop(&journal, &mut out_file, compression)?;
         }
         Commands::Register {
             source,

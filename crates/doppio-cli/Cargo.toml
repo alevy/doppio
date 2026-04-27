@@ -20,12 +20,10 @@ doppio = { path = "../doppio" }
 # CLI-specific deps not used by the library:
 chrono = { workspace = true }
 clap = { workspace = true }
-postcard = { workspace = true }
 regex = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-xz = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

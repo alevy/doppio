@@ -9,17 +9,23 @@ license-file = "../../LICENSE"
 keywords.workspace = true
 categories.workspace = true
 autobenches = false
-build = false
 
 [dependencies]
 chrono = { workspace = true }
-glob = { workspace = true }
+miniz_oxide = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
-postcard = { workspace = true }
+prost = { workspace = true }
 regex = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+glob = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3"
 
 [dev-dependencies]
 criterion = { workspace = true }
