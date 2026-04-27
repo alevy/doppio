@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- **hledger frontend** (issue #103): `.hledger` and `.journal` files are now
+  parsed by a dedicated hledger frontend (`HledgerFrontend`) rather than
+  falling through to the ledger-cli parser. Key additions over the ledger-cli
+  grammar:
+  - Date separators `/` and `.` in addition to `-` (e.g. `2024/01/15`,
+    `2024.01.15`).
+  - Comment lines starting with `#` (in addition to `;`).
+  - `commodity` directive accepts a format string directly
+    (e.g. `commodity $1,000.00`) as well as a bare symbol.
+  - `account` directive accepts a `type` sub-key.
+  - Periodic transactions (`~`) are parsed and silently ignored.
+  - Automated posting rules (`= query`) are parsed and silently ignored.
+    **Automated posting arithmetic bodies (`*N`) are not yet elaborated**
+    (TODO #103 followup).
+  - The `Frontend` trait, `frontend_for_extension()`, and
+    `HledgerFrontend` are all public so library consumers can select or
+    instantiate the frontend directly.
+
 ### Internal
 
 - **Repo restructured into a Cargo workspace.** The library now lives in
