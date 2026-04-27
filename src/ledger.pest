@@ -175,8 +175,14 @@ directive = _{ "!"? ~ (commodity_directive | account_directive | alias_directive
 
 tag_directive = ${
     "tag" ~ ws+ ~ identifier ~ (ws* ~ note)? ~ NEWLINE ~
-    (indent+ ~ (!NEWLINE ~ ANY )* ~ (NEWLINE | EOI))*
+    ((indent+ ~ note ~ NEWLINE) | tag_assert | tag_check)*
 }
+
+// assert / check sub-directives for tag blocks. Separate rules from
+// account_assert / account_check so parent context can be determined
+// unambiguously by the parser, even though the shape is identical.
+tag_assert = ${ indent+ ~ "assert" ~ ws+ ~ bool_expr ~ (NEWLINE | EOI) }
+tag_check  = ${ indent+ ~ "check"  ~ ws+ ~ bool_expr ~ (NEWLINE | EOI) }
 
 // A commodity block: declares properties such as aliases, display format,
 // and whether market prices are tracked.
@@ -214,9 +220,20 @@ account_val = @{ (!NEWLINE ~ ANY)* }
 // A top-level "alias short = long" shorthand for account names.
 alias_directive = ${ "alias" ~ ws+ ~ account ~ ws* ~ "=" ~ ws* ~ account ~ (ws+ ~ note)? ~ (NEWLINE | EOI) }
 
-// A define directive: "define name = expr"
-// Associates a name with a value expression usable in posting amounts.
-define_directive = ${ "define" ~ ws+ ~ identifier ~ ws* ~ "=" ~ ws* ~ value_expr ~ (NEWLINE | EOI) }
+// A define directive: "define name[(p1, p2, ...)] = body"
+// Associates a name with a value or boolean expression, optionally parameterized.
+// The body is tried as a bool_expr first (to support comparisons and logical chains),
+// falling back to value_expr for plain arithmetic/amount aliases.
+define_directive = ${
+    "define" ~ ws+ ~ identifier ~
+    (ws* ~ "(" ~ ws* ~ identifier ~ (ws* ~ "," ~ ws* ~ identifier)* ~ ws* ~ ")")? ~
+    ws* ~ "=" ~ ws* ~ define_body ~ (NEWLINE | EOI)
+}
+
+// A define body is either a full boolean expression (supports comparisons and
+// logical chains) or a plain value expression. bool_expr is tried first because
+// it is strictly more expressive; value_expr handles plain amounts and arithmetic.
+define_body = ${ bool_expr | value_expr }
 
 // Include another file by path (glob patterns are resolved in parser.rs).
 include_directive = ${ "include" ~ ws+ ~ filename ~ (NEWLINE | EOI) }

@@ -104,15 +104,35 @@ pub enum Directive {
         /// The full account name it expands to.
         account: String,
     },
-    /// A `define name = expr` named value alias.
+    /// A `define name[(params)] = body` named alias.
     ///
-    /// After this directive, any occurrence of `name` in a value expression
-    /// is substituted with the stored `expr` during elaboration.
+    /// When `params` is empty this is a simple value alias: any occurrence of
+    /// `name` in a value expression is substituted with the stored body during
+    /// elaboration.
+    ///
+    /// When `params` is non-empty this is a parameterized macro: a call-site
+    /// `name(arg1, arg2)` is evaluated by binding each `params[i]` to `args[i]`
+    /// in the evaluation context and then evaluating the body.
     Define {
         /// The alias name (a plain identifier).
         name: String,
-        /// The value expression the name expands to.
-        expr: ValueExpr,
+        /// Ordered parameter names. Empty for non-parameterized defines.
+        params: Vec<String>,
+        /// The body expression — either a value expression or a boolean expression.
+        body: DefineBody,
+    },
+    /// A `tag` block declaring validation rules for a metadata tag.
+    ///
+    /// Transactions and postings may carry `; TagName: value` metadata.
+    /// The `tag` directive attaches assertions and checks that are evaluated
+    /// whenever such a `TagName: value` pair is encountered during elaboration.
+    Tag {
+        /// The tag name (e.g. `"Statement"`, `"IncomeType"`).
+        name: String,
+        /// Fatal assertions: elaboration halts if any fails.
+        asserts: Vec<BoolExpr>,
+        /// Non-fatal checks: a warning is printed to stderr but elaboration continues.
+        checks: Vec<BoolExpr>,
     },
 }
 
@@ -225,6 +245,28 @@ impl std::fmt::Display for BoolExpr {
             write!(f, " {op} {cont}")?;
         }
         Ok(())
+    }
+}
+
+/// The body of a `define` directive.
+///
+/// A define body is either a value expression (for plain amount aliases and
+/// arithmetic macros) or a boolean expression (for predicate macros used in
+/// `assert`/`check` directives).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DefineBody {
+    /// A value expression, e.g. `define monthly = $1500`.
+    Value(ValueExpr),
+    /// A boolean expression, e.g. `define positive(x) = x > 0`.
+    Bool(BoolExpr),
+}
+
+impl std::fmt::Display for DefineBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DefineBody::Value(e) => write!(f, "{e}"),
+            DefineBody::Bool(e) => write!(f, "{e}"),
+        }
     }
 }
 
