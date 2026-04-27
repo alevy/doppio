@@ -217,6 +217,72 @@ fn build_pattern_regex(pattern: Option<String>) -> Result<Regex, Box<dyn std::er
     Regex::new(&raw).map_err(|e| format!("invalid account pattern: {e}").into())
 }
 
+struct JournalFilter {
+    pattern: Regex,
+    begin_date: Option<chrono::NaiveDate>,
+    end_date: Option<chrono::NaiveDate>,
+    cleared: bool,
+}
+
+impl JournalFilter {
+    fn new(
+        pattern: Option<String>,
+        begin: Option<&str>,
+        end: Option<&str>,
+        cleared: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let pattern = build_pattern_regex(pattern)?;
+
+        let begin_date = begin
+            .map(|s| {
+                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                    format!("invalid --begin date '{}': expected format YYYY-MM-DD", s)
+                })
+            })
+            .transpose()?;
+
+        let end_date = end
+            .map(|s| {
+                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                    format!("invalid --end date '{}': expected format YYYY-MM-DD", s)
+                })
+            })
+            .transpose()?;
+
+        Ok(JournalFilter {
+            pattern,
+            begin_date,
+            end_date,
+            cleared,
+        })
+    }
+
+    fn matches_transaction(&self, txn: &doppio::elaboration::ResolvedTransaction) -> bool {
+        if self.cleared && !matches!(txn.state, doppio::elaboration::TransactionState::Cleared) {
+            return false;
+        }
+
+        if self.begin_date.is_some() || self.end_date.is_some() {
+            let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+            let txn_date = unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64));
+            if let Some(txn_date) = txn_date {
+                if let Some(begin) = self.begin_date && txn_date < begin {
+                    return false;
+                }
+                if let Some(end) = self.end_date && txn_date > end {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    fn matches_account(&self, account: &str) -> bool {
+        self.pattern.is_match(account)
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -250,28 +316,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
         } => {
             let format = OutputFormat::parse(&format)?;
-            let re = build_pattern_regex(pattern)?;
+            let filter = JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared)?;
             let journal = load_journal(&source)?;
-
-            let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-
-            let begin_date = begin
-                .as_deref()
-                .map(|s| {
-                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                        format!("invalid --begin date '{}': expected format YYYY-MM-DD", s)
-                    })
-                })
-                .transpose()?;
-
-            let end_date = end
-                .as_deref()
-                .map(|s| {
-                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                        format!("invalid --end date '{}': expected format YYYY-MM-DD", s)
-                    })
-                })
-                .transpose()?;
 
             // Per-commodity running total across all matching postings.
             let mut running: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
@@ -280,30 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let filtered_txns: Vec<_> = journal
                 .transactions
                 .iter()
-                .filter(|txn| {
-                    if cleared
-                        && !matches!(txn.state, doppio::elaboration::TransactionState::Cleared)
-                    {
-                        return false;
-                    }
-                    if begin_date.is_some() || end_date.is_some() {
-                        let txn_date =
-                            unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64));
-                        if let Some(txn_date) = txn_date {
-                            if let Some(begin) = begin_date
-                                && txn_date < begin
-                            {
-                                return false;
-                            }
-                            if let Some(end) = end_date
-                                && txn_date > end
-                            {
-                                return false;
-                            }
-                        }
-                    }
-                    true
-                })
+                .filter(|txn| filter.matches_transaction(txn))
                 .collect();
 
             match format {
@@ -314,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let date = epoch_days_to_string(txn.date);
 
                         for posting in txn.postings.iter() {
-                            if !re.is_match(&posting.account) {
+                            if !filter.matches_account(&posting.account) {
                                 continue;
                             }
 
@@ -363,7 +386,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for txn in &filtered_txns {
                         let date = epoch_days_to_string(txn.date);
                         for posting in txn.postings.iter() {
-                            if !re.is_match(&posting.account) {
+                            if !filter.matches_account(&posting.account) {
                                 continue;
                             }
                             for (commodity, amount) in posting.amount.0.iter() {
@@ -388,7 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for txn in &filtered_txns {
                         let date = epoch_days_to_string(txn.date);
                         for posting in txn.postings.iter() {
-                            if !re.is_match(&posting.account) {
+                            if !filter.matches_account(&posting.account) {
                                 continue;
                             }
                             for (commodity, amount) in posting.amount.0.iter() {
@@ -492,28 +515,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
         } => {
             let format = OutputFormat::parse(&format)?;
-            let re = build_pattern_regex(pattern)?;
+            let filter = JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared)?;
             let journal = load_journal(&source)?;
-
-            let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-
-            let begin_date = begin
-                .as_deref()
-                .map(|s| {
-                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                        format!("invalid --begin date '{}': expected format YYYY-MM-DD", s)
-                    })
-                })
-                .transpose()?;
-
-            let end_date = end
-                .as_deref()
-                .map(|s| {
-                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                        format!("invalid --end date '{}': expected format YYYY-MM-DD", s)
-                    })
-                })
-                .transpose()?;
 
             // Balances keyed by owned account name so depth-truncation can
             // produce new strings that aren't borrowed from the journal.
@@ -521,29 +524,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 BTreeMap::new();
 
             for txn in journal.transactions.iter() {
-                if cleared && !matches!(txn.state, doppio::elaboration::TransactionState::Cleared) {
+                if !filter.matches_transaction(txn) {
                     continue;
                 }
 
-                if begin_date.is_some() || end_date.is_some() {
-                    let txn_date =
-                        unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64));
-                    if let Some(txn_date) = txn_date {
-                        if let Some(begin) = begin_date
-                            && txn_date < begin
-                        {
-                            continue;
-                        }
-                        if let Some(end) = end_date
-                            && txn_date > end
-                        {
-                            continue;
-                        }
-                    }
-                }
-
                 for posting in txn.postings.iter() {
-                    if !re.is_match(&posting.account) {
+                    if !filter.matches_account(&posting.account) {
                         continue;
                     }
                     let account = match depth {
