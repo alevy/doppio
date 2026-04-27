@@ -1,0 +1,63 @@
+; A small but representative hledger journal used by the integration test suite.
+; Covers 11 of 12 entry forms from the doppio-research prototype.
+; (Automated-posting arithmetic bodies are intentionally omitted — see TODO #103.)
+
+; --- Account / commodity / price directives ---
+
+account assets:bank:checking    ; type:A
+account expenses:groceries
+account income:salary
+
+commodity $1,000.00
+commodity 1,000.00 EUR
+
+P 2024-01-02 EUR $1.10
+P 2024-02-15 AAPL $182.50
+
+; --- A simple cleared transaction ---
+
+2024-01-15 * Opening Balances
+    assets:bank:checking          $1000.00
+    equity:opening-balances
+
+; --- Pending status, code, posting comment ---
+
+2024-01-16 ! (INV-42) ACME Corp  ; project:website
+    expenses:consulting           $500.00 ; vendor: ACME
+    assets:bank:checking
+
+; --- Balance assertion (=) ---
+
+2024-01-31 * end-of-month check
+    assets:bank:checking            $0.00 = $500.00
+    expenses:adjustments
+
+; --- Strict balance assertion (==) ---
+
+2024-02-01 * checked
+    assets:bank:checking            $0.00 == $500.00
+    expenses:adjustments
+
+; --- Balance assignment: "= target" with no LHS amount ---
+
+2024-02-05 * Reset to known balance
+    assets:bank:checking          = $750.00
+    income:adjustments
+
+; --- Lot pricing: unit price (@) ---
+
+2024-02-10 * Buy euros
+    assets:eur                  100.00 EUR @ $1.10
+    assets:bank:checking         $-110.00
+
+; --- Lot pricing: total price (@@) ---
+
+2024-02-11 * Buy stock
+    assets:brokerage             10 AAPL @@ $1825.00
+    assets:bank:checking        $-1825.00
+
+; --- Periodic transaction (captured but not elaborated) ---
+
+~ monthly  Rent
+    expenses:rent                $2000
+    assets:bank:checking
