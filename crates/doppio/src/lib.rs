@@ -83,15 +83,20 @@ pub mod parser {
 
 pub use elaboration::Journal;
 pub use frontend::Frontend;
+pub use grammars::hledger::HledgerFrontend;
 pub use grammars::ledger::LedgerFrontend;
 
 /// Select a frontend by file extension.
 ///
-/// Returns the appropriate [`Frontend`] implementation for `ext`. Currently
-/// only the ledger-cli frontend is registered; it is also used as the default
-/// for unrecognised extensions, preserving today's behaviour.
+/// Returns the appropriate [`Frontend`] implementation for `ext`.
+/// Dispatch table:
 ///
-/// When the hledger frontend lands (issue #103), it will be added here.
+/// | Extension | Frontend |
+/// |-----------|----------|
+/// | `"ledger"` | [`LedgerFrontend`] |
+/// | `"hledger"` | [`HledgerFrontend`] |
+/// | `"journal"` | [`HledgerFrontend`] |
+/// | anything else / `None` | [`LedgerFrontend`] (default) |
 ///
 /// # Example
 ///
@@ -99,15 +104,29 @@ pub use grammars::ledger::LedgerFrontend;
 /// let fe = doppio::frontend_for_extension(Some("ledger"));
 /// assert!(fe.extensions().contains(&"ledger"));
 ///
+/// let fe2 = doppio::frontend_for_extension(Some("hledger"));
+/// assert!(fe2.extensions().contains(&"hledger"));
+///
+/// let fe3 = doppio::frontend_for_extension(Some("journal"));
+/// assert!(fe3.extensions().contains(&"journal"));
+///
 /// // Unknown extensions fall back to the ledger frontend.
-/// let fe2 = doppio::frontend_for_extension(None);
-/// assert!(fe2.extensions().contains(&"ledger"));
+/// let fe4 = doppio::frontend_for_extension(None);
+/// assert!(fe4.extensions().contains(&"ledger"));
 /// ```
 pub fn frontend_for_extension(ext: Option<&str>) -> Box<dyn Frontend> {
-    let frontends: &[&dyn Frontend] = &[&LedgerFrontend];
+    let frontends: &[&dyn Frontend] = &[&HledgerFrontend, &LedgerFrontend];
     for fe in frontends {
         if ext.is_some_and(|e| fe.extensions().contains(&e)) {
-            return Box::new(LedgerFrontend);
+            // Construct an owned Box of the concrete type matched above.
+            // We iterate over trait-object refs to find the right frontend,
+            // then return a fresh Box of the concrete type.  This avoids
+            // cloning or storing the Frontend behind Arc.
+            if fe.extensions().contains(&"hledger") || fe.extensions().contains(&"journal") {
+                return Box::new(HledgerFrontend);
+            } else {
+                return Box::new(LedgerFrontend);
+            }
         }
     }
     // Default: ledger frontend (preserves existing behaviour for unknown extensions).
