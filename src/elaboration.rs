@@ -1753,7 +1753,65 @@ mod evaluator {
                     val => Err(EvaluationError::FieldAccessTypeError(val)),
                 }
             }
+
+            // A parenthesised boolean expression in a value-expression position,
+            // e.g. `(amt > 0 or tag("TaxImplication") !~ /^\s*$/)`.
+            //
+            // Evaluate the inner [`ast::BoolExpr`] and convert the result to a
+            // dimensionless `Amount` of `1` (true) or `0` (false) so it can
+            // participate in arithmetic or be used as the LHS of a comparison.
+            //
+            // `posting_amount`/`posting_commodity` are extracted from the
+            // defines that `eval_bool_expr` injects before calling `eval`;
+            // if absent (Group used outside a posting context) we default to 0/"".
+            ast::ValueExpr::Group(bool_expr) => {
+                let (posting_amount, posting_commodity) =
+                    extract_posting_context_from_defines(eval_context);
+                let result = eval_bool_expr_with_context(
+                    &bool_expr,
+                    posting_amount,
+                    &posting_commodity,
+                    posting_metadata,
+                    eval_context,
+                    state,
+                )?;
+                Ok(ast::ValueExpr::Amount {
+                    value: if result { Decimal::ONE } else { Decimal::ZERO },
+                    commodity: None,
+                })
+            }
         }
+    }
+
+    /// Extract posting amount and commodity from the defines that
+    /// [`eval_bool_expr`] injects into the eval context before calling [`eval`].
+    ///
+    /// Returns `(Decimal::ZERO, "")` when the bindings are absent, which
+    /// happens when a `Group` expression appears outside a posting context.
+    fn extract_posting_context_from_defines(ctx: &resolution::Context) -> (Decimal, String) {
+        let amount = ctx
+            .defines
+            .get("amount")
+            .and_then(|d| {
+                if let ast::DefineBody::Value(ast::ValueExpr::Amount { value, .. }) = &d.body {
+                    Some(*value)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(Decimal::ZERO);
+        let commodity = ctx
+            .defines
+            .get("commodity")
+            .and_then(|d| {
+                if let ast::DefineBody::Value(ast::ValueExpr::Str(s)) = &d.body {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        (amount, commodity)
     }
 }
 
@@ -3307,5 +3365,87 @@ define double(x) = x * 2
             .find(|p| p.account == "Expenses:Food")
             .unwrap();
         assert_eq!(food.amount.0.get("USD").copied(), Some(dec!(100)));
+    }
+
+    // ── Issue #89: parenthesised bool expressions in value/bool positions ──
+
+    #[test]
+    fn test_paren_bool_simple_assert_passes() {
+        // `(amount > 0)` in an account assert should pass for a positive posting.
+        let input = "\
+account Assets:Savings
+    assert (amount > 0)
+
+2024-01-01 Deposit
+    Assets:Savings  $100.00
+    Assets:Cash
+";
+        elaborate(input); // must not panic
+    }
+
+    #[test]
+    fn test_paren_bool_or_chain_passes_when_first_true() {
+        // `(amount > 0 or amount < -10)` — first arm true, should pass.
+        let input = "\
+account Assets:Savings
+    assert (amount > 0 or amount < -10)
+
+2024-01-01 Deposit
+    Assets:Savings  $100.00
+    Assets:Cash
+";
+        elaborate(input);
+    }
+
+    #[test]
+    fn test_paren_bool_or_chain_passes_when_second_true() {
+        // `(amount > 0 or amount < -10)` — second arm true.
+        let input = "\
+account Assets:Savings
+    assert (amount > 0 or amount < -10)
+
+2024-01-01 Withdrawal
+    Assets:Cash  $100.00
+    Assets:Savings  $-100.00
+";
+        // $-100 satisfies `amount < -10` (the second branch).
+        // NOTE: amount here would be -100 which is < -10 → passes.
+        elaborate(input);
+    }
+
+    #[test]
+    fn test_define_paren_bool_used_in_assert() {
+        // A parameterized define whose body is a parenthesised bool_expr,
+        // then used in an account assert.
+        let input = "\
+define inRange(x) = (x > 0 and x < 1000)
+
+account Assets:Savings
+    assert inRange(amount)
+
+2024-01-01 Deposit
+    Assets:Savings  $100.00
+    Assets:Cash
+";
+        elaborate(input);
+    }
+
+    #[test]
+    fn test_issue_89_define_with_complex_paren_bool() {
+        // The exact pattern from issue #89 (simplified to avoid needing real
+        // metadata — just verify it elaborates without error when the outer
+        // `or` short-circuits on the amount comparison).
+        let input = "\
+define assetChecker(amt) = (amt > -100.00 or (tag(\"TaxImplication\") !~ /^\\s*$/ and tag(\"Entity\") !~ /^\\s*$/))
+
+account Assets:Savings
+    assert assetChecker(amount)
+
+2024-01-01 Deposit
+    Assets:Savings  $500.00
+    Assets:Cash
+";
+        // amount=500 > -100 → outer `or` short-circuits to true.
+        elaborate(input);
     }
 }

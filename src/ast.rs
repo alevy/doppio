@@ -532,6 +532,7 @@ impl Display for ValueExpr {
             ValueExpr::Typed { expr, commodity } => write!(f, "{expr} {commodity}"),
             ValueExpr::Access { expr, field } => write!(f, "{expr}.{field}"),
             ValueExpr::Object(_) => todo!(),
+            ValueExpr::Group(b) => write!(f, "({b})"),
         }
     }
 }
@@ -598,6 +599,15 @@ pub enum ValueExpr {
 
     /// Field access on an object expression: `account("Foo").total`.
     Access { expr: Box<ValueExpr>, field: String },
+
+    /// A parenthesised boolean expression appearing in a value-expression
+    /// position, e.g. `(amt > 0 or amt < -10)`.
+    ///
+    /// This variant is introduced when the grammar matches
+    /// `"(" ~ bool_expr ~ ")"` inside `base_primary`. The evaluator converts
+    /// it to a `ValueExpr::Amount` of `1` (true) or `0` (false) so that it
+    /// can participate in arithmetic or be used as the LHS of a comparison.
+    Group(Box<BoolExpr>),
 }
 
 impl ValueExpr {
