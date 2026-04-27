@@ -1,10 +1,13 @@
 [package]
 name = "doppio"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.95.0"
 description = "A typed compiler pipeline for plain-text Ledger accounting — parse, resolve, and elaborate .ledger files with a library API built for programmatic use."
 repository = "https://github.com/alevy/doppio"
 license-file = "LICENSE"
+keywords = ["ledger", "accounting", "compiler", "finance"]
+categories = ["finance", "parser-implementations"]
 autobenches = false
 default-run = "dop"
 

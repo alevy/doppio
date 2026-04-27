@@ -1,6 +1,6 @@
 # doppio Requirements
 
-**Last updated**: 2026-04-21
+**Last updated**: 2026-04-27
 
 ---
 
@@ -403,15 +403,15 @@ posting.amount.0.get("$")  // Amount(pub BTreeMap<Commodity, Decimal>)
 | Feature | Example | doppio status |
 |---------|---------|-----------------|
 | `!include <path>` | `!include config/config-npo.ledger` | Supported |
-| `!include <glob>` | `!include ../people/*.ledger` | **Not supported** |
-| `account` + `note` | `account Foo\n  note Description` | Partially (read-only via `AccountProperties.note`) |
-| `account` + `assert` | `account Foo\n  assert commodity == "$"` | **Not supported** |
-| `account` + `check` | `account Foo\n  check value =~ /regex/` | **Not supported** |
-| `commodity` directive | `commodity $\n  format $1,000.00\n  default` | **Not supported** |
-| `define` macros | `define assetChecker(amt) = (amt > -100)` | **Not supported** |
-| `tag` directives | `tag Statement\n  assert value =~ /regex/` | **Not supported** |
+| `!include <glob>` | `!include ../people/*.ledger` | Supported (v0.2.0, PR #75) |
+| `account` + `note` | `account Foo\n  note Description` | Supported (read-only via `AccountProperties.note`) |
+| `account` + `assert` | `account Foo\n  assert commodity == "$"` | Supported (v0.2.0, PR #76) |
+| `account` + `check` | `account Foo\n  check value =~ /regex/` | Supported (v0.2.0, PR #76) |
+| `commodity` directive | `commodity $\n  format $1,000.00\n  default` | Supported (v0.2.0, PR #84) |
+| `define` macros | `define assetChecker(amt) = (amt > -100)` | Supported (v0.2.0, PR #87) — parameterised, with cycle detection |
+| `tag` directives | `tag Statement\n  assert value =~ /regex/` | Supported (v0.2.0, PR #87) |
 | `alias` | `alias Assets:Checking = Assets:Checking:Mercury:7920` | Supported |
-| Balance assertions | `Assets:Checking =$858.89` | Partially (parsed/resolved, not enforced) |
+| Balance assertions | `Assets:Checking =$858.89` | Supported (parsed, resolved, and enforced during elaboration) |
 
 **The invoice generation workflow** (`ledger.py`):
 
@@ -488,28 +488,21 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 **REQ-GAP-003** ⏳ Phase 4 — **Error recovery and partial parsing**
 - If one transaction has a parse error, the entire journal fails. Users may want best-effort parsing (keep valid transactions, report all errors) — useful for batch import tools where malformed rows should not abort the whole run.
 
-**REQ-GAP-004** ⏳ Phase 4 (#43, #45) — **Query API / expression-based filtering** *(confirmed high-value)*
+**REQ-GAP-004** 🔧 #45 — **Query API / expression-based filtering**
 - Users currently iterate `journal.transactions` manually. The invoice workflow in `betterbytes-org/ledger` depends on `--limit "meta('program') == 'Grant:UW:HARVEST'"` to isolate per-grant expenses across a multi-grant ledger.
 - M2/M3 workaround: filter by account regex alone (`/^Expenses:Grants:UW:HARVEST:/`), sufficient for single-grant journals.
-- Phase 4 scope: Issue #43 (JournalFilter struct), issue #45 (expression DSL spike).
+- Phase 4 progress: Issue #43 (JournalFilter struct) ✅ shipped in v0.2.0 (#72) — `--tag KEY` filter on `balance`/`register` is now available. Issue #45 (expression DSL spike) remains deferred.
 
-**REQ-GAP-004b** ⏳ Phase 4 — **`!include` glob pattern support**
-- `betterbytes-org/ledger` uses `!include ../people/*.ledger` to include all per-person account files.
-- **Current state**: `include` supports single file paths only. **Required**: glob expansion, deterministic (lexicographic) sort, error if no matches.
+**REQ-GAP-004b** ✅ Done (PR #75, v0.2.0) — **`!include` glob pattern support**
+- `include path/*.ledger` and recursive `**/*.ledger` are expanded in lexicographic order. Globs that match no files produce a clear error.
 
-**REQ-GAP-004c** ⏳ Phase 4 — **Account-level `assert`/`check` directives**
-- `betterbytes-org/ledger` validates every posting to an account at elaboration time:
-  ```
-  account Assets:Checking
-      assert commodity == "$"
-  account Income:Grants
-      assert incomeChecker(amount) and tag("IncomeType") =~ /^RBI/
-  ```
-- **Current state**: `AccountProperties` stores only `note`; no `assert`/`check` fields.
+**REQ-GAP-004c** ✅ Done (PR #76, v0.2.0) — **Account-level `assert`/`check` directives**
+- `account` blocks accept nested `assert <expr>` (fatal) and `check <expr>` (warning) sub-directives. Expressions can reference `amount`, `commodity`, `tag("name")`, regex match `=~`/`!~`, parameterised `define` macros, and parenthesised boolean grouping.
 
-**REQ-GAP-004d** ⏳ Phase 4 — **`commodity`, `define`, and `tag` directives**
-- `betterbytes-org/ledger` uses: commodity format/default declarations, `define` macros (used in account assertions), and `tag` directives with value validation.
-- **Current state**: None of these are supported in doppio.
+**REQ-GAP-004d** ✅ Done (PRs #84, #87, v0.2.0) — **`commodity`, `define`, and `tag` directives**
+- `commodity` directive: `format`, `default`, `nomarket`, and `note` sub-keys parsed and applied (the `format` string drives `balance`/`register` rendering).
+- `define` directive: now supports parameterised macros (`define f(x) = ...`) with both value and bool bodies. Cyclic definitions are caught with a recursion limit.
+- `tag` directive: supports nested `assert <expr>` / `check <expr>` for value validation, with `value` bound to the tag's string value.
 
 **REQ-GAP-005** 🔧 #37 — **Commodity conversion / FX handling in balance assertions**
 - Mixed-commodity accounts (USD + EUR) raise questions about assertion semantics. Clarify in #37 design phase.
