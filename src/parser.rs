@@ -128,8 +128,43 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
             }
         }
 
-        Ok(Journal { entries })
+        let journal = Journal { entries };
+        validate_regexes(&journal)?;
+        Ok(journal)
     }
+}
+
+/// Walk the parsed [`Journal`] and verify every regex literal compiles.
+///
+/// Regex patterns are stored as raw strings in the AST so the AST itself
+/// stays free of `regex` types. Validation here surfaces invalid patterns at
+/// parse time — without it, a typo like `assert tag("X") =~ /[unclosed/`
+/// would only fail much later during elaboration, when the failing posting
+/// is encountered.
+fn validate_regexes(journal: &Journal) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in &journal.entries {
+        if let Entry::Directive(Directive::Account { items, .. }) = entry {
+            for item in items {
+                match item {
+                    AccountItem::Assert(e) | AccountItem::Check(e) => {
+                        validate_bool_expr_regexes(e)?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_bool_expr_regexes(expr: &BoolExpr) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some((_, ValueExpr::Regex(pattern))) = &expr.cmp {
+        regex::Regex::new(pattern).map_err(|e| format!("invalid regex /{pattern}/: {e}"))?;
+    }
+    if let Some((_, cont)) = &expr.chain {
+        validate_bool_expr_regexes(cont)?;
+    }
+    Ok(())
 }
 
 /// Convenience function: parse Ledger source with no `include` support.

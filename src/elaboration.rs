@@ -25,7 +25,7 @@
 //!   to [`Journal::accounts`], merging any properties declared in `account`
 //!   directives.
 
-use std::{cell::RefCell, collections::BTreeMap, collections::HashMap, fmt::Display};
+use std::{collections::BTreeMap, fmt::Display};
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -89,18 +89,9 @@ struct AccountBalances {
 /// Account balances are updated as each transaction is processed so that
 /// balance assertions and the `account()` function see the balance *before*
 /// the current posting is applied (which matches ledger-cli semantics).
-///
-/// `regex_cache` memoises compiled regexes across all postings within one
-/// elaboration run. A typical bb-ledger workload has ~10 distinct patterns
-/// repeated over hundreds of postings; compiling each once rather than per
-/// evaluation reduces compilation overhead to O(distinct patterns).
 #[derive(Default, Clone, Debug)]
 struct RunningState {
     account_balances: BTreeMap<String, AccountBalances>,
-    /// Cache of compiled regexes keyed by pattern string.
-    /// `RefCell` provides interior mutability so the cache can be populated
-    /// from `eval_cmp`, which receives only a shared reference to `RunningState`.
-    regex_cache: RefCell<HashMap<String, regex::Regex>>,
 }
 
 /// A fully evaluated and balanced transaction, ready for serialisation.
@@ -873,7 +864,7 @@ mod evaluator {
                     ast::ValueExpr::Regex(_) => rhs_expr.clone(),
                     other => eval(other.clone(), &ctx, state, posting_metadata)?,
                 };
-                eval_cmp(cmp_op, &lhs_val, &rhs_val, state)?
+                eval_cmp(cmp_op, &lhs_val, &rhs_val)?
             }
         };
 
@@ -920,34 +911,19 @@ mod evaluator {
     ///
     /// Regex matching is case-sensitive by default (Rust `regex` crate semantics).
     /// Returns an error for type mismatches or an invalid regex pattern.
-    ///
-    /// `state` is used to look up (and populate) the per-run regex cache, so
-    /// each distinct pattern is compiled at most once across all postings.
     fn eval_cmp(
         op: &CmpOp,
         lhs: &ast::ValueExpr,
         rhs: &ast::ValueExpr,
-        state: &RunningState,
     ) -> Result<bool, EvaluationError> {
         match (lhs, rhs) {
             // Regex match: LHS must be a string, RHS must be a Regex literal.
+            // Patterns are validated at parse time, so compilation here cannot
+            // fail in well-formed input.
             (ast::ValueExpr::Str(text), ast::ValueExpr::Regex(pattern)) => {
-                // Look up the compiled regex in the per-run cache. On a miss,
-                // compile and insert. This ensures each distinct pattern is
-                // compiled exactly once across all postings in one elaboration run.
-                let mut cache = state.regex_cache.borrow_mut();
-                let re = if let Some(re) = cache.get(pattern.as_str()) {
-                    // SAFETY: we return a reference into the map entry; to avoid
-                    // lifetime issues we clone the Regex (cheap — Arc inside).
-                    re.clone()
-                } else {
-                    let re = Regex::new(pattern).map_err(|e| {
-                        EvaluationError::InvalidRegexPattern(pattern.clone(), e.to_string())
-                    })?;
-                    cache.insert(pattern.clone(), re.clone());
-                    re
-                };
-                drop(cache);
+                let re = Regex::new(pattern).map_err(|e| {
+                    EvaluationError::InvalidRegexPattern(pattern.clone(), e.to_string())
+                })?;
                 // The only CmpOps valid with a Regex RHS are RegexMatch and
                 // RegexNotMatch — any other combination is a parser-level bug.
                 Ok(match op {
@@ -2382,46 +2358,21 @@ account Expenses:Food
     // Tests for invalid regex error — issue #79
     // -----------------------------------------------------------------------
 
-    /// An invalid regex pattern in an `assert` expression should produce
-    /// `EvaluationError::InvalidRegexPattern`, not a generic type-mismatch error.
+    /// An invalid regex pattern in an `assert` expression should fail at
+    /// parse time, not silently accepted to fail later during elaboration.
     #[test]
-    fn test_invalid_regex_produces_named_error() {
+    fn test_invalid_regex_fails_at_parse_time() {
+        use crate::parser::parse_ledger;
         let input = "\
 account Expenses:Food
     assert commodity =~ /[unclosed/
-
-2024-01-01 Test
-    Expenses:Food  $10.00
-    Assets:Checking
 ";
-        let result = try_elaborate(input);
-        let err = result.expect_err("invalid regex should cause elaboration to fail");
-        assert!(
-            matches!(
-                err,
-                ElaborationError::EvaluationError(EvaluationError::InvalidRegexPattern(_, _))
-            ),
-            "expected InvalidRegexPattern error, got: {err}"
-        );
-    }
-
-    /// The `Display` of `InvalidRegexPattern` should mention the offending pattern.
-    #[test]
-    fn test_invalid_regex_error_message_mentions_pattern() {
-        let input = "\
-account Expenses:Food
-    assert commodity =~ /[unclosed/
-
-2024-01-01 Test
-    Expenses:Food  $10.00
-    Assets:Checking
-";
-        let result = try_elaborate(input);
-        let err = result.expect_err("invalid regex should cause elaboration to fail");
+        let result = parse_ledger(input);
+        let err = result.expect_err("invalid regex should fail parsing");
         let msg = err.to_string();
         assert!(
-            msg.contains("[unclosed"),
-            "error message should include the invalid pattern; got: {msg}"
+            msg.contains("[unclosed") && msg.contains("invalid regex"),
+            "error message should include the invalid pattern and identify it as a regex; got: {msg}"
         );
     }
 }
