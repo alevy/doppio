@@ -709,12 +709,19 @@ impl TryFrom<resolution::HIR> for Journal {
                     }
 
                     // Evaluate account-level assert/check directives for each posting.
+                    //
+                    // `tag()` lookups inherit transaction-level metadata: a
+                    // posting with no `; Entity: …` of its own still sees the
+                    // transaction's `Entity` tag (matching OG ledger-cli
+                    // semantics). Posting-level metadata wins on key collision.
                     for (posting_index, posting) in resolved_postings.iter().enumerate() {
                         if let Some(props) = value
                             .global_context
                             .account_properties
                             .get(&posting.account)
                         {
+                            let merged_metadata =
+                                merge_metadata(&transaction.metadata, &posting.metadata);
                             // Assertions and checks operate per-commodity. For
                             // multi-commodity postings each commodity is checked
                             // independently; in practice postings carry a single
@@ -725,7 +732,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                         assert_expr,
                                         amount_val,
                                         commodity,
-                                        &posting.metadata,
+                                        &merged_metadata,
                                         entry_context,
                                         &state,
                                     )
@@ -743,7 +750,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                         check_expr,
                                         amount_val,
                                         commodity,
-                                        &posting.metadata,
+                                        &merged_metadata,
                                         entry_context,
                                         &state,
                                     )
@@ -862,6 +869,22 @@ impl TryFrom<resolution::HIR> for Journal {
 /// Evaluate tag-level assert/check directives for a set of metadata key-value pairs.
 ///
 /// For each `(tag_name, tag_value)` pair in `metadata`, looks up `tag_name` in
+/// Merge transaction-level metadata with posting-level metadata, with the
+/// posting's own keys taking precedence. Used when evaluating per-posting
+/// `tag()` lookups so that `; Entity: foo` declared at the transaction level
+/// is visible to assertions on every posting in that transaction (matching
+/// OG ledger-cli semantics).
+fn merge_metadata(
+    transaction: &BTreeMap<String, String>,
+    posting: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut merged = transaction.clone();
+    for (k, v) in posting {
+        merged.insert(k.clone(), v.clone());
+    }
+    merged
+}
+
 /// `tag_properties`. If validation rules are found, runs each assert and check
 /// with `value` bound to `tag_value` in the expression context.
 ///
@@ -2856,6 +2879,42 @@ account Expenses:Travel
     // -----------------------------------------------------------------------
     // Tests for `tag("name")` function — issue #80
     // -----------------------------------------------------------------------
+
+    /// Transaction-level metadata is inherited by postings: an assert that
+    /// looks up `tag("Entity")` on a posting that has no Entity of its own
+    /// should see the transaction-level Entity tag (matches OG ledger-cli).
+    #[test]
+    fn test_tag_fn_inherits_transaction_metadata() {
+        let input = "\
+account Expenses:Food
+    assert tag(\"Entity\") =~ /^Foo/
+
+2024-01-01 Lunch
+    ; Entity: Foo Inc
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// Posting-level metadata wins over transaction-level on key collision.
+    #[test]
+    fn test_tag_fn_posting_overrides_transaction() {
+        let input = "\
+account Expenses:Food
+    assert tag(\"Entity\") =~ /^Bar/
+
+2024-01-01 Lunch
+    ; Entity: Foo Inc
+    Expenses:Food  $10.00
+    ; Entity: Bar LLC
+    Assets:Checking
+";
+        // Expenses:Food's Entity is Bar LLC (posting wins) → matches /^Bar/.
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
 
     /// `assert tag("X") =~ /^foo/` passes when posting has `; X: foobar`.
     #[test]
