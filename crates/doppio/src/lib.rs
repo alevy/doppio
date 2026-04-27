@@ -161,8 +161,13 @@ fn decimal_to_proto(d: rust_decimal::Decimal) -> proto::Decimal {
     }
 }
 
-/// Reconstruct a `rust_decimal::Decimal` from its proto encoding.
-fn decimal_from_proto(p: &proto::Decimal) -> rust_decimal::Decimal {
+/// Reconstruct a `rust_decimal::Decimal` from its [`proto::Decimal`] encoding.
+///
+/// This is the inverse of the private `decimal_to_proto` helper. It is exposed
+/// publicly so that callers working directly with `proto::Journal` (e.g. via
+/// [`read_dop_proto`]) can materialise `Decimal` values on demand without
+/// going through the full `elaboration::Journal` conversion.
+pub fn decimal_from_proto(p: &proto::Decimal) -> rust_decimal::Decimal {
     let mantissa = ((p.mantissa_high as i128) << 64) | (p.mantissa_low as i128);
     rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
 }
@@ -442,6 +447,43 @@ pub fn read_dop<R: std::io::Read>(
         .map_err(|e| format!("{}: protobuf decode failed: {e}", path.display()))?;
 
     Ok(elaboration::Journal::from(wire))
+}
+
+/// Deserialise a `.dop` file from `reader` into a raw [`proto::Journal`],
+/// skipping the conversion to [`elaboration::Journal`].
+///
+/// This is the fast path for CLI read-only commands: it performs the header
+/// check, optional decompression, and prost decode, but does **not** allocate
+/// the `BTreeMap`s, `String` clones, and `Amount` wrappers that
+/// `elaboration::Journal` requires. Callers iterate `proto::Journal::transactions`
+/// directly.
+///
+/// `path` is used only in error messages.
+///
+/// # Errors
+///
+/// Returns a boxed error if the header is invalid, the compression byte is
+/// unrecognised, decompression fails, or protobuf decoding fails.
+pub fn read_dop_proto<R: std::io::Read>(
+    reader: &mut R,
+    path: &std::path::Path,
+) -> Result<proto::Journal, Box<dyn std::error::Error>> {
+    use prost::Message as _;
+
+    let compression = dop_read_header(reader, path)?;
+
+    let mut payload = Vec::new();
+    reader.read_to_end(&mut payload)?;
+
+    let proto_bytes = match compression {
+        Compression::None => payload,
+        Compression::Deflate => miniz_oxide::inflate::decompress_to_vec(&payload)
+            .map_err(|e| format!("{}: deflate decompression failed: {e:?}", path.display()))?,
+    };
+
+    proto::Journal::decode(proto_bytes.as_slice())
+        .map_err(|e| format!("{}: protobuf decode failed: {e}", path.display()))
+        .map_err(Into::into)
 }
 
 /// Write a sequence of [`resolution::Transaction`] values to `writer` in

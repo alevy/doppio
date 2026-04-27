@@ -152,18 +152,22 @@ impl OutputFormat {
     }
 }
 
-/// Load a [`doppio::Journal`] from either a compiled `.dop` file or a raw
-/// source file.
+/// Load a [`doppio::proto::Journal`] from either a compiled `.dop` file or a
+/// raw source file, without performing the `proto::Journal → elaboration::Journal`
+/// reverse conversion.
 ///
 /// The file type is detected by extension:
-/// - `.dop` — validate header, decompress (if needed), and decode protobuf.
+/// - `.dop` — validate header, decompress (if needed), and decode protobuf directly.
 /// - anything else — select a [`doppio::Frontend`] via
-///   [`doppio::frontend_for_extension`] and parse as source text, resolving
-///   `include` directives relative to the file's parent directory.
-fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::Error>> {
+///   [`doppio::frontend_for_extension`], parse and elaborate, then convert the
+///   resulting [`doppio::Journal`] to [`doppio::proto::Journal`] (the cheaper
+///   forward direction).
+fn load_proto_journal(
+    path: &PathBuf,
+) -> Result<doppio::proto::Journal, Box<dyn std::error::Error>> {
     if let Some("dop") = path.extension().and_then(|e| e.to_str()) {
         let mut f = File::open(path)?;
-        Ok(doppio::read_dop(&mut f, path)?)
+        doppio::read_dop_proto(&mut f, path)
     } else {
         let ext = path.extension().and_then(|e| e.to_str());
         let frontend = doppio::frontend_for_extension(ext);
@@ -172,7 +176,8 @@ fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::E
         File::open(path)?.read_to_string(&mut file)?;
         let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
         let hir: doppio::resolution::HIR = ast_journal.try_into()?;
-        Ok(hir.try_into()?)
+        let journal: doppio::elaboration::Journal = hir.try_into()?;
+        Ok(doppio::proto::Journal::from(&journal))
     }
 }
 
@@ -219,6 +224,10 @@ fn build_pattern_regex(pattern: Option<String>) -> Result<Regex, Box<dyn std::er
     Regex::new(&raw).map_err(|e| format!("invalid account pattern: {e}").into())
 }
 
+/// `TransactionState` integer values from the proto enum, mirrored here so we
+/// can match without importing the whole proto namespace everywhere.
+const STATE_CLEARED: i32 = doppio::proto::TransactionState::Cleared as i32;
+
 struct JournalFilter {
     pattern: Regex,
     begin_date: Option<chrono::NaiveDate>,
@@ -261,8 +270,9 @@ impl JournalFilter {
         })
     }
 
-    fn matches_transaction(&self, txn: &doppio::elaboration::ResolvedTransaction) -> bool {
-        if self.cleared && !matches!(txn.state, doppio::elaboration::TransactionState::Cleared) {
+    /// Returns `true` if `txn` passes all active filters.
+    fn matches_transaction(&self, txn: &doppio::proto::Transaction) -> bool {
+        if self.cleared && txn.state != STATE_CLEARED {
             return false;
         }
 
@@ -299,6 +309,16 @@ impl JournalFilter {
     fn matches_account(&self, account: &str) -> bool {
         self.pattern.is_match(account)
     }
+}
+
+/// Look up the format string for `commodity` in the proto commodities map.
+///
+/// Returns `None` if the commodity has no declared format.
+fn commodity_format<'a>(
+    commodity: &str,
+    commodities: &'a std::collections::HashMap<String, doppio::proto::CommodityProperties>,
+) -> Option<&'a str> {
+    commodities.get(commodity).and_then(|p| p.format.as_deref())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -338,7 +358,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let format = OutputFormat::parse(&format)?;
             let filter =
                 JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
-            let journal = load_journal(&source)?;
+            let journal = load_proto_journal(&source)?;
 
             // Per-commodity running total across all matching postings.
             let mut running: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
@@ -362,22 +382,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 continue;
                             }
 
-                            // Accumulate every commodity in this posting into the running total.
-                            for (commodity, amount) in posting.amount.0.iter() {
-                                *running.entry(commodity.clone()).or_default() += amount;
+                            // Sort commodity keys for deterministic output (proto uses HashMap),
+                            // then accumulate the running total before printing.
+                            let mut sorted_commodities: Vec<_> = posting
+                                .amount
+                                .as_ref()
+                                .map(|a| a.by_commodity.iter().collect::<Vec<_>>())
+                                .unwrap_or_default();
+                            sorted_commodities.sort_by_key(|(k, _)| k.as_str());
+
+                            // Accumulate every commodity into the running total.
+                            for (commodity, proto_amount) in &sorted_commodities {
+                                let amount = doppio::decimal_from_proto(proto_amount);
+                                *running.entry(commodity.to_string()).or_default() += amount;
                             }
 
-                            // Print one output line per commodity in the posting.
-                            // The first line carries date, description, and account;
-                            // subsequent commodity lines are blank in those columns.
-                            let mut commodities_iter = posting.amount.0.iter();
-                            if let Some((commodity, amount)) = commodities_iter.next() {
-                                let amount_str =
-                                    display_amount(commodity, *amount, &journal.commodities);
+                            let mut commodities_iter = sorted_commodities.into_iter();
+                            if let Some((commodity, proto_amount)) = commodities_iter.next() {
+                                let amount = doppio::decimal_from_proto(proto_amount);
+                                let amount_str = display_amount(
+                                    commodity,
+                                    amount,
+                                    commodity_format(commodity, &journal.commodities),
+                                );
                                 let running_str = display_amount(
                                     commodity,
-                                    running.get(commodity).copied().unwrap_or_default(),
-                                    &journal.commodities,
+                                    running.get(commodity.as_str()).copied().unwrap_or_default(),
+                                    commodity_format(commodity, &journal.commodities),
                                 );
                                 println!(
                                     "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
@@ -388,13 +419,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     running_str,
                                 );
                             }
-                            for (commodity, amount) in commodities_iter {
-                                let amount_str =
-                                    display_amount(commodity, *amount, &journal.commodities);
+                            for (commodity, proto_amount) in commodities_iter {
+                                let amount = doppio::decimal_from_proto(proto_amount);
+                                let amount_str = display_amount(
+                                    commodity,
+                                    amount,
+                                    commodity_format(commodity, &journal.commodities),
+                                );
                                 let running_str = display_amount(
                                     commodity,
-                                    running.get(commodity).copied().unwrap_or_default(),
-                                    &journal.commodities,
+                                    running.get(commodity.as_str()).copied().unwrap_or_default(),
+                                    commodity_format(commodity, &journal.commodities),
                                 );
                                 println!(
                                     "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
@@ -412,10 +447,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if !filter.matches_account(&posting.account) {
                                 continue;
                             }
-                            for (commodity, amount) in posting.amount.0.iter() {
+                            // Sort for deterministic JSON output.
+                            let mut sorted_commodities: Vec<_> = posting
+                                .amount
+                                .as_ref()
+                                .map(|a| a.by_commodity.iter().collect::<Vec<_>>())
+                                .unwrap_or_default();
+                            sorted_commodities.sort_by_key(|(k, _)| k.as_str());
+                            for (commodity, proto_amount) in sorted_commodities {
+                                let amount = doppio::decimal_from_proto(proto_amount);
                                 *running.entry(commodity.clone()).or_default() += amount;
                                 let running_total =
-                                    running.get(commodity).copied().unwrap_or_default();
+                                    running.get(commodity.as_str()).copied().unwrap_or_default();
                                 rows.push(serde_json::json!({
                                     "date": date,
                                     "description": txn.description,
@@ -437,10 +480,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if !filter.matches_account(&posting.account) {
                                 continue;
                             }
-                            for (commodity, amount) in posting.amount.0.iter() {
+                            // Sort for deterministic CSV output.
+                            let mut sorted_commodities: Vec<_> = posting
+                                .amount
+                                .as_ref()
+                                .map(|a| a.by_commodity.iter().collect::<Vec<_>>())
+                                .unwrap_or_default();
+                            sorted_commodities.sort_by_key(|(k, _)| k.as_str());
+                            for (commodity, proto_amount) in sorted_commodities {
+                                let amount = doppio::decimal_from_proto(proto_amount);
                                 *running.entry(commodity.clone()).or_default() += amount;
                                 let running_total =
-                                    running.get(commodity).copied().unwrap_or_default();
+                                    running.get(commodity.as_str()).copied().unwrap_or_default();
                                 println!(
                                     "{},{},{},{},{},{}",
                                     csv_field(&date),
@@ -473,34 +524,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             doppio::write_ledger(hir.transactions(), &mut std::io::stdout())?;
         }
         Commands::Accounts { source, pattern } => {
-            let journal = load_journal(&source)?;
+            let journal = load_proto_journal(&source)?;
             let pattern = pattern.map(|p| p.to_lowercase()).unwrap_or_default();
-            for account in journal.accounts.keys() {
+            // Sort account names — proto uses HashMap, so we must sort explicitly.
+            let mut accounts: Vec<&String> = journal.accounts.keys().collect();
+            accounts.sort();
+            for account in accounts {
                 if account.to_lowercase().contains(&pattern) {
                     println!("{}", account);
                 }
             }
         }
         Commands::Commodities { source } => {
-            let journal = load_journal(&source)?;
-            let commodities: BTreeSet<&String> = journal
+            let journal = load_proto_journal(&source)?;
+            let commodities: BTreeSet<&str> = journal
                 .transactions
                 .iter()
                 .flat_map(|txn| txn.postings.iter())
-                .flat_map(|posting| posting.amount.0.keys())
+                .flat_map(|posting| {
+                    posting
+                        .amount
+                        .as_ref()
+                        .map(|a| {
+                            a.by_commodity
+                                .keys()
+                                .map(String::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
                 .collect();
             for commodity in commodities {
                 println!("{}", commodity);
             }
         }
         Commands::Stats { source } => {
-            let journal = load_journal(&source)?;
+            let journal = load_proto_journal(&source)?;
 
-            let commodities: BTreeSet<&String> = journal
+            let commodities: BTreeSet<&str> = journal
                 .transactions
                 .iter()
                 .flat_map(|txn| txn.postings.iter())
-                .flat_map(|posting| posting.amount.0.keys())
+                .flat_map(|posting| {
+                    posting
+                        .amount
+                        .as_ref()
+                        .map(|a| {
+                            a.by_commodity
+                                .keys()
+                                .map(String::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
                 .collect();
 
             // txn.date is Unix epoch days (1970-01-01 = 0).
@@ -540,7 +616,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let format = OutputFormat::parse(&format)?;
             let filter =
                 JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
-            let journal = load_journal(&source)?;
+            let journal = load_proto_journal(&source)?;
 
             // Balances keyed by owned account name so depth-truncation can
             // produce new strings that aren't borrowed from the journal.
@@ -560,12 +636,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(d) => truncate_account(&posting.account, d).to_owned(),
                         None => posting.account.clone(),
                     };
-                    for (commodity, amount) in posting.amount.0.iter() {
-                        *(balances
-                            .entry(account.clone())
-                            .or_default()
-                            .entry(commodity.clone())
-                            .or_default()) += *amount;
+                    if let Some(amount) = &posting.amount {
+                        for (commodity, proto_amount) in &amount.by_commodity {
+                            *(balances
+                                .entry(account.clone())
+                                .or_default()
+                                .entry(commodity.clone())
+                                .or_default()) += doppio::decimal_from_proto(proto_amount);
+                        }
                     }
                 }
             }
@@ -588,11 +666,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         let mut commodities_iter = commodities.iter();
                         if let Some((commodity, value)) = commodities_iter.next() {
-                            let balance = display_amount(commodity, *value, &journal.commodities);
+                            let balance = display_amount(
+                                commodity,
+                                *value,
+                                commodity_format(commodity, &journal.commodities),
+                            );
                             println!("{balance:>20}  {prefix}{label}");
                         }
                         for (commodity, value) in commodities_iter {
-                            let balance = display_amount(commodity, *value, &journal.commodities);
+                            let balance = display_amount(
+                                commodity,
+                                *value,
+                                commodity_format(commodity, &journal.commodities),
+                            );
                             println!("{balance:>20}");
                         }
                     }
@@ -795,12 +881,8 @@ fn apply_format(
 
 /// Format an amount using the commodity's declared format if available,
 /// otherwise fall back to `"COMMODITY VALUE"`.
-fn display_amount(
-    commodity: &str,
-    value: rust_decimal::Decimal,
-    commodities: &std::collections::BTreeMap<String, doppio::elaboration::CommodityProperties>,
-) -> String {
-    if let Some(fmt) = commodities.get(commodity).and_then(|p| p.format.as_deref()) {
+fn display_amount(commodity: &str, value: rust_decimal::Decimal, fmt: Option<&str>) -> String {
+    if let Some(fmt) = fmt {
         format_amount(commodity, value, fmt)
     } else {
         format!("{commodity} {value}")
