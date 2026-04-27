@@ -140,8 +140,86 @@ pub enum AccountItem {
     Alias(String),
     /// A free-form note describing the account.
     Note(String),
+    /// A fatal assertion that every posting to this account must satisfy.
+    ///
+    /// Elaboration halts with [`crate::elaboration::ElaborationError::AccountAssertionFailed`]
+    /// if the expression evaluates to `false` for any posting.
+    Assert(BoolExpr),
+    /// A non-fatal check that every posting to this account should satisfy.
+    ///
+    /// If the expression evaluates to `false`, a warning is printed to stderr
+    /// but elaboration continues.
+    Check(BoolExpr),
     /// An unrecognised sub-directive with an optional value.
     Unknown(String, Option<String>),
+}
+
+/// A boolean expression used in `assert` / `check` account sub-directives.
+///
+/// The grammar supports a simple left-to-right structure:
+/// `lhs [cmp_op rhs] [bool_op continuation]`.
+/// Full precedence parsing of boolean operators is a TODO(#74-followup).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoolExpr {
+    /// Left-hand side value expression (e.g. `commodity`, `amount`).
+    pub lhs: ValueExpr,
+    /// Optional comparison: operator and right-hand side.
+    pub cmp: Option<(CmpOp, ValueExpr)>,
+    /// Optional logical continuation chained to the right.
+    pub chain: Option<(BoolOp, Box<BoolExpr>)>,
+}
+
+/// Comparison operator used in [`BoolExpr`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl std::fmt::Display for CmpOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CmpOp::Eq => write!(f, "=="),
+            CmpOp::Ne => write!(f, "!="),
+            CmpOp::Lt => write!(f, "<"),
+            CmpOp::Le => write!(f, "<="),
+            CmpOp::Gt => write!(f, ">"),
+            CmpOp::Ge => write!(f, ">="),
+        }
+    }
+}
+
+/// Boolean chaining operator used in [`BoolExpr`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BoolOp {
+    And,
+    Or,
+}
+
+impl std::fmt::Display for BoolOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoolOp::And => write!(f, "and"),
+            BoolOp::Or => write!(f, "or"),
+        }
+    }
+}
+
+impl std::fmt::Display for BoolExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.lhs)?;
+        if let Some((op, rhs)) = &self.cmp {
+            write!(f, " {op} {rhs}")?;
+        }
+        if let Some((op, cont)) = &self.chain {
+            write!(f, " {op} {cont}")?;
+        }
+        Ok(())
+    }
 }
 
 /// A parsed date, with an optional year.

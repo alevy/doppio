@@ -194,10 +194,16 @@ commodity_key = @{ "alias" | "format" | "nomarket" | "default" | identifier }
 commodity_val = @{ (!NEWLINE ~ ANY)* }
 
 // An account block: declares an account and its properties (alias, note).
+// account_assert / account_check are tried before account_item so the
+// "assert" / "check" keywords are not swallowed as unknown keys.
 account_directive = ${
     "account" ~ ws+ ~ account ~ (ws* ~ note)? ~ NEWLINE ~
-    ((indent+ ~ note ~ NEWLINE) | account_item)*
+    ((indent+ ~ note ~ NEWLINE) | account_assert | account_check | account_item)*
 }
+
+// assert / check take a full boolean expression rather than a raw string.
+account_assert = ${ indent+ ~ "assert" ~ ws+ ~ bool_expr ~ (NEWLINE | EOI) }
+account_check  = ${ indent+ ~ "check"  ~ ws+ ~ bool_expr ~ (NEWLINE | EOI) }
 
 account_item = ${
     indent+ ~ account_key ~ (ws+ ~ account_val)? ~ (ws* ~ note)? ~ (NEWLINE | EOI)
@@ -222,6 +228,19 @@ filename = @{ (!NEWLINE ~ ANY)+ }
 // is NOT handled here — the grammar produces a flat left-to-right token
 // stream that is then processed by a Pratt parser in parser.rs, which
 // applies the correct precedence (* and / bind tighter than + and -).
+
+// A boolean expression used in account assert/check directives.
+// Grammar: value_expr (cmp_op value_expr)? (bool_op bool_expr)?
+// This is kept intentionally simple: no grouping, left-to-right, since
+// the Pratt parser does not yet handle boolean / comparison operators.
+// TODO(#74-followup): wire cmp_op/bool_op into the Pratt parser so that
+// complex expressions like "a > 0 and b < 10" parse correctly under full
+// precedence rules.
+// `cmp_op` separators are punctuation so they take ws*; `bool_op` is alphabetic
+// (`and`/`or`) and must be space-separated to avoid `xand` parsing as `x and`.
+bool_expr = ${ value_expr ~ (ws* ~ cmp_op ~ ws* ~ value_expr)? ~ (ws+ ~ bool_op ~ ws+ ~ bool_expr)? }
+cmp_op = @{ "==" | "!=" | "<=" | ">=" | "<" | ">" }
+bool_op = @{ "and" | "or" }
 
 // A value_expr is an expression optionally followed by a commodity annotation.
 // The trailing commodity form "(1 + 2) USD" creates a ValueExpr::Typed node.

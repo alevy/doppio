@@ -212,6 +212,14 @@ fn parse_account_directive(pair: Pair<Rule>) -> Directive {
             Rule::account_item => {
                 items.push(parse_account_item(p));
             }
+            Rule::account_assert => {
+                let expr = parse_bool_expr(p.into_inner().next().unwrap());
+                items.push(AccountItem::Assert(expr));
+            }
+            Rule::account_check => {
+                let expr = parse_bool_expr(p.into_inner().next().unwrap());
+                items.push(AccountItem::Check(expr));
+            }
             _ => {}
         }
     }
@@ -236,6 +244,53 @@ fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
     }
 
     Directive::Commodity { name, notes, items }
+}
+
+/// Parse a `bool_expr` grammar node into a [`BoolExpr`] AST node.
+///
+/// The grammar rule is:
+/// ```text
+/// bool_expr = ${ value_expr ~ (cmp_op ~ value_expr)? ~ (bool_op ~ bool_expr)? }
+/// ```
+fn parse_bool_expr(pair: Pair<Rule>) -> BoolExpr {
+    let mut inner = pair.into_inner().peekable();
+
+    // First child is always the LHS value_expr.
+    let lhs = parse_expr(inner.next().expect("bool_expr must have lhs"));
+
+    // Next child (if any) is cmp_op — consume it and the following rhs.
+    let cmp = if inner.peek().map(|p| p.as_rule()) == Some(Rule::cmp_op) {
+        let op_pair = inner.next().unwrap();
+        let op = match op_pair.as_str() {
+            "==" => CmpOp::Eq,
+            "!=" => CmpOp::Ne,
+            "<=" => CmpOp::Le,
+            ">=" => CmpOp::Ge,
+            "<" => CmpOp::Lt,
+            ">" => CmpOp::Gt,
+            _ => unreachable!("unknown cmp_op: {}", op_pair.as_str()),
+        };
+        let rhs = parse_expr(inner.next().expect("cmp_op must be followed by rhs"));
+        Some((op, rhs))
+    } else {
+        None
+    };
+
+    // Remaining child (if any) is bool_op + bool_expr continuation.
+    let chain = if inner.peek().map(|p| p.as_rule()) == Some(Rule::bool_op) {
+        let op_pair = inner.next().unwrap();
+        let op = match op_pair.as_str() {
+            "and" => BoolOp::And,
+            "or" => BoolOp::Or,
+            _ => unreachable!("unknown bool_op: {}", op_pair.as_str()),
+        };
+        let cont = parse_bool_expr(inner.next().expect("bool_op must be followed by bool_expr"));
+        Some((op, Box::new(cont)))
+    } else {
+        None
+    };
+
+    BoolExpr { lhs, cmp, chain }
 }
 
 fn parse_account_item(pair: Pair<Rule>) -> AccountItem {
