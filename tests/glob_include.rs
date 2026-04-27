@@ -194,3 +194,40 @@ fn recursive_glob_includes_subdirectories() {
     assert_eq!(journal.transactions[1].description, "Bob salary");
     assert_eq!(journal.transactions[2].description, "Carol contract");
 }
+
+// ── concatenation safety ─────────────────────────────────────────────────────
+
+/// Files included via a glob that don't end with a trailing newline must still
+/// parse correctly when concatenated. Without a separator, the next file's
+/// first line would be glued onto the previous file's last line.
+#[test]
+fn glob_files_without_trailing_newline_are_separated() {
+    let dir = TempDir::new().unwrap();
+
+    // No trailing newline on either file.
+    write_file(
+        dir.path(),
+        "a.ledger",
+        "2024-01-01 First
+    Expenses:Food  10 $
+    Assets:Checking",
+    );
+    write_file(
+        dir.path(),
+        "b.ledger",
+        "2024-01-02 Second
+    Expenses:Food  20 $
+    Assets:Checking",
+    );
+
+    let source = "include *.ledger\n";
+    let journal = compile_with_dir(source, dir.path()).expect("compile");
+
+    assert_eq!(
+        journal.transactions.len(),
+        2,
+        "both transactions should parse despite missing trailing newlines"
+    );
+    assert_eq!(journal.transactions[0].description, "First");
+    assert_eq!(journal.transactions[1].description, "Second");
+}

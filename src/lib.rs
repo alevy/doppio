@@ -167,6 +167,13 @@ pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> 
 
     let mut buf = String::new();
     for path in &paths {
+        // Ensure each appended file starts on a fresh line. If the previous
+        // file didn't end with a newline, gluing the next file's first line
+        // onto the previous one can change parse meaning (e.g. attach a
+        // posting to the wrong transaction).
+        if !buf.is_empty() && !buf.ends_with('\n') {
+            buf.push('\n');
+        }
         std::fs::File::open(path)
             .map_err(|e| format!("include: cannot open {}: {e}", path.display()))?
             .read_to_string(&mut buf)
