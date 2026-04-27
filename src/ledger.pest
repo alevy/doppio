@@ -236,7 +236,9 @@ filename = @{ (!NEWLINE ~ ANY)+ }
 // TODO(#74-followup): wire cmp_op/bool_op into the Pratt parser so that
 // complex expressions like "a > 0 and b < 10" parse correctly under full
 // precedence rules.
-bool_expr = ${ value_expr ~ (ws+ ~ cmp_op ~ ws+ ~ value_expr)? ~ (ws+ ~ bool_op ~ ws+ ~ bool_expr)? }
+// `cmp_op` separators are punctuation so they take ws*; `bool_op` is alphabetic
+// (`and`/`or`) and must be space-separated to avoid `xand` parsing as `x and`.
+bool_expr = ${ value_expr ~ (ws* ~ cmp_op ~ ws* ~ value_expr)? ~ (ws+ ~ bool_op ~ ws+ ~ bool_expr)? }
 cmp_op = @{ "==" | "!=" | "<=" | ">=" | "<" | ">" }
 bool_op = @{ "and" | "or" }
 

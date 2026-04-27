@@ -240,7 +240,11 @@ pub enum ElaborationError {
         account: String,
         /// Zero-based index of the posting within the transaction.
         posting_index: usize,
-        /// The source text of the failing expression (for diagnostics).
+        /// A rendered form of the failing expression (for diagnostics).
+        ///
+        /// Produced via the AST's `Display` impl, so formatting may be
+        /// normalized (e.g. whitespace, `$500` rendered as `500 $`) and may
+        /// not byte-match the original source text.
         expression: String,
     },
 }
@@ -741,19 +745,20 @@ mod evaluator {
         // Evaluate LHS.
         let lhs_val = eval(expr.lhs.clone(), &ctx, state)?;
 
-        // If there's no comparison operator, the expression is truthy iff the
-        // LHS evaluates to a non-zero amount (unusual but consistent).
-        let Some((ref cmp_op, ref rhs_expr)) = expr.cmp else {
-            // Plain value — treat non-zero amount as true.
-            return Ok(match lhs_val {
+        // Compute this segment's boolean value. With no comparison operator,
+        // the expression is truthy iff the LHS evaluates to a non-zero amount
+        // (unusual but consistent). Either way, an `expr.chain` continuation
+        // must still be evaluated below.
+        let result = match &expr.cmp {
+            None => match lhs_val {
                 ast::ValueExpr::Amount { value, .. } => !value.is_zero(),
                 _ => false,
-            });
+            },
+            Some((cmp_op, rhs_expr)) => {
+                let rhs_val = eval(rhs_expr.clone(), &ctx, state)?;
+                eval_cmp(cmp_op, &lhs_val, &rhs_val)?
+            }
         };
-
-        let rhs_val = eval(rhs_expr.clone(), &ctx, state)?;
-
-        let result = eval_cmp(cmp_op, &lhs_val, &rhs_val)?;
 
         // If there is a boolean chain, short-circuit accordingly.
         match &expr.chain {
@@ -1679,6 +1684,23 @@ account Assets:Savings
 ";
         let (account, _, _) = elaborate_assert_fails(input);
         assert_eq!(account, "Assets:Savings");
+    }
+
+    #[test]
+    fn test_account_assert_no_whitespace_around_cmp_op() {
+        // `amount>0` with no spaces around the comparison operator must parse
+        // and evaluate correctly. Punctuation operators don't need whitespace
+        // (matching arithmetic operators in `value_expr`).
+        let input = "\
+account Assets:Savings
+    assert amount>0
+
+2024-01-01 Deposit
+    Assets:Savings  $100.00
+    Assets:Checking
+";
+        let journal = elaborate_ok(input);
+        assert_eq!(journal.transactions.len(), 1);
     }
 
     #[test]
