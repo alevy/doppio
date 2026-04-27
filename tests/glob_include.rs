@@ -195,6 +195,65 @@ fn recursive_glob_includes_subdirectories() {
     assert_eq!(journal.transactions[2].description, "Carol contract");
 }
 
+// ── relative base_path: nested includes should not double-prefix ──────────────
+
+/// Regression test for issue #90: when `dop` is invoked with a relative path
+/// (e.g. `dop balance accounts/books.ledger`), each nested `include` directive
+/// must resolve against the *included file's* directory — not by re-joining the
+/// cumulative base_path, which would double-prefix the path at each level.
+///
+/// Layout:
+///   <tmp>/
+///     main.ledger            → include sub/inner.ledger
+///     sub/
+///       inner.ledger         → include nested/deeper.ledger
+///       nested/
+///         deeper.ledger      → a single transaction
+///
+/// The test invokes `dop balance main.ledger` with `current_dir` set to `<tmp>`
+/// so that both the top-level path and every `include` path are relative.
+#[test]
+fn relative_base_path_nested_include_no_double_prefix() {
+    let dir = TempDir::new().unwrap();
+
+    write_file(
+        dir.path(),
+        "sub/nested/deeper.ledger",
+        "2024-06-01 Deep transaction
+    Expenses:Test  42 $
+    Assets:Checking
+",
+    );
+    write_file(
+        dir.path(),
+        "sub/inner.ledger",
+        "include nested/deeper.ledger\n",
+    );
+    write_file(dir.path(), "main.ledger", "include sub/inner.ledger\n");
+
+    // Invoke the `dop` binary with current_dir = tmp so all paths are relative.
+    let dop_bin = std::env::current_exe()
+        .expect("test binary path")
+        .parent()
+        .expect("bin dir")
+        .parent()
+        .expect("deps parent")
+        .join("dop");
+
+    let output = std::process::Command::new(&dop_bin)
+        .current_dir(dir.path())
+        .args(["balance", "main.ledger"])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", dop_bin.display()));
+
+    assert!(
+        output.status.success(),
+        "dop balance exited with error:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 // ── concatenation safety ─────────────────────────────────────────────────────
 
 /// Files included via a glob that don't end with a trailing newline must still

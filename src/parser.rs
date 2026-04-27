@@ -113,8 +113,8 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     // so that any further includes within it are resolved correctly.
                     let new_base_path = include_path
                         .parent()
-                        .map(|p| self.base_path.join(p))
-                        .unwrap_or(self.base_path.clone());
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| self.base_path.clone());
                     let old_base_path = std::mem::replace(&mut self.base_path, new_base_path);
                     entries.append(&mut self.parse(&new_input)?.entries);
                     // Restore the original base_path for subsequent entries in
