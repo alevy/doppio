@@ -810,7 +810,7 @@ mod evaluator {
                     value: v2,
                     commodity: c2,
                 },
-            ) if c1 == c2 || c2.is_none() => Ok(match op {
+            ) if c1 == c2 || c1.is_none() || c2.is_none() => Ok(match op {
                 CmpOp::Eq => v1 == v2,
                 CmpOp::Ne => v1 != v2,
                 CmpOp::Lt => v1 < v2,
@@ -1644,6 +1644,41 @@ account Income:Salary
             expression.contains("amount"),
             "expression should mention 'amount'"
         );
+    }
+
+    #[test]
+    fn test_account_assert_dimensionless_lhs_compares_with_amount() {
+        // `0 < amount` (LHS bare, RHS commodity-bearing) must work the same as
+        // `amount > 0`. The commodity-compatibility check on numeric comparisons
+        // must be symmetric — without that, this would error with
+        // BinaryOperationTypeError instead of evaluating cleanly.
+        let input = "\
+account Assets:Savings
+    assert 0 < amount
+
+2024-01-01 Deposit
+    Assets:Savings  $100.00
+    Assets:Checking
+";
+        // 0 < $100 is true — assertion passes, elaboration succeeds.
+        let journal = elaborate_ok(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    #[test]
+    fn test_account_assert_dimensionless_lhs_fails_when_false() {
+        // Same shape as above but the comparison evaluates false — the
+        // assertion should fail (not error with a type mismatch).
+        let input = "\
+account Assets:Savings
+    assert 0 < amount
+
+2024-01-01 Withdrawal
+    Assets:Savings  $-50.00
+    Assets:Checking
+";
+        let (account, _, _) = elaborate_assert_fails(input);
+        assert_eq!(account, "Assets:Savings");
     }
 
     #[test]
