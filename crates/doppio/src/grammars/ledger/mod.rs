@@ -1,12 +1,14 @@
-//! Parsing stage: convert raw Ledger source text into an [`ast::Journal`].
+//! Ledger-cli frontend: parse `.ledger` source text into an [`ast::Journal`].
 //!
-//! This module has two layers:
+//! This module has three layers:
 //!
 //! 1. **[`LedgerParser`]** — a `pest`-derived parser that tokenises source
 //!    text according to the grammar in `ledger.pest`.
 //! 2. **[`Parser<F>`]** — the public API that wraps `LedgerParser`, walks
 //!    the pair tree, handles `include` directives recursively, and builds
 //!    the [`ast::Journal`].
+//! 3. **[`LedgerFrontend`]** — implements [`crate::frontend::Frontend`] so
+//!    that the CLI can select this parser by file extension.
 //!
 //! Amount expressions (see [`ast::ValueExpr`]) are parsed using a **Pratt
 //! parser** ([`PRATT_PARSER`]) to apply operator precedence: `*` and `/`
@@ -27,7 +29,7 @@ use std::sync::LazyLock; // Or once_cell
 /// This type is only used internally by [`Parser<F>::parse`]. Callers
 /// should use [`Parser`] or the convenience function [`parse_ledger`].
 #[derive(Parser)]
-#[grammar = "ledger.pest"]
+#[grammar = "grammars/ledger/ledger.pest"]
 pub struct LedgerParser;
 
 /// A stateful parser that resolves `include` directives.
@@ -191,6 +193,56 @@ pub fn parse_ledger(input: &str) -> Result<Journal, Box<dyn std::error::Error>> 
         base_path: PathBuf::new(),
     }
     .parse(input)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Frontend impl
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The ledger-cli file-format frontend.
+///
+/// Recognises `.ledger` files and delegates to [`Parser`] / [`parse_ledger`]
+/// for the actual parsing work.  Pass this (or a `Box<dyn Frontend>` wrapping
+/// it) to code that needs a type-erased frontend handle.
+///
+/// # Example
+///
+/// ```rust
+/// use doppio::frontend::Frontend as _;
+/// use doppio::LedgerFrontend;
+/// use std::path::Path;
+///
+/// let journal = LedgerFrontend
+///     .parse(
+///         "2024-01-01 Test\n  Expenses:Food  $10\n  Assets:Cash\n",
+///         Path::new(""),
+///         &|_| Ok(String::new()),
+///     )
+///     .unwrap();
+/// assert_eq!(journal.entries.len(), 1);
+/// ```
+pub struct LedgerFrontend;
+
+impl crate::frontend::Frontend for LedgerFrontend {
+    fn extensions(&self) -> &'static [&'static str] {
+        &["ledger"]
+    }
+
+    fn parse(
+        &self,
+        input: &str,
+        base_path: &std::path::Path,
+        opener: &crate::frontend::Opener,
+    ) -> Result<crate::ast::Journal, Box<dyn std::error::Error>> {
+        // Wrap the dyn-Fn opener into a concrete closure so we can store it in
+        // the generic Parser<F>. This adds one indirection per include call,
+        // which is acceptable because includes are rare compared to parse work.
+        Parser {
+            opener: |path: &str| opener(path),
+            base_path: base_path.to_path_buf(),
+        }
+        .parse(input)
+    }
 }
 
 fn parse_assertion_directive(pair: Pair<Rule>) -> AssertionDirective {

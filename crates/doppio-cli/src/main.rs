@@ -150,12 +150,13 @@ impl OutputFormat {
 }
 
 /// Load a [`doppio::Journal`] from either a compiled `.dop` file or a raw
-/// `.ledger` source file.
+/// source file.
 ///
 /// The file type is detected by extension:
 /// - `.dop` — decompress with XZ and deserialise with postcard.
-/// - anything else — parse as Ledger source text, resolving `include`
-///   directives relative to the file's parent directory.
+/// - anything else — select a [`doppio::Frontend`] via
+///   [`doppio::frontend_for_extension`] and parse as source text, resolving
+///   `include` directives relative to the file's parent directory.
 fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::Error>> {
     if let Some("dop") = path.extension().and_then(|e| e.to_str()) {
         // Pre-compiled binary format: validate 8-byte header, then decompress
@@ -169,14 +170,14 @@ fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::E
         let mut buf = vec![0; 102400];
         Ok(postcard::from_io((buf_input, &mut buf))?.0)
     } else {
-        let base_path = path.parent().unwrap().to_path_buf();
-        let parser = doppio::parser::Parser {
-            opener: doppio::file_opener,
-            base_path,
-        };
+        let ext = path.extension().and_then(|e| e.to_str());
+        let frontend = doppio::frontend_for_extension(ext);
+        let base_path = path.parent().unwrap_or(std::path::Path::new(""));
         let mut file = String::new();
         File::open(path)?.read_to_string(&mut file)?;
-        Ok(doppio::compile(&file, parser)?)
+        let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
+        let hir: doppio::resolution::HIR = ast_journal.try_into()?;
+        Ok(hir.try_into()?)
     }
 }
 
@@ -310,14 +311,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Compile { output, source } => {
-            let base_path = source.parent().unwrap().to_path_buf();
-            let parser = doppio::parser::Parser {
-                opener: doppio::file_opener,
-                base_path,
-            };
+            let ext = source.extension().and_then(|e| e.to_str());
+            let frontend = doppio::frontend_for_extension(ext);
+            let base_path = source.parent().unwrap_or(std::path::Path::new(""));
             let mut file = String::new();
-            File::open(source)?.read_to_string(&mut file)?;
-            let journal = doppio::compile(&file, parser)?;
+            File::open(&source)?.read_to_string(&mut file)?;
+            let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
+            let hir: doppio::resolution::HIR = ast_journal.try_into()?;
+            let journal: doppio::elaboration::Journal = hir.try_into()?;
             let mut out_file = File::create(output)?;
             // Write the 8-byte header: magic (4) + version LE (2) + reserved (2).
             doppio::dop_write_header(&mut out_file)?;
@@ -461,18 +462,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Print { source } => {
             if let Some("dop") = source.extension().and_then(|e| e.to_str()) {
-                return Err("print only works with .ledger source files; \
+                return Err("print only works with source files; \
                      .dop binary archives do not preserve the original transaction structure"
                     .into());
             }
-            let base_path = source.parent().unwrap().to_path_buf();
-            let mut parser = doppio::parser::Parser {
-                opener: doppio::file_opener,
-                base_path,
-            };
+            let ext = source.extension().and_then(|e| e.to_str());
+            let frontend = doppio::frontend_for_extension(ext);
+            let base_path = source.parent().unwrap_or(std::path::Path::new(""));
             let mut file = String::new();
             File::open(&source)?.read_to_string(&mut file)?;
-            let ast_journal: doppio::ast::Journal = parser.parse(&file)?;
+            let ast_journal: doppio::ast::Journal =
+                frontend.parse(&file, base_path, &doppio::file_opener)?;
             let hir: doppio::resolution::HIR = ast_journal.try_into()?;
             doppio::write_ledger(hir.transactions(), &mut std::io::stdout())?;
         }
