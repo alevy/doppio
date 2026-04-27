@@ -55,6 +55,9 @@ enum Commands {
         /// Include only cleared transactions.
         #[arg(long)]
         cleared: bool,
+        /// Include only transactions tagged with this tag.
+        #[arg(long)]
+        tag: Option<String>,
         /// Collapse accounts deeper than N colon-separated levels into their parent.
         #[arg(long)]
         depth: Option<usize>,
@@ -84,6 +87,9 @@ enum Commands {
         /// Include only cleared transactions.
         #[arg(long, default_value_t = false)]
         cleared: bool,
+        /// Include only transactions tagged with this tag.
+        #[arg(long)]
+        tag: Option<String>,
         /// Output format: text (default), json, or csv.
         #[arg(long, default_value = "text")]
         format: String,
@@ -222,6 +228,7 @@ struct JournalFilter {
     begin_date: Option<chrono::NaiveDate>,
     end_date: Option<chrono::NaiveDate>,
     cleared: bool,
+    tag: Option<String>,
 }
 
 impl JournalFilter {
@@ -230,6 +237,7 @@ impl JournalFilter {
         begin: Option<&str>,
         end: Option<&str>,
         cleared: bool,
+        tag: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let pattern = build_pattern_regex(pattern)?;
 
@@ -253,11 +261,22 @@ impl JournalFilter {
             begin_date,
             end_date,
             cleared,
+            tag,
         })
     }
 
     fn matches_transaction(&self, txn: &doppio::elaboration::ResolvedTransaction) -> bool {
         if self.cleared && !matches!(txn.state, doppio::elaboration::TransactionState::Cleared) {
+            return false;
+        }
+
+        if let Some(ref t) = self.tag
+            && !txn.tags.iter().any(|tag| tag == t)
+            && !txn
+                .postings
+                .iter()
+                .any(|p| p.tags.iter().any(|tag| tag == t))
+        {
             return false;
         }
 
@@ -316,10 +335,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             begin,
             end,
             cleared,
+            tag,
             format,
         } => {
             let format = OutputFormat::parse(&format)?;
-            let filter = JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared)?;
+            let filter =
+                JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
             let journal = load_journal(&source)?;
 
             // Per-commodity running total across all matching postings.
@@ -513,12 +534,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             begin,
             end,
             cleared,
+            tag,
             depth,
             flat,
             format,
         } => {
             let format = OutputFormat::parse(&format)?;
-            let filter = JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared)?;
+            let filter =
+                JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
             let journal = load_journal(&source)?;
 
             // Balances keyed by owned account name so depth-truncation can

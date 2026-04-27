@@ -311,3 +311,47 @@ fn register_begin_filter_resets_running_total() {
         "running total should not include excluded transaction: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --tag filtering
+// ---------------------------------------------------------------------------
+
+fn tagged_journal() -> String {
+    "2024-01-01 Tagged transaction
+    ; :payroll:
+    Expenses:Salary  100 USD
+    Assets:Checking
+
+2024-02-01 Untagged transaction
+    Expenses:Food  20 USD
+    Assets:Checking
+"
+    .to_string()
+}
+
+#[test]
+fn register_tag_includes_only_tagged_transactions() {
+    let f = tmp_journal_file(&tagged_journal());
+    let out = run(&["register", f.path().to_str().unwrap(), "--tag", "payroll"]);
+    assert!(out.contains("Salary"), "expected tagged txn: {out}");
+    assert!(
+        !out.contains("Food"),
+        "untagged txn should be excluded: {out}"
+    );
+}
+
+#[test]
+fn register_tag_no_match_returns_empty() {
+    let f = tmp_journal_file(&tagged_journal());
+    let out = run(&[
+        "register",
+        f.path().to_str().unwrap(),
+        "--tag",
+        "nonexistent",
+    ]);
+    assert!(!out.contains("Salary"), "no tagged txn should match: {out}");
+    assert!(
+        !out.contains("Food"),
+        "untagged txn should be excluded: {out}"
+    );
+}
