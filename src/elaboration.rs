@@ -455,27 +455,31 @@ impl TryFrom<resolution::HIR> for Journal {
                                     // target from the current running balance.
                                     //
                                     // If the assignment expression is bare (no commodity), try to
-                                    // infer the commodity from the account's existing running
-                                    // balance. This is the common case: `= 0` after the account
-                                    // already holds a balance in a single commodity.
-                                    let inferred_commodity = account_balance.and_then(|ab| {
-                                        // Only consider commodities with non-zero balances.
-                                        // Running balances are never pruned when they reach
-                                        // zero, so a stale entry (e.g. `$` zeroed out in an
-                                        // earlier `=$0`) shouldn't make a single-commodity
-                                        // account look multi-commodity.
+                                    // infer the commodity from, in order of preference:
+                                    //   1. The account's existing running balance (single
+                                    //      non-zero commodity) — most common case.
+                                    //   2. Other postings already processed in the current
+                                    //      transaction (single commodity) — covers e.g. bank
+                                    //      imports that write `Income:Salary  =0` after a
+                                    //      $-bearing `Assets:Checking` posting.
+                                    // Running balances are never pruned, so we filter zero
+                                    // entries to avoid stale `$=0` entries making a
+                                    // single-commodity account look multi-commodity.
+                                    let from_account = account_balance.and_then(|ab| {
                                         let mut non_zero = ab
                                             .commodity
                                             .iter()
                                             .filter(|(_, v)| !v.is_zero())
                                             .map(|(k, _)| k.as_str());
                                         let first = non_zero.next()?;
-                                        // Only infer if there is exactly one non-zero
-                                        // commodity — if the account holds multiple, a bare
-                                        // `=0` is ambiguous and we fall through to the
-                                        // normal error path.
                                         non_zero.next().is_none().then_some(first)
                                     });
+                                    let from_transaction = || {
+                                        let mut keys = transaction_state.0.keys();
+                                        let first = keys.next()?;
+                                        keys.next().is_none().then_some(first.as_str())
+                                    };
+                                    let inferred_commodity = from_account.or_else(from_transaction);
                                     let (newsum, commodity) =
                                         evaluator::eval_and_normalize_amount_with_fallback(
                                             assignment,
@@ -1549,25 +1553,53 @@ commodity $
         );
     }
 
-    /// When an account has no prior balance and no default commodity, a bare
-    /// `=0` balance assignment should still error with `AmountWithNoCommodity`.
+    /// A bare `=0` on an account with no prior balance should still succeed
+    /// when the same transaction has another posting establishing the
+    /// commodity context. This is the bank-import use case.
     #[test]
-    fn test_balance_assignment_no_context_errors() {
+    fn test_balance_assignment_infers_commodity_from_same_transaction() {
+        // The third posting absorbs the unbalanced amount so the transaction
+        // balances; Account B's `=0` itself yields a $0 delta (target $0,
+        // prior $0). The key behavior is that Account B is elaborated
+        // successfully (no `AmountWithNoCommodity` error) and lands in the
+        // expected commodity.
         let input = "\
 2026-04-01 Test
     Account A  $100
     Account B  =0
+    Account C  $-100
 ";
-        // Account B has no prior balance and no default commodity, so the bare
-        // `=0` on Account B cannot determine a commodity — expect an error.
+        let journal = elaborate(input);
+        let tx = &journal.transactions[0];
+        let posting_b = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Account B")
+            .expect("Account B posting not found");
+        assert!(
+            posting_b.amount.0.contains_key("$"),
+            "bare =0 should infer $ from same-transaction context: {:?}",
+            posting_b.amount.0
+        );
+        assert_eq!(
+            posting_b.amount.0.get("$").copied(),
+            Some(dec!(0)),
+            "Account B target is 0 with no prior balance, so delta is 0"
+        );
+    }
+
+    /// When an account has no prior balance, no transaction context, and no
+    /// default commodity, a bare `=0` balance assignment must still error.
+    #[test]
+    fn test_balance_assignment_no_context_errors() {
+        let input = "\
+2026-04-01 Test
+    Account A  =0
+";
         let result = try_elaborate(input);
         assert!(
             result.is_err(),
-            "bare =0 on account with no balance and no default commodity should error"
-        );
-        assert!(
-            matches!(result.unwrap_err(), ElaborationError::AmountWithNoCommodity),
-            "error should be AmountWithNoCommodity"
+            "bare =0 with no commodity context anywhere should error"
         );
     }
 }
