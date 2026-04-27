@@ -1753,7 +1753,68 @@ mod evaluator {
                     val => Err(EvaluationError::FieldAccessTypeError(val)),
                 }
             }
+
+            // A parenthesised boolean expression in a value-expression position.
+            // Evaluate the inner bool and convert to 1 (true) or 0 (false) so
+            // the result can participate in arithmetic or comparisons.
+            //
+            // The posting amount and commodity are extracted from the defines
+            // that `eval_bool_expr` injects before calling `eval`; if not
+            // present (Group used outside a posting context) we default to 0/"".
+            ast::ValueExpr::Group(bool_expr) => {
+                let (posting_amount, posting_commodity) =
+                    extract_posting_context_from_defines(eval_context);
+                let result = eval_bool_expr_with_context(
+                    &bool_expr,
+                    posting_amount,
+                    &posting_commodity,
+                    posting_metadata,
+                    eval_context,
+                    state,
+                )?;
+                Ok(ast::ValueExpr::Amount {
+                    value: if result {
+                        rust_decimal::Decimal::ONE
+                    } else {
+                        rust_decimal::Decimal::ZERO
+                    },
+                    commodity: None,
+                })
+            }
         }
+    }
+
+    /// Extract posting amount and commodity from defines injected by
+    /// [`eval_bool_expr`] into the eval context.
+    ///
+    /// Returns `(Decimal::ZERO, "")` when the defines are absent, which happens
+    /// when a `Group` expression is evaluated outside a posting context.
+    fn extract_posting_context_from_defines(
+        ctx: &resolution::Context,
+    ) -> (rust_decimal::Decimal, String) {
+        let amount = ctx
+            .defines
+            .get("amount")
+            .and_then(|d| {
+                if let ast::DefineBody::Value(ast::ValueExpr::Amount { value, .. }) = &d.body {
+                    Some(*value)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(rust_decimal::Decimal::ZERO);
+        let commodity = ctx
+            .defines
+            .get("commodity")
+            .and_then(|d| {
+                if let ast::DefineBody::Value(ast::ValueExpr::Str(s)) = &d.body {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        (amount, commodity)
     }
 }
 

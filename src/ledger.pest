@@ -295,6 +295,7 @@ primary = { base_primary ~ access* }
 base_primary = _{
     function_call
     | string
+    | "(" ~ bool_expr ~ ")"
     | "(" ~ expr ~ ")"
     | amount
     | commodity
