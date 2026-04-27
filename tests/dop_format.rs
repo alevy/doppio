@@ -18,7 +18,7 @@ use tempfile::NamedTempFile;
 fn compile_to_dop(source: &str) -> NamedTempFile {
     // Build the journal in memory.
     let mut parser = doppio::parser::Parser {
-        opener: |_: &str| String::new(),
+        opener: |_: &str| Ok(String::new()),
         base_path: std::path::PathBuf::new(),
     };
     let ast = parser.parse(source).expect("parse failed");

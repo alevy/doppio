@@ -8,7 +8,7 @@ fn bench_parse(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(15));
     for (name, input) in data::workloads() {
         let mut parser = doppio::parser::Parser {
-            opener: |_: &str| String::new(),
+            opener: |_: &str| Ok(String::new()),
             base_path: PathBuf::new(),
         };
         group.bench_with_input(BenchmarkId::new("parse", name), &input, |b, input| {

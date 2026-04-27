@@ -119,22 +119,61 @@ where
 /// Load and concatenate all files matching a glob pattern.
 ///
 /// This is the default file-opener used by the CLI when processing `include`
-/// directives. Multiple files matched by a single glob (e.g.
-/// `include accounts/*.ledger`) are concatenated in the order that
-/// [`glob::glob`] returns them (lexicographic on most platforms).
+/// directives. It is passed to [`parser::Parser`] as the `opener` field.
 ///
-/// Panics if the pattern is invalid or a matched path cannot be read.
-pub fn file_opener(pattern: &str) -> String {
+/// ## Glob patterns
+///
+/// Any path containing `*`, `?`, or `[` is treated as a glob pattern. Matched
+/// files are read in **lexicographic order** (sorted by path after expansion)
+/// and concatenated into a single string.
+///
+/// A glob pattern that matches **zero** files is an error — it almost always
+/// indicates a misconfigured `include` directive or a missing file tree.
+///
+/// ## Literal paths
+///
+/// A path with no glob metacharacters is treated as a single-file include. If
+/// the file does not exist, an I/O error is returned.
+///
+/// ## Errors
+///
+/// Returns a boxed error if:
+/// - `pattern` is not a valid glob expression,
+/// - the pattern contains glob metacharacters but matches no files,
+/// - a matched path cannot be read (I/O error), or
+/// - a literal path does not exist (I/O error).
+pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> {
     use std::io::Read as _;
 
-    let mut buf = String::new();
-    for path in glob::glob(pattern).unwrap() {
-        std::fs::File::open(path.unwrap())
-            .unwrap()
-            .read_to_string(&mut buf)
-            .unwrap();
+    // Collect and sort all matching paths. Sorting ensures lexicographic,
+    // deterministic ordering regardless of filesystem traversal order.
+    let mut paths: Vec<_> = glob::glob(pattern)?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("glob match error for {pattern:?}: {e}"))?;
+    paths.sort();
+
+    // A glob with metacharacters that resolves to nothing is always an error.
+    // A plain literal path that doesn't exist is caught below by the file open.
+    let is_glob = pattern.contains(['*', '?', '[']);
+    if is_glob && paths.is_empty() {
+        return Err(format!("include glob {pattern:?} matched no files").into());
     }
-    buf
+
+    // Literal path: glob returns empty when the file doesn't exist (glob
+    // silently skips non-existent literal paths). Detect this early.
+    if !is_glob && paths.is_empty() {
+        return Err(format!("include: file not found: {pattern}").into());
+    }
+
+    let mut buf = String::new();
+    for path in &paths {
+        std::fs::File::open(path)
+            .map_err(|e| format!("include: cannot open {}: {e}", path.display()))?
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("include: cannot read {}: {e}", path.display()))?;
+    }
+
+    Ok(buf)
 }
 
 /// Compile Ledger source text into a fully elaborated [`Journal`].
@@ -159,7 +198,7 @@ pub fn compile<F>(
     mut parser: parser::Parser<F>,
 ) -> Result<elaboration::Journal, Box<dyn std::error::Error>>
 where
-    F: Fn(&str) -> String,
+    F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>,
 {
     let output = parser.parse(input)?;
     let hir: resolution::HIR = output.try_into()?;
@@ -321,7 +360,7 @@ mod write_ledger_tests {
     /// Parse a Ledger-format source string and return the resolved transactions.
     fn parse_transactions(source: &str) -> Vec<resolution::Transaction> {
         let mut p = parser::Parser {
-            opener: |_: &str| String::new(),
+            opener: |_: &str| Ok(String::new()),
             base_path: std::path::PathBuf::new(),
         };
         let ast_journal = p.parse(&source.to_string()).expect("parse failed");
