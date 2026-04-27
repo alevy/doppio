@@ -481,11 +481,40 @@ impl TryFrom<resolution::HIR> for Journal {
                                 AmountDetails::BalanceAssignment(assignment) => {
                                     // "= target_balance" — compute the delta needed to reach the
                                     // target from the current running balance.
-                                    let (newsum, commodity) = evaluator::eval_and_normalize_amount(
-                                        assignment,
-                                        entry_context,
-                                        &state,
-                                    )?;
+                                    //
+                                    // If the assignment expression is bare (no commodity), try to
+                                    // infer the commodity from, in order of preference:
+                                    //   1. The account's existing running balance (single
+                                    //      non-zero commodity) — most common case.
+                                    //   2. Other postings already processed in the current
+                                    //      transaction (single commodity) — covers e.g. bank
+                                    //      imports that write `Income:Salary  =0` after a
+                                    //      $-bearing `Assets:Checking` posting.
+                                    // Running balances are never pruned, so we filter zero
+                                    // entries to avoid stale `$=0` entries making a
+                                    // single-commodity account look multi-commodity.
+                                    let from_account = account_balance.and_then(|ab| {
+                                        let mut non_zero = ab
+                                            .commodity
+                                            .iter()
+                                            .filter(|(_, v)| !v.is_zero())
+                                            .map(|(k, _)| k.as_str());
+                                        let first = non_zero.next()?;
+                                        non_zero.next().is_none().then_some(first)
+                                    });
+                                    let from_transaction = || {
+                                        let mut keys = transaction_state.0.keys();
+                                        let first = keys.next()?;
+                                        keys.next().is_none().then_some(first.as_str())
+                                    };
+                                    let inferred_commodity = from_account.or_else(from_transaction);
+                                    let (newsum, commodity) =
+                                        evaluator::eval_and_normalize_amount_with_fallback(
+                                            assignment,
+                                            entry_context,
+                                            &state,
+                                            inferred_commodity,
+                                        )?;
                                     let value = newsum
                                         - account_balance
                                             .and_then(|ab| ab.commodity.get(&commodity))
@@ -691,6 +720,19 @@ mod evaluator {
         eval_context: &resolution::Context,
         running_state: &RunningState,
     ) -> Result<(Decimal, String), ElaborationError> {
+        eval_and_normalize_amount_with_fallback(val, eval_context, running_state, None)
+    }
+
+    /// Like [`eval_and_normalize_amount`], but accepts an optional `fallback_commodity`
+    /// that is used when the expression is bare (no commodity) and the context has no
+    /// default commodity set. This is used by balance assignments to infer the commodity
+    /// from the account's existing running balance.
+    pub fn eval_and_normalize_amount_with_fallback(
+        val: ast::ValueExpr,
+        eval_context: &resolution::Context,
+        running_state: &RunningState,
+        fallback_commodity: Option<&str>,
+    ) -> Result<(Decimal, String), ElaborationError> {
         match eval(val, eval_context, running_state)? {
             ast::ValueExpr::Amount { value, commodity } => {
                 let commodity = if let Some(commodity) = commodity {
@@ -701,11 +743,14 @@ mod evaluator {
                         .unwrap_or(&commodity)
                         .clone()
                 } else {
-                    // No commodity in the expression — use the context default
+                    // No commodity in the expression — try context default, then
+                    // the caller-supplied fallback (e.g. inferred from account balance).
                     eval_context
                         .default_commodity
-                        .clone()
+                        .as_deref()
+                        .or(fallback_commodity)
                         .ok_or(ElaborationError::AmountWithNoCommodity)?
+                        .to_owned()
                 };
                 Ok((value, commodity))
             }
@@ -1766,5 +1811,200 @@ account Assets:Checking
         // The Assets:Checking posting uses EUR, which fails the assertion.
         let (account, _, _) = elaborate_assert_fails(input);
         assert_eq!(account, "Assets:Checking");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for balance assignment commodity inference (issue #71)
+    // -----------------------------------------------------------------------
+
+    /// A bare `=0` balance assignment should succeed when the account already
+    /// has a running balance in exactly one commodity — the commodity is inferred
+    /// from that prior balance, so no explicit commodity or default is needed.
+    #[test]
+    fn test_balance_assignment_infers_commodity_from_account_balance() {
+        // Account A receives $100 in the first transaction, then in the second
+        // transaction `=0` brings it back to zero. The posting amount for
+        // Account A in the second transaction should be -$100.
+        let input = "\
+2026-04-01 Setup
+    Account A  $100
+    Account B
+
+2026-04-02 Zero out
+    Account A  =0
+    Account B
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+
+        let tx = &journal.transactions[1];
+        let posting_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Account A")
+            .expect("Account A posting not found");
+
+        // The assignment `=0` means: new balance is $0, prior balance is $100,
+        // so delta = $0 - $100 = -$100.
+        assert_eq!(
+            posting_a.amount.0.get("$").copied(),
+            Some(dec!(-100)),
+            "balance assignment =0 after $100 should yield -$100 delta"
+        );
+    }
+
+    /// A balance assignment with an explicit commodity (e.g. `=$0`) should
+    /// work exactly as before — the inferred-commodity path is not taken when
+    /// the expression already carries a commodity.
+    #[test]
+    fn test_balance_assignment_explicit_commodity_still_works() {
+        let input = "\
+2026-04-01 Setup
+    Account A  $100
+    Account B
+
+2026-04-02 Zero out
+    Account A  =$0
+    Account B
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+
+        let tx = &journal.transactions[1];
+        let posting_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Account A")
+            .expect("Account A posting not found");
+
+        assert_eq!(
+            posting_a.amount.0.get("$").copied(),
+            Some(dec!(-100)),
+            "explicit =$0 should also yield -$100 delta"
+        );
+    }
+
+    /// A bare `=0` with a `default commodity` directive set should still work
+    /// through the existing default-commodity path (no regression).
+    #[test]
+    fn test_balance_assignment_with_default_commodity() {
+        let input = "\
+commodity $
+    default
+
+2026-04-01 Setup
+    Account A  $100
+    Account B
+
+2026-04-02 Zero out
+    Account A  =0
+    Account B
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+
+        let tx = &journal.transactions[1];
+        let posting_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Account A")
+            .expect("Account A posting not found");
+
+        assert_eq!(
+            posting_a.amount.0.get("$").copied(),
+            Some(dec!(-100)),
+            "default-commodity path should yield -$100 delta"
+        );
+    }
+
+    /// Running balances are not pruned when a commodity reaches zero. A stale
+    /// zero-balance entry from an earlier `=$0` should not make a
+    /// single-non-zero-commodity account look ambiguous.
+    #[test]
+    fn test_balance_assignment_ignores_stale_zero_commodities() {
+        let input = "\
+2026-04-01 Setup USD
+    Account A  $100
+    Account B
+
+2026-04-02 Zero out USD
+    Account A  =$0
+    Account B
+
+2026-04-03 Add EUR
+    Account A  EUR 50
+    Account B
+
+2026-04-04 Zero out (bare)
+    Account A  =0
+    Account B
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 4);
+
+        // Account A's running balance map at this point is { $: 0, EUR: 50 }.
+        // The bare `=0` should infer EUR (the only non-zero commodity), not
+        // fail with multi-commodity ambiguity.
+        let tx = &journal.transactions[3];
+        let posting_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Account A")
+            .expect("Account A posting not found");
+        assert_eq!(
+            posting_a.amount.0.get("EUR").copied(),
+            Some(dec!(-50)),
+            "bare =0 should infer the only non-zero commodity (EUR)"
+        );
+    }
+
+    /// A bare `=0` on an account with no prior balance should still succeed
+    /// when the same transaction has another posting establishing the
+    /// commodity context. This is the bank-import use case.
+    #[test]
+    fn test_balance_assignment_infers_commodity_from_same_transaction() {
+        // The third posting absorbs the unbalanced amount so the transaction
+        // balances; Account B's `=0` itself yields a $0 delta (target $0,
+        // prior $0). The key behavior is that Account B is elaborated
+        // successfully (no `AmountWithNoCommodity` error) and lands in the
+        // expected commodity.
+        let input = "\
+2026-04-01 Test
+    Account A  $100
+    Account B  =0
+    Account C  $-100
+";
+        let journal = elaborate(input);
+        let tx = &journal.transactions[0];
+        let posting_b = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Account B")
+            .expect("Account B posting not found");
+        assert!(
+            posting_b.amount.0.contains_key("$"),
+            "bare =0 should infer $ from same-transaction context: {:?}",
+            posting_b.amount.0
+        );
+        assert_eq!(
+            posting_b.amount.0.get("$").copied(),
+            Some(dec!(0)),
+            "Account B target is 0 with no prior balance, so delta is 0"
+        );
+    }
+
+    /// When an account has no prior balance, no transaction context, and no
+    /// default commodity, a bare `=0` balance assignment must still error.
+    #[test]
+    fn test_balance_assignment_no_context_errors() {
+        let input = "\
+2026-04-01 Test
+    Account A  =0
+";
+        let result = try_elaborate(input);
+        assert!(
+            result.is_err(),
+            "bare =0 with no commodity context anywhere should error"
+        );
     }
 }

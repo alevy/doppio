@@ -4,9 +4,10 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 mod data;
 
-fn make_parser() -> doppio::parser::Parser<impl Fn(&str) -> String> {
+fn make_parser()
+-> doppio::parser::Parser<impl Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
     doppio::parser::Parser {
-        opener: |_: &str| String::new(),
+        opener: |_: &str| Ok(String::new()),
         base_path: PathBuf::new(),
     }
 }
