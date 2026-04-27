@@ -1,8 +1,8 @@
-/// Workload generators for benchmarks.
-///
-/// Each function returns a String of ledger-format text that can be fed
-/// directly to the parser. Sizes are chosen to keep each benchmark group
-/// well under a second so the full suite is fast enough for pre-commit use.
+//! Workload generators for benchmarks.
+//!
+//! Each function returns a String of ledger-format text that can be fed
+//! directly to the parser. Sizes are chosen to keep each benchmark group
+//! well under a second so the full suite is fast enough for pre-commit use.
 
 /// A plain two-posting transaction: one expense account, one asset account.
 /// Represents the most common real-world pattern.

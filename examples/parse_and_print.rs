@@ -1,6 +1,5 @@
 fn main() {
-    let mut input = LEDGER;
-    let output = doppio::parser::parse_ledger(&mut input).unwrap();
+    let output = doppio::parser::parse_ledger(LEDGER).unwrap();
     println!("{:?}", output);
 }
 

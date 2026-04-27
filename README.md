@@ -38,9 +38,10 @@ let txn = Transaction::new(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(), "Groce
 // Validate and elaborate it (balance is checked, null posting inferred)
 let resolved = doppio::eval_transaction(txn, &Context::default())?;
 
-// Or compile a full journal from source
+// Or compile a full journal from source. The opener returns
+// Result<String, Box<dyn Error>> so it can surface I/O failures.
 let journal = doppio::compile(&source_text, doppio::parser::Parser {
-    opener: doppio::file_opener,
+    opener: doppio::file_opener, // built-in glob-aware opener
     base_path: std::path::PathBuf::from("."),
 })?;
 
@@ -67,7 +68,7 @@ dop balance my-journal.dop --depth 2 --begin 2024-01-01 --cleared
 dop balance my-journal.dop --pattern "^Expenses" --format json
 ```
 
-Prints account balances grouped by commodity. Flags: `--depth N` (truncate hierarchy), `--flat` (single-line output), `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--pattern REGEX` (filter accounts), `--format text|json|csv`.
+Prints account balances grouped by commodity. Flags: `--depth N` (truncate hierarchy), `--flat` (single-line output), `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--tag KEY` (transactions tagged with `KEY`), `--pattern REGEX` (filter accounts), `--format text|json|csv`.
 
 ### `register` — posting register
 
@@ -76,7 +77,7 @@ dop register my-journal.ledger
 dop register my-journal.dop Expenses --format csv
 ```
 
-Lists individual postings with running totals per commodity, optionally filtered to accounts matching a regex pattern. Flags: `--format text|json|csv`.
+Lists individual postings with running totals per commodity, optionally filtered to accounts matching a regex pattern. Flags: `--begin`/`--end` (date range), `--cleared`, `--tag KEY`, `--format text|json|csv`.
 
 ### `print` — re-emit canonical Ledger source
 
@@ -132,6 +133,24 @@ Full API documentation:
 cargo doc --no-deps --open
 ```
 
+## Supported Ledger features
+
+doppio supports the subset of ledger-cli syntax needed for typical day-to-day
+plain-text accounting, including the patterns used by real downstream books.
+At a glance:
+
+| Category | Status |
+|---|---|
+| Transactions, postings, balance assertions/assignments | Supported |
+| Directives — `include` (incl. globs), `account`, `commodity`, `alias`, `define` (with parameters), `tag` (with `assert`/`check`), `P` historical price | Supported |
+| Expressions — arithmetic, comparisons, regex `=~`/`!~`, `tag()`, parameterised function calls | Supported |
+| CLI — `compile`, `balance`, `register`, `print`, `stats`, `accounts`, `commodities`; text / JSON / CSV output | Supported |
+| Library API — `compile`, `eval_transaction`, `write_ledger`, `.dop` binary format | Supported |
+| Budgets (`~`), automated transactions (`= payee expr`), Lisp-style scripting | Not supported |
+
+See [`docs/SUPPORTED_FEATURES.md`](./docs/SUPPORTED_FEATURES.md) for the full
+matrix with notes on partial support and known limitations.
+
 ## Pipeline
 
 doppio processes source text through four sequential stages:
@@ -177,3 +196,7 @@ cargo build --release
 ```
 
 The resulting binary is `target/release/dop`.
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for release notes.
