@@ -538,10 +538,16 @@ impl TryFrom<ast::Journal> for HIR {
                             ast::CommodityItem::Note(note) => {
                                 global_context.note = Some(note);
                             }
-                            ast::CommodityItem::Unknown(key, Some(value)) if &key == "note" => {
-                                global_context.note = Some(value);
+                            // The `Note` arm above now handles all note values;
+                            // the `Unknown("note", …)` path is superseded.
+                            ast::CommodityItem::Unknown(key, value) => {
+                                // Unrecognised commodity sub-key: skip with a
+                                // warning rather than panicking on user input.
+                                eprintln!(
+                                    "warning: ignoring unrecognised commodity directive \
+                                     sub-key `{key}` (value: {value:?})"
+                                );
                             }
-                            ast::CommodityItem::Unknown(key, value) => todo!("{key} {value:?}"),
                         }
                     }
                 }

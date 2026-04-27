@@ -373,13 +373,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // Print one output line per commodity in the posting.
                             // The first line carries date, description, and account;
                             // subsequent commodity lines are blank in those columns.
-                            let mut commodities = posting.amount.0.iter();
-                            if let Some((commodity, amount)) = commodities.next() {
-                                let amount_str = format!("{} {}", commodity, amount);
-                                let running_str = format!(
-                                    "{} {}",
+                            let mut commodities_iter = posting.amount.0.iter();
+                            if let Some((commodity, amount)) = commodities_iter.next() {
+                                let amount_str =
+                                    display_amount(commodity, *amount, &journal.commodities);
+                                let running_str = display_amount(
                                     commodity,
-                                    running.get(commodity).copied().unwrap_or_default()
+                                    running.get(commodity).copied().unwrap_or_default(),
+                                    &journal.commodities,
                                 );
                                 println!(
                                     "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
@@ -390,12 +391,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     running_str,
                                 );
                             }
-                            for (commodity, amount) in commodities {
-                                let amount_str = format!("{} {}", commodity, amount);
-                                let running_str = format!(
-                                    "{} {}",
+                            for (commodity, amount) in commodities_iter {
+                                let amount_str =
+                                    display_amount(commodity, *amount, &journal.commodities);
+                                let running_str = display_amount(
                                     commodity,
-                                    running.get(commodity).copied().unwrap_or_default()
+                                    running.get(commodity).copied().unwrap_or_default(),
+                                    &journal.commodities,
                                 );
                                 println!(
                                     "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
@@ -588,13 +590,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let indent = if flat { 0 } else { indent_depth * 2 };
                         let prefix = " ".repeat(indent);
 
-                        let mut commodities = commodities.iter();
-                        if let Some((commodity, value)) = commodities.next() {
-                            let balance = format!("{} {value}", commodity);
+                        let mut commodities_iter = commodities.iter();
+                        if let Some((commodity, value)) = commodities_iter.next() {
+                            let balance = display_amount(commodity, *value, &journal.commodities);
                             println!("{balance:>20}  {prefix}{label}");
                         }
-                        for (commodity, value) in commodities {
-                            let balance = format!("{} {value}", commodity);
+                        for (commodity, value) in commodities_iter {
+                            let balance = display_amount(commodity, *value, &journal.commodities);
                             println!("{balance:>20}");
                         }
                     }
@@ -632,6 +634,181 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// Format an amount according to a commodity's declared format string.
+///
+/// The format encodes prefix/suffix position, thousand separator, decimal
+/// separator, and decimal places. Falls back to `"COMMODITY VALUE"` if the
+/// format string cannot be parsed.
+///
+/// Examples:
+/// - `"$1,000.00"` → prefix `$`, thousands `,`, decimal `.`, 2 places
+/// - `"1.000,00 EUR"` → suffix ` EUR`, thousands `.`, decimal `,`, 2 places
+/// - `"100 USD"` → suffix ` USD`, no thousands, no decimal
+fn format_amount(commodity: &str, value: rust_decimal::Decimal, format: &str) -> String {
+    // Determine prefix vs suffix by scanning for digit/sign characters.
+    // Everything before the first digit/sign is the prefix; after the last
+    // digit is the suffix (including any space).
+    let first_digit = format
+        .char_indices()
+        .find(|(_, c)| c.is_ascii_digit() || *c == '-')
+        .map(|(i, _)| i);
+    let last_digit = format
+        .char_indices()
+        .rfind(|(_, c)| c.is_ascii_digit())
+        .map(|(i, _)| i);
+
+    let (prefix, number_part, suffix) = match (first_digit, last_digit) {
+        (Some(s), Some(e)) => (&format[..s], &format[s..=e], &format[e + 1..]),
+        _ => return format!("{commodity} {value}"),
+    };
+
+    // Detect the decimal separator: the last `.` or `,` in the number portion,
+    // if it is followed by exactly N non-separator digits.
+    let (decimal_sep, thousand_sep, decimal_places) = detect_separators(number_part);
+
+    apply_format(
+        commodity,
+        value,
+        prefix,
+        suffix,
+        decimal_sep,
+        thousand_sep,
+        decimal_places,
+    )
+}
+
+/// Returns `(decimal_sep, thousand_sep, decimal_places)` by inspecting the
+/// example number in the format string.
+fn detect_separators(number: &str) -> (Option<char>, Option<char>, usize) {
+    // Find the last occurrence of '.' or ',' — that's the decimal separator.
+    let last_dot = number.rfind('.');
+    let last_comma = number.rfind(',');
+
+    let (decimal_sep, decimal_places) = match (last_dot, last_comma) {
+        (Some(di), Some(ci)) if di > ci => {
+            // dot comes last → decimal separator is '.', thousands is ','
+            let places = number.len() - di - 1;
+            (Some('.'), places)
+        }
+        (Some(di), Some(ci)) if ci > di => {
+            // comma comes last → decimal separator is ',', thousands is '.'
+            let places = number.len() - ci - 1;
+            (Some(','), places)
+        }
+        (Some(di), None) => {
+            // Single '.' with nothing else. Per ledger convention, a lone
+            // separator followed by exactly 3 digits (e.g. `1.000`) is a
+            // thousands separator, not a decimal point.
+            let trailing = number.len() - di - 1;
+            if trailing == 3 {
+                (None, 0) // treat as thousands sep; decimal_sep stays None
+            } else {
+                (Some('.'), trailing)
+            }
+        }
+        (None, Some(ci)) => {
+            // Same logic for a lone ',': `1,000` → thousands sep.
+            let trailing = number.len() - ci - 1;
+            if trailing == 3 {
+                (None, 0)
+            } else {
+                (Some(','), trailing)
+            }
+        }
+        _ => (None, 0),
+    };
+
+    let thousand_sep = match decimal_sep {
+        Some('.') if number.contains(',') => Some(','),
+        Some(',') if number.contains('.') => Some('.'),
+        None if number.contains(',') => Some(','),
+        None if number.contains('.') => Some('.'),
+        _ => None,
+    };
+
+    (decimal_sep, thousand_sep, decimal_places)
+}
+
+/// Render `value` using the parsed format components.
+fn apply_format(
+    commodity: &str,
+    value: rust_decimal::Decimal,
+    prefix: &str,
+    suffix: &str,
+    decimal_sep: Option<char>,
+    thousand_sep: Option<char>,
+    decimal_places: usize,
+) -> String {
+    use rust_decimal::prelude::ToPrimitive as _;
+
+    // Re-scale the decimal to the correct number of places.
+    let scaled = value.round_dp(decimal_places as u32);
+    let is_neg = scaled.is_sign_negative();
+    let abs = scaled.abs();
+
+    // Split into integer and fractional parts.
+    let integer_part = abs.trunc().to_u64().unwrap_or(0);
+    let frac_str = if decimal_places > 0 {
+        // Produce the fractional digits by taking the remainder and padding.
+        let frac = abs.fract();
+        let multiplier = rust_decimal::Decimal::from(10u64.pow(decimal_places as u32));
+        let frac_digits = (frac * multiplier).to_u64().unwrap_or(0);
+        format!("{frac_digits:0>width$}", width = decimal_places)
+    } else {
+        String::new()
+    };
+
+    // Format integer part with optional thousand separator.
+    let int_str = if let Some(sep) = thousand_sep {
+        let s = integer_part.to_string();
+        let mut out = String::new();
+        for (i, ch) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 {
+                out.push(sep);
+            }
+            out.push(ch);
+        }
+        out.chars().rev().collect::<String>()
+    } else {
+        integer_part.to_string()
+    };
+
+    // Assemble number string.
+    let number = if decimal_places > 0 {
+        format!("{int_str}{}{frac_str}", decimal_sep.unwrap_or('.'))
+    } else {
+        int_str
+    };
+
+    let sign = if is_neg { "-" } else { "" };
+
+    // The prefix/suffix may already contain the commodity symbol. Use the
+    // format's prefix/suffix as-is if non-empty, otherwise fall back.
+    //
+    // Sign placement: for prefix formats (e.g. `$`) the sign goes before the
+    // prefix so the result is `-$100`, not `$-100`.
+    if !prefix.is_empty() || !suffix.is_empty() {
+        format!("{sign}{prefix}{number}{suffix}")
+    } else {
+        // No prefix/suffix in format (shouldn't happen, but safe fallback).
+        format!("{sign}{number} {commodity}")
+    }
+}
+
+/// Format an amount using the commodity's declared format if available,
+/// otherwise fall back to `"COMMODITY VALUE"`.
+fn display_amount(
+    commodity: &str,
+    value: rust_decimal::Decimal,
+    commodities: &std::collections::BTreeMap<String, doppio::elaboration::CommodityProperties>,
+) -> String {
+    if let Some(fmt) = commodities.get(commodity).and_then(|p| p.format.as_deref()) {
+        format_amount(commodity, value, fmt)
+    } else {
+        format!("{commodity} {value}")
+    }
 }
 
 /// Convert Unix epoch days to a `YYYY-MM-DD` string.

@@ -46,9 +46,22 @@ pub struct Journal {
     pub transactions: Vec<ResolvedTransaction>,
     /// All accounts referenced by any posting, with their declared properties.
     pub accounts: BTreeMap<String, AccountProperties>,
+    /// Display and market-data properties declared in `commodity` directives.
+    pub commodities: BTreeMap<String, CommodityProperties>,
     /// Market price quotes from `P` directives, in source order, with the
     /// price expression fully evaluated to a concrete `(Decimal, commodity)`.
     pub prices: Vec<HistoricalPrice>,
+}
+
+/// Display and market-data properties of a commodity, persisted in the journal.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CommodityProperties {
+    /// A display format string from a `format` sub-directive (e.g. `"$1,000.00"`).
+    pub format: Option<String>,
+    /// `true` if the commodity was declared with `nomarket`.
+    pub no_market: bool,
+    /// A free-form note describing the commodity.
+    pub note: Option<String>,
 }
 
 /// A fully evaluated historical price entry produced from a `P` directive.
@@ -688,9 +701,26 @@ impl TryFrom<resolution::HIR> for Journal {
             });
         }
 
+        let commodities = value
+            .global_context
+            .commodity_properties
+            .into_iter()
+            .map(|(name, p)| {
+                (
+                    name,
+                    CommodityProperties {
+                        format: p.format,
+                        no_market: p.no_market,
+                        note: p.note,
+                    },
+                )
+            })
+            .collect();
+
         Ok(Journal {
             transactions,
             accounts,
+            commodities,
             prices,
         })
     }

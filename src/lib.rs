@@ -284,7 +284,7 @@ pub const DOP_MAGIC: [u8; 4] = *b"DOP\0";
 ///
 /// Bump this constant (and update [`dop_read_header`]) whenever the
 /// serialisation format changes in a breaking way.
-pub const DOP_FORMAT_VERSION: u16 = 1;
+pub const DOP_FORMAT_VERSION: u16 = 2;
 
 /// Write the 8-byte `.dop` header to `writer`.
 ///
