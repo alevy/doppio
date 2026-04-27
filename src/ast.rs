@@ -178,6 +178,10 @@ pub enum CmpOp {
     Le,
     Gt,
     Ge,
+    /// `=~` — LHS string matches the regex RHS.
+    RegexMatch,
+    /// `!~` — LHS string does not match the regex RHS.
+    RegexNotMatch,
 }
 
 impl std::fmt::Display for CmpOp {
@@ -189,6 +193,8 @@ impl std::fmt::Display for CmpOp {
             CmpOp::Le => write!(f, "<="),
             CmpOp::Gt => write!(f, ">"),
             CmpOp::Ge => write!(f, ">="),
+            CmpOp::RegexMatch => write!(f, "=~"),
+            CmpOp::RegexNotMatch => write!(f, "!~"),
         }
     }
 }
@@ -447,6 +453,7 @@ impl Display for ValueExpr {
                 Ok(())
             }
             ValueExpr::Str(s) => write!(f, "\"{s}\""),
+            ValueExpr::Regex(pattern) => write!(f, "/{pattern}/"),
             ValueExpr::Unary { op, expr } => {
                 let op = match op {
                     Op::Add => "+",
@@ -537,6 +544,12 @@ pub enum ValueExpr {
 
     /// A string literal (double-quoted).
     Str(String),
+
+    /// A regex literal: `/pattern/`. Carries the raw pattern string between
+    /// the delimiters (backslash-escapes are preserved as written). The regex
+    /// is compiled on first use by the evaluator; it is never compiled here
+    /// at parse time, keeping the AST independent of the `regex` crate.
+    Regex(String),
 
     /// Field access on an object expression: `account("Foo").total`.
     Access { expr: Box<ValueExpr>, field: String },

@@ -250,7 +250,12 @@ fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
 ///
 /// The grammar rule is:
 /// ```text
-/// bool_expr = ${ value_expr ~ (cmp_op ~ value_expr)? ~ (bool_op ~ bool_expr)? }
+/// bool_expr = ${
+///     value_expr ~ (
+///         (regex_cmp_op ~ regex_literal)
+///         | (cmp_op ~ value_expr)
+///     )? ~ (bool_op ~ bool_expr)?
+/// }
 /// ```
 fn parse_bool_expr(pair: Pair<Rule>) -> BoolExpr {
     let mut inner = pair.into_inner().peekable();
@@ -258,22 +263,44 @@ fn parse_bool_expr(pair: Pair<Rule>) -> BoolExpr {
     // First child is always the LHS value_expr.
     let lhs = parse_expr(inner.next().expect("bool_expr must have lhs"));
 
-    // Next child (if any) is cmp_op — consume it and the following rhs.
-    let cmp = if inner.peek().map(|p| p.as_rule()) == Some(Rule::cmp_op) {
-        let op_pair = inner.next().unwrap();
-        let op = match op_pair.as_str() {
-            "==" => CmpOp::Eq,
-            "!=" => CmpOp::Ne,
-            "<=" => CmpOp::Le,
-            ">=" => CmpOp::Ge,
-            "<" => CmpOp::Lt,
-            ">" => CmpOp::Gt,
-            _ => unreachable!("unknown cmp_op: {}", op_pair.as_str()),
-        };
-        let rhs = parse_expr(inner.next().expect("cmp_op must be followed by rhs"));
-        Some((op, rhs))
-    } else {
-        None
+    // Next child (if any) is either cmp_op or regex_cmp_op.
+    let cmp = match inner.peek().map(|p| p.as_rule()) {
+        Some(Rule::cmp_op) => {
+            let op_pair = inner.next().unwrap();
+            let op = match op_pair.as_str() {
+                "==" => CmpOp::Eq,
+                "!=" => CmpOp::Ne,
+                "<=" => CmpOp::Le,
+                ">=" => CmpOp::Ge,
+                "<" => CmpOp::Lt,
+                ">" => CmpOp::Gt,
+                _ => unreachable!("unknown cmp_op: {}", op_pair.as_str()),
+            };
+            let rhs = parse_expr(inner.next().expect("cmp_op must be followed by rhs"));
+            Some((op, rhs))
+        }
+        Some(Rule::regex_cmp_op) => {
+            let op_pair = inner.next().unwrap();
+            let op = match op_pair.as_str() {
+                "=~" => CmpOp::RegexMatch,
+                "!~" => CmpOp::RegexNotMatch,
+                _ => unreachable!("unknown regex_cmp_op: {}", op_pair.as_str()),
+            };
+            // The next token must be a regex_literal.
+            let regex_pair = inner
+                .next()
+                .expect("regex_cmp_op must be followed by regex_literal");
+            // regex_literal = ${ "/" ~ regex_body ~ "/" }
+            // Its single inner child is the regex_body @-rule carrying the raw pattern.
+            let pattern = regex_pair
+                .into_inner()
+                .next()
+                .expect("regex_literal must have regex_body")
+                .as_str()
+                .to_string();
+            Some((op, ValueExpr::Regex(pattern)))
+        }
+        _ => None,
     };
 
     // Remaining child (if any) is bool_op + bool_expr continuation.
