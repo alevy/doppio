@@ -459,17 +459,22 @@ impl TryFrom<resolution::HIR> for Journal {
                                     // balance. This is the common case: `= 0` after the account
                                     // already holds a balance in a single commodity.
                                     let inferred_commodity = account_balance.and_then(|ab| {
-                                        let mut keys = ab.commodity.keys();
-                                        let first = keys.next()?;
-                                        // Only infer if there is exactly one commodity — if
-                                        // the account holds multiple commodities a bare `=0`
-                                        // is ambiguous and we fall through to the normal
-                                        // error path.
-                                        if keys.next().is_none() {
-                                            Some(first.as_str())
-                                        } else {
-                                            None
-                                        }
+                                        // Only consider commodities with non-zero balances.
+                                        // Running balances are never pruned when they reach
+                                        // zero, so a stale entry (e.g. `$` zeroed out in an
+                                        // earlier `=$0`) shouldn't make a single-commodity
+                                        // account look multi-commodity.
+                                        let mut non_zero = ab
+                                            .commodity
+                                            .iter()
+                                            .filter(|(_, v)| !v.is_zero())
+                                            .map(|(k, _)| k.as_str());
+                                        let first = non_zero.next()?;
+                                        // Only infer if there is exactly one non-zero
+                                        // commodity — if the account holds multiple, a bare
+                                        // `=0` is ambiguous and we fall through to the
+                                        // normal error path.
+                                        non_zero.next().is_none().then_some(first)
                                     });
                                     let (newsum, commodity) =
                                         evaluator::eval_and_normalize_amount_with_fallback(
@@ -1500,6 +1505,47 @@ commodity $
             posting_a.amount.0.get("$").copied(),
             Some(dec!(-100)),
             "default-commodity path should yield -$100 delta"
+        );
+    }
+
+    /// Running balances are not pruned when a commodity reaches zero. A stale
+    /// zero-balance entry from an earlier `=$0` should not make a
+    /// single-non-zero-commodity account look ambiguous.
+    #[test]
+    fn test_balance_assignment_ignores_stale_zero_commodities() {
+        let input = "\
+2026-04-01 Setup USD
+    Account A  $100
+    Account B
+
+2026-04-02 Zero out USD
+    Account A  =$0
+    Account B
+
+2026-04-03 Add EUR
+    Account A  EUR 50
+    Account B
+
+2026-04-04 Zero out (bare)
+    Account A  =0
+    Account B
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 4);
+
+        // Account A's running balance map at this point is { $: 0, EUR: 50 }.
+        // The bare `=0` should infer EUR (the only non-zero commodity), not
+        // fail with multi-commodity ambiguity.
+        let tx = &journal.transactions[3];
+        let posting_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Account A")
+            .expect("Account A posting not found");
+        assert_eq!(
+            posting_a.amount.0.get("EUR").copied(),
+            Some(dec!(-50)),
+            "bare =0 should infer the only non-zero commodity (EUR)"
         );
     }
 
