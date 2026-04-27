@@ -945,7 +945,7 @@ mod evaluator {
         // empty map so the `tag()` built-in is a no-op when called from amount
         // contexts (which would be a programmer error, but we don't panic).
         let empty_meta = BTreeMap::default();
-        match eval(val, eval_context, running_state, &empty_meta)? {
+        match eval(val, eval_context, running_state, &empty_meta, EVAL_BUDGET)? {
             ast::ValueExpr::Amount { value, commodity } => {
                 let commodity = if let Some(commodity) = commodity {
                     // Apply commodity alias (e.g. "Bitcoin" → "BTC")
@@ -1029,7 +1029,7 @@ mod evaluator {
             // Bind arguments into a new context and evaluate the bool body.
             let mut call_ctx = ctx.clone();
             for (param, arg_expr) in define.params.iter().zip(args.iter()) {
-                let arg_val = eval(arg_expr.clone(), &ctx, state, posting_metadata)?;
+                let arg_val = eval(arg_expr.clone(), &ctx, state, posting_metadata, EVAL_BUDGET)?;
                 call_ctx.defines.insert(
                     param.clone(),
                     resolution::Define {
@@ -1081,7 +1081,7 @@ mod evaluator {
         }
 
         // Evaluate LHS.
-        let lhs_val = eval(expr.lhs.clone(), &ctx, state, posting_metadata)?;
+        let lhs_val = eval(expr.lhs.clone(), &ctx, state, posting_metadata, EVAL_BUDGET)?;
 
         // Compute this segment's boolean value. With no comparison operator,
         // the expression is truthy iff the LHS evaluates to a non-zero amount
@@ -1097,7 +1097,7 @@ mod evaluator {
                 // the AST — pass it through to eval_cmp without re-evaluating.
                 let rhs_val = match rhs_expr {
                     ast::ValueExpr::Regex(_) => rhs_expr.clone(),
-                    other => eval(other.clone(), &ctx, state, posting_metadata)?,
+                    other => eval(other.clone(), &ctx, state, posting_metadata, EVAL_BUDGET)?,
                 };
                 eval_cmp(cmp_op, &lhs_val, &rhs_val)?
             }
@@ -1170,7 +1170,13 @@ mod evaluator {
             }
             let mut call_ctx = eval_context.clone();
             for (param, arg_expr) in define.params.iter().zip(args.iter()) {
-                let arg_val = eval(arg_expr.clone(), eval_context, state, posting_metadata)?;
+                let arg_val = eval(
+                    arg_expr.clone(),
+                    eval_context,
+                    state,
+                    posting_metadata,
+                    EVAL_BUDGET,
+                )?;
                 call_ctx.defines.insert(
                     param.clone(),
                     resolution::Define {
@@ -1220,7 +1226,13 @@ mod evaluator {
             };
         }
 
-        let lhs_val = eval(expr.lhs.clone(), eval_context, state, posting_metadata)?;
+        let lhs_val = eval(
+            expr.lhs.clone(),
+            eval_context,
+            state,
+            posting_metadata,
+            EVAL_BUDGET,
+        )?;
         let result = match &expr.cmp {
             None => match lhs_val {
                 ast::ValueExpr::Amount { value, .. } => !value.is_zero(),
@@ -1229,7 +1241,13 @@ mod evaluator {
             Some((cmp_op, rhs_expr)) => {
                 let rhs_val = match rhs_expr {
                     ast::ValueExpr::Regex(_) => rhs_expr.clone(),
-                    other => eval(other.clone(), eval_context, state, posting_metadata)?,
+                    other => eval(
+                        other.clone(),
+                        eval_context,
+                        state,
+                        posting_metadata,
+                        EVAL_BUDGET,
+                    )?,
                 };
                 eval_cmp(cmp_op, &lhs_val, &rhs_val)?
             }
@@ -1296,7 +1314,7 @@ mod evaluator {
             },
         );
 
-        let lhs_val = eval(expr.lhs.clone(), &ctx, state, &empty_meta)?;
+        let lhs_val = eval(expr.lhs.clone(), &ctx, state, &empty_meta, EVAL_BUDGET)?;
 
         let result = match &expr.cmp {
             None => match lhs_val {
@@ -1306,7 +1324,7 @@ mod evaluator {
             Some((cmp_op, rhs_expr)) => {
                 let rhs_val = match rhs_expr {
                     ast::ValueExpr::Regex(_) => rhs_expr.clone(),
-                    other => eval(other.clone(), &ctx, state, &empty_meta)?,
+                    other => eval(other.clone(), &ctx, state, &empty_meta, EVAL_BUDGET)?,
                 };
                 eval_cmp(cmp_op, &lhs_val, &rhs_val)?
             }
@@ -1418,45 +1436,27 @@ mod evaluator {
     /// `posting_metadata` carries the key-value tag pairs from the posting's
     /// notes. It is forwarded into recursive calls and is read by the `tag()`
     /// built-in function.
-    /// Maximum recursion depth for [`eval`]. Protects against cyclic
-    /// `define`s (e.g. `define a = b; define b = a`), which would otherwise
-    /// recurse until the OS aborts the process with a stack overflow.
+    /// Initial recursion budget passed to [`eval`] by every external caller.
+    /// Each recursive `eval` call decrements `budget`; `eval` errors with
+    /// [`EvaluationError::RecursionLimitExceeded`] when it reaches 0. Protects
+    /// against cyclic `define`s (e.g. `define a = b; define b = a`), which
+    /// would otherwise recurse until the OS aborts the process with a stack
+    /// overflow.
+    ///
     /// 64 is well above any sane real-world expression depth and well below
     /// debug-build stack limits (debug frames are large).
-    const MAX_EVAL_DEPTH: usize = 64;
-
-    thread_local! {
-        static EVAL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    }
-
-    /// RAII guard that increments the eval recursion counter on construction
-    /// and decrements on drop, regardless of how the calling function exits.
-    struct EvalDepthGuard;
-    impl EvalDepthGuard {
-        fn enter() -> Result<Self, EvaluationError> {
-            EVAL_DEPTH.with(|d| {
-                let depth = d.get();
-                if depth >= MAX_EVAL_DEPTH {
-                    return Err(EvaluationError::RecursionLimitExceeded);
-                }
-                d.set(depth + 1);
-                Ok(EvalDepthGuard)
-            })
-        }
-    }
-    impl Drop for EvalDepthGuard {
-        fn drop(&mut self) {
-            EVAL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
-        }
-    }
+    pub const EVAL_BUDGET: usize = 64;
 
     fn eval(
         val: ast::ValueExpr,
         eval_context: &resolution::Context,
         state: &RunningState,
         posting_metadata: &BTreeMap<String, String>,
+        budget: usize,
     ) -> Result<ast::ValueExpr, EvaluationError> {
-        let _guard = EvalDepthGuard::enter()?;
+        let Some(budget) = budget.checked_sub(1) else {
+            return Err(EvaluationError::RecursionLimitExceeded);
+        };
         match val {
             // Base cases: already-reduced values pass through unchanged.
             a @ ast::ValueExpr::Amount { .. } => Ok(a),
@@ -1465,7 +1465,7 @@ mod evaluator {
             o @ ast::ValueExpr::Object(_) => Ok(o),
 
             ast::ValueExpr::Unary { op, expr } => {
-                match eval(*expr, eval_context, state, posting_metadata)? {
+                match eval(*expr, eval_context, state, posting_metadata, budget)? {
                     ast::ValueExpr::Amount { value, commodity } => match op {
                         ast::Op::Sub => Ok(ast::ValueExpr::Amount {
                             value: -value,
@@ -1481,8 +1481,8 @@ mod evaluator {
 
             ast::ValueExpr::Binary { lhs, rhs, op } => {
                 match (
-                    eval(*lhs, eval_context, state, posting_metadata)?,
-                    eval(*rhs, eval_context, state, posting_metadata)?,
+                    eval(*lhs, eval_context, state, posting_metadata, budget)?,
+                    eval(*rhs, eval_context, state, posting_metadata, budget)?,
                 ) {
                     // One side has a commodity, the other is dimensionless —
                     // the commodity propagates to the result. Both match arms
@@ -1606,8 +1606,13 @@ mod evaluator {
                             // bind them by name in a temporary child context.
                             let mut ctx = eval_context.clone();
                             for (param, arg_expr) in define.params.iter().zip(args.iter()) {
-                                let arg_val =
-                                    eval(arg_expr.clone(), eval_context, state, posting_metadata)?;
+                                let arg_val = eval(
+                                    arg_expr.clone(),
+                                    eval_context,
+                                    state,
+                                    posting_metadata,
+                                    budget,
+                                )?;
                                 ctx.defines.insert(
                                     param.clone(),
                                     resolution::Define {
@@ -1616,7 +1621,7 @@ mod evaluator {
                                     },
                                 );
                             }
-                            eval(body_expr.clone(), &ctx, state, posting_metadata)
+                            eval(body_expr.clone(), &ctx, state, posting_metadata, budget)
                         }
                     };
                 }
@@ -1624,15 +1629,21 @@ mod evaluator {
                 match (name.as_str(), args.as_slice()) {
                     // scrub(x) — identity function used by some ledger-cli extensions
                     // to mark amounts as "scrubbed" (processed). Treated as a no-op.
-                    ("scrub", [arg]) => eval(arg.clone(), eval_context, state, posting_metadata),
+                    ("scrub", [arg]) => {
+                        eval(arg.clone(), eval_context, state, posting_metadata, budget)
+                    }
 
                     // account("Name") — returns an object with a "total" field
                     // containing the current running balance of the named account.
                     // Only the primary commodity ($) is currently surfaced.
                     ("account", [account]) => {
-                        if let ValueExpr::Str(account) =
-                            eval(account.clone(), eval_context, state, posting_metadata)?
-                        {
+                        if let ValueExpr::Str(account) = eval(
+                            account.clone(),
+                            eval_context,
+                            state,
+                            posting_metadata,
+                            budget,
+                        )? {
                             let account = eval_context
                                 .account_aliases
                                 .get(&account)
@@ -1666,9 +1677,13 @@ mod evaluator {
                     // an empty string is returned so that `tag("X") =~ /pattern/`
                     // works naturally (empty string never matches a non-empty pattern).
                     ("tag", [key_expr]) => {
-                        if let ValueExpr::Str(key) =
-                            eval(key_expr.clone(), eval_context, state, posting_metadata)?
-                        {
+                        if let ValueExpr::Str(key) = eval(
+                            key_expr.clone(),
+                            eval_context,
+                            state,
+                            posting_metadata,
+                            budget,
+                        )? {
                             let value = posting_metadata.get(&key).cloned().unwrap_or_default();
                             Ok(ast::ValueExpr::Str(value))
                         } else {
@@ -1695,7 +1710,7 @@ mod evaluator {
                     if define.params.is_empty() {
                         match &define.body {
                             ast::DefineBody::Value(expr) => {
-                                eval(expr.clone(), eval_context, state, posting_metadata)
+                                eval(expr.clone(), eval_context, state, posting_metadata, budget)
                             }
                             // A boolean-body define referenced as a plain identifier is
                             // not meaningful in a value-expression context; treat it as
@@ -1713,7 +1728,7 @@ mod evaluator {
             ast::ValueExpr::Typed {
                 expr,
                 commodity: new_commodity,
-            } => match eval(*expr, eval_context, state, posting_metadata)? {
+            } => match eval(*expr, eval_context, state, posting_metadata, budget)? {
                 // Accept if the inner expression has no commodity or the same commodity.
                 ast::ValueExpr::Amount { value, commodity }
                     if commodity.is_none() || commodity.as_ref() == Some(&new_commodity) =>
@@ -1730,7 +1745,7 @@ mod evaluator {
             },
 
             ast::ValueExpr::Access { expr, field } => {
-                match eval(*expr, eval_context, state, posting_metadata)? {
+                match eval(*expr, eval_context, state, posting_metadata, budget)? {
                     ast::ValueExpr::Object(map) => map
                         .get(&field)
                         .cloned()
