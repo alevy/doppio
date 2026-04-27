@@ -94,10 +94,10 @@ done
 
 Verify that a `.dop` file produced by an older release fails cleanly with a
 clear "recompile" message rather than mis-parsing. A v0.1.0-built fixture
-lives at `tests/fixtures/v1.dop`:
+lives at `crates/doppio-cli/tests/fixtures/v1.dop`:
 
 ```sh
-./target/release/dop balance tests/fixtures/v1.dop
+./target/release/dop balance crates/doppio-cli/tests/fixtures/v1.dop
 # Expect: an Err mentioning the version mismatch and pointing at `dop compile`.
 ```
 
