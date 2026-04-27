@@ -98,11 +98,20 @@ pub struct Context {
     pub commodity_aliases: BTreeMap<String, String>,
     /// The commodity assumed when a posting amount has no explicit commodity.
     pub default_commodity: Option<String>,
-    /// Named value aliases defined with `define name = expr`.
+    /// Named aliases defined with `define name[(params)] = body`.
     ///
-    /// During elaboration, a bare identifier in a value expression is looked
-    /// up here and substituted with the stored expression.
-    pub defines: BTreeMap<String, ast::ValueExpr>,
+    /// During elaboration, a bare identifier or parameterized call `name(args)`
+    /// in a value or boolean expression is looked up here and expanded.
+    pub defines: BTreeMap<String, Define>,
+}
+
+/// A resolved `define` entry, carrying parameter names and the macro body.
+#[derive(Debug, Clone)]
+pub struct Define {
+    /// Ordered parameter names. Empty for zero-argument defines.
+    pub params: Vec<String>,
+    /// The body expression to evaluate when the define is invoked.
+    pub body: ast::DefineBody,
 }
 
 /// Global properties of commodities and accounts that are shared across all
@@ -113,6 +122,19 @@ pub struct GlobalContext {
     pub commodity_properties: BTreeMap<String, CommodityProperties>,
     /// Properties declared in `account` directives.
     pub account_properties: BTreeMap<String, AccountProperties>,
+    /// Properties declared in `tag` directives.
+    pub tag_properties: BTreeMap<String, TagProperties>,
+}
+
+/// Validation rules for a tag declared with a `tag` directive.
+#[derive(Default, Debug)]
+pub struct TagProperties {
+    /// Fatal assertions: elaboration halts if any fails for a matching
+    /// `; TagName: value` metadata pair.
+    pub asserts: Vec<ast::BoolExpr>,
+    /// Non-fatal checks: a warning is printed to stderr but elaboration
+    /// continues if any fails.
+    pub checks: Vec<ast::BoolExpr>,
 }
 
 /// Display and market-data properties of a commodity.
@@ -589,12 +611,29 @@ impl TryFrom<ast::Journal> for HIR {
                         ctx
                     });
                 }
-                ast::Entry::Directive(ast::Directive::Define { name, expr }) => {
+                ast::Entry::Directive(ast::Directive::Define { name, params, body }) => {
                     new_context = Some({
                         let mut ctx = new_context.unwrap_or_else(|| context.clone());
-                        ctx.defines.insert(name, expr);
+                        ctx.defines.insert(name, Define { params, body });
                         ctx
                     });
+                }
+                ast::Entry::Directive(ast::Directive::Tag {
+                    name,
+                    asserts,
+                    checks,
+                }) => {
+                    let props = result
+                        .global_context
+                        .tag_properties
+                        .entry(name)
+                        .or_default();
+                    for expr in asserts {
+                        props.asserts.push(expr);
+                    }
+                    for expr in checks {
+                        props.checks.push(expr);
+                    }
                 }
                 ast::Entry::Transaction(transaction) => {
                     let date = Self::resolve_date(&transaction.date, current_default_year)?;
@@ -929,7 +968,8 @@ mod resolution_tests {
         let journal = ast::Journal {
             entries: vec![ast::Entry::Directive(ast::Directive::Define {
                 name: "monthly_rent".into(),
-                expr: expr.clone(),
+                params: vec![],
+                body: ast::DefineBody::Value(expr.clone()),
             })],
         };
 
@@ -937,9 +977,8 @@ mod resolution_tests {
 
         // A new context should have been pushed for the define directive.
         assert_eq!(hir.contexts.len(), 2);
-        assert_eq!(
-            hir.contexts[1].defines.get("monthly_rent"),
-            Some(&expr),
+        assert!(
+            hir.contexts[1].defines.contains_key("monthly_rent"),
             "define should be stored in the new context"
         );
         // The original context must not be affected.
@@ -968,7 +1007,8 @@ mod resolution_tests {
                 ast::Entry::Transaction(tx_ast.clone()),
                 ast::Entry::Directive(ast::Directive::Define {
                     name: "budget".into(),
-                    expr: expr.clone(),
+                    params: vec![],
+                    body: ast::DefineBody::Value(expr.clone()),
                 }),
                 ast::Entry::Transaction(tx_ast),
             ],

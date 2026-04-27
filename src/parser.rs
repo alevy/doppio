@@ -94,6 +94,9 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                 Rule::define_directive => {
                     entries.push(Entry::Directive(parse_define_directive(pair)));
                 }
+                Rule::tag_directive => {
+                    entries.push(Entry::Directive(parse_tag_directive(pair)));
+                }
                 Rule::historical_price => {
                     entries.push(Entry::HistoricalPrice(parse_historical_price(pair)));
                 }
@@ -143,15 +146,25 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
 /// is encountered.
 fn validate_regexes(journal: &Journal) -> Result<(), Box<dyn std::error::Error>> {
     for entry in &journal.entries {
-        if let Entry::Directive(Directive::Account { items, .. }) = entry {
-            for item in items {
-                match item {
-                    AccountItem::Assert(e) | AccountItem::Check(e) => {
-                        validate_bool_expr_regexes(e)?;
+        match entry {
+            Entry::Directive(Directive::Account { items, .. }) => {
+                for item in items {
+                    match item {
+                        AccountItem::Assert(e) | AccountItem::Check(e) => {
+                            validate_bool_expr_regexes(e)?;
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
+            Entry::Directive(Directive::Tag {
+                asserts, checks, ..
+            }) => {
+                for e in asserts.iter().chain(checks.iter()) {
+                    validate_bool_expr_regexes(e)?;
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -227,12 +240,54 @@ fn parse_alias_directive(pair: Pair<Rule>) -> Directive {
 }
 
 fn parse_define_directive(pair: Pair<Rule>) -> Directive {
-    let mut pairs = pair.into_inner();
-    // The grammar rule is: identifier ~ "=" ~ value_expr
+    let mut pairs = pair.into_inner().peekable();
+
+    // First child is always the macro name.
     let name = pairs.next().unwrap().as_str().to_string();
-    let expr_pair = pairs.next().unwrap();
-    let expr = parse_expr(expr_pair);
-    Directive::Define { name, expr }
+
+    // Collect any parameter identifiers that precede the define_body.
+    // All inner pairs before the final `define_body` are parameter identifiers.
+    let mut params = Vec::new();
+    let mut body_pair = None;
+    for p in pairs {
+        match p.as_rule() {
+            Rule::identifier => params.push(p.as_str().to_string()),
+            Rule::define_body => {
+                body_pair = Some(p);
+            }
+            _ => {}
+        }
+    }
+
+    let body_pair = body_pair.expect("define_directive must have a define_body");
+    // define_body = ${ bool_expr | value_expr }
+    // Because `bool_expr` is `value_expr ~ (cmp ~ rhs)? ~ (bool_op ~ bool_expr)?`,
+    // the `bool_expr` alternative always matches when `value_expr` does. We
+    // distinguish the two cases by checking whether the parsed `BoolExpr` actually
+    // carries a comparison or a chain:
+    //   - If it has a `cmp` or `chain`, it is a genuine boolean expression.
+    //   - If neither, it is a plain value expression wrapped in a trivial BoolExpr;
+    //     we unwrap it into `DefineBody::Value` so the evaluator handles it correctly.
+    let inner = body_pair
+        .into_inner()
+        .next()
+        .expect("define_body must have one child");
+
+    let body = match inner.as_rule() {
+        Rule::bool_expr => {
+            let bool_expr = parse_bool_expr(inner);
+            // Unwrap a trivial bool_expr (no comparison, no chain) → Value.
+            if bool_expr.cmp.is_none() && bool_expr.chain.is_none() {
+                DefineBody::Value(bool_expr.lhs)
+            } else {
+                DefineBody::Bool(bool_expr)
+            }
+        }
+        Rule::value_expr => DefineBody::Value(parse_expr(inner)),
+        r => unreachable!("unexpected rule in define_body: {r:?}"),
+    };
+
+    Directive::Define { name, params, body }
 }
 
 fn parse_account_directive(pair: Pair<Rule>) -> Directive {
@@ -260,6 +315,36 @@ fn parse_account_directive(pair: Pair<Rule>) -> Directive {
     }
 
     Directive::Account { name, notes, items }
+}
+
+fn parse_tag_directive(pair: Pair<Rule>) -> Directive {
+    let mut inner = pair.into_inner();
+    let name = inner.next().unwrap().as_str().to_string();
+    let mut asserts = Vec::new();
+    let mut checks = Vec::new();
+
+    for p in inner {
+        match p.as_rule() {
+            Rule::note => {
+                // Header-level note on the tag directive line — discarded.
+            }
+            Rule::tag_assert => {
+                let expr = parse_bool_expr(p.into_inner().next().unwrap());
+                asserts.push(expr);
+            }
+            Rule::tag_check => {
+                let expr = parse_bool_expr(p.into_inner().next().unwrap());
+                checks.push(expr);
+            }
+            _ => {}
+        }
+    }
+
+    Directive::Tag {
+        name,
+        asserts,
+        checks,
+    }
 }
 
 fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {

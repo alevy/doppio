@@ -260,6 +260,16 @@ pub enum ElaborationError {
         /// not byte-match the original source text.
         expression: String,
     },
+    /// A `tag` directive `assert` expression evaluated to `false` for a
+    /// `; TagName: value` metadata pair on a transaction or posting.
+    TagAssertionFailed {
+        /// The tag name whose assertion fired (e.g. `"Statement"`).
+        tag_name: String,
+        /// The metadata value that failed the assertion (e.g. `"foo/bar"`).
+        tag_value: String,
+        /// A rendered form of the failing expression (for diagnostics).
+        expression: String,
+    },
 }
 
 /// Error produced when evaluating a value expression (e.g., an amount or
@@ -293,6 +303,21 @@ pub enum EvaluationError {
     /// `regex` crate. Using `String` rather than `regex::Error` keeps this
     /// error type free of a public dependency on the `regex` crate.
     InvalidRegexPattern(String, String),
+    /// A define with a boolean body was called from a value expression context.
+    ///
+    /// Boolean defines (e.g. `define pos(x) = x > 0`) may only be used where a
+    /// `bool_expr` is expected (e.g. inside an `assert` directive), not as part
+    /// of an arithmetic expression.
+    BoolDefineInValueContext(String),
+    /// A parameterized define was called with the wrong number of arguments.
+    DefineArgCountMismatch {
+        /// The define name.
+        name: String,
+        /// Number of parameters the define declares.
+        expected: usize,
+        /// Number of arguments provided at the call site.
+        got: usize,
+    },
 }
 
 impl Display for EvaluationError {
@@ -330,6 +355,22 @@ impl Display for EvaluationError {
             }
             EvaluationError::InvalidRegexPattern(pattern, err) => {
                 write!(f, "invalid regex pattern /{pattern}/: {err}")
+            }
+            EvaluationError::BoolDefineInValueContext(name) => {
+                write!(
+                    f,
+                    "define '{name}' has a boolean body and cannot be used in a value expression"
+                )
+            }
+            EvaluationError::DefineArgCountMismatch {
+                name,
+                expected,
+                got,
+            } => {
+                write!(
+                    f,
+                    "define '{name}' expects {expected} argument(s), got {got}"
+                )
             }
         }
     }
@@ -388,6 +429,16 @@ impl Display for ElaborationError {
             }
             ElaborationError::TransactionDoesNotBalance(_) => {
                 write!(f, "transaction does not balance")
+            }
+            ElaborationError::TagAssertionFailed {
+                tag_name,
+                tag_value,
+                expression,
+            } => {
+                write!(
+                    f,
+                    "tag assertion failed for {tag_name}: \"{tag_value}\": assert {expression}"
+                )
             }
         }
     }
@@ -701,6 +752,31 @@ impl TryFrom<resolution::HIR> for Journal {
                         }
                     }
 
+                    // Evaluate tag-level assert/check directives.
+                    //
+                    // Only metadata-style tags (`; TagName: value`) are validated.
+                    // Bare colon-tags (e.g. `; :payroll:`) carry no value and are
+                    // skipped. Validation applies to both transaction-level metadata
+                    // and posting-level metadata for parity with account assertions.
+
+                    // Validate transaction-level metadata tags.
+                    eval_tag_metadata(
+                        &transaction.metadata,
+                        &value.global_context.tag_properties,
+                        entry_context,
+                        &state,
+                    )?;
+
+                    // Validate posting-level metadata tags.
+                    for posting in resolved_postings.iter() {
+                        eval_tag_metadata(
+                            &posting.metadata,
+                            &value.global_context.tag_properties,
+                            entry_context,
+                            &state,
+                        )?;
+                    }
+
                     // Update running account balances and register new accounts.
                     for posting in resolved_postings.iter() {
                         if !accounts.contains_key(&posting.account) {
@@ -772,6 +848,50 @@ impl TryFrom<resolution::HIR> for Journal {
             prices,
         })
     }
+}
+
+/// Evaluate tag-level assert/check directives for a set of metadata key-value pairs.
+///
+/// For each `(tag_name, tag_value)` pair in `metadata`, looks up `tag_name` in
+/// `tag_properties`. If validation rules are found, runs each assert and check
+/// with `value` bound to `tag_value` in the expression context.
+///
+/// - Failed asserts return `Err(ElaborationError::TagAssertionFailed)`.
+/// - Failed checks print a warning to stderr but return `Ok(())`.
+fn eval_tag_metadata(
+    metadata: &BTreeMap<String, String>,
+    tag_properties: &BTreeMap<String, resolution::TagProperties>,
+    eval_context: &resolution::Context,
+    state: &RunningState,
+) -> Result<(), ElaborationError> {
+    for (tag_name, tag_value) in metadata {
+        if let Some(props) = tag_properties.get(tag_name) {
+            for assert_expr in &props.asserts {
+                let passed =
+                    evaluator::eval_bool_expr_for_tag(assert_expr, tag_value, eval_context, state)
+                        .map_err(ElaborationError::EvaluationError)?;
+                if !passed {
+                    return Err(ElaborationError::TagAssertionFailed {
+                        tag_name: tag_name.clone(),
+                        tag_value: tag_value.clone(),
+                        expression: assert_expr.to_string(),
+                    });
+                }
+            }
+            for check_expr in &props.checks {
+                let passed =
+                    evaluator::eval_bool_expr_for_tag(check_expr, tag_value, eval_context, state)
+                        .map_err(ElaborationError::EvaluationError)?;
+                if !passed {
+                    eprintln!(
+                        "warning: tag check failed for {tag_name}: \"{tag_value}\": \
+                         check {check_expr}",
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Expression evaluator: reduces [`ast::ValueExpr`] trees to concrete values.
@@ -861,19 +981,97 @@ mod evaluator {
         eval_context: &resolution::Context,
         state: &RunningState,
     ) -> Result<bool, EvaluationError> {
-        // Build a temporary context with `amount` and `commodity` injected.
+        // Build a temporary context with `amount` and `commodity` injected as
+        // zero-parameter defines so the evaluator can resolve them.
         let mut ctx = eval_context.clone();
         ctx.defines.insert(
             "amount".into(),
-            ast::ValueExpr::Amount {
-                value: posting_amount,
-                commodity: Some(posting_commodity.to_string()),
+            resolution::Define {
+                params: vec![],
+                body: ast::DefineBody::Value(ast::ValueExpr::Amount {
+                    value: posting_amount,
+                    commodity: Some(posting_commodity.to_string()),
+                }),
             },
         );
         ctx.defines.insert(
             "commodity".into(),
-            ast::ValueExpr::Str(posting_commodity.to_string()),
+            resolution::Define {
+                params: vec![],
+                body: ast::DefineBody::Value(ast::ValueExpr::Str(posting_commodity.to_string())),
+            },
         );
+
+        // Check whether the LHS is a call to a bool-body define. If it is and
+        // there is no comparison operator, we expand the define body as a full
+        // bool expression rather than treating the call result as a numeric value.
+        if expr.cmp.is_none() {
+            if let ast::ValueExpr::Function { ref name, ref args } = expr.lhs {
+                if let Some(define) = ctx.defines.get(name.as_str()) {
+                    if let ast::DefineBody::Bool(ref body) = define.body.clone() {
+                        if define.params.len() != args.len() {
+                            return Err(EvaluationError::DefineArgCountMismatch {
+                                name: name.clone(),
+                                expected: define.params.len(),
+                                got: args.len(),
+                            });
+                        }
+                        // Bind arguments into a new context and evaluate the bool body.
+                        let mut call_ctx = ctx.clone();
+                        for (param, arg_expr) in define.params.iter().zip(args.iter()) {
+                            let arg_val = eval(arg_expr.clone(), &ctx, state, posting_metadata)?;
+                            call_ctx.defines.insert(
+                                param.clone(),
+                                resolution::Define {
+                                    params: vec![],
+                                    body: ast::DefineBody::Value(arg_val),
+                                },
+                            );
+                        }
+                        // Evaluate the define's bool body, then apply any chain.
+                        let segment_result = eval_bool_expr_with_context(
+                            body,
+                            posting_amount,
+                            posting_commodity,
+                            posting_metadata,
+                            &call_ctx,
+                            state,
+                        )?;
+                        return match &expr.chain {
+                            None => Ok(segment_result),
+                            Some((ast::BoolOp::And, cont)) => {
+                                if !segment_result {
+                                    Ok(false)
+                                } else {
+                                    eval_bool_expr(
+                                        cont,
+                                        posting_amount,
+                                        posting_commodity,
+                                        posting_metadata,
+                                        eval_context,
+                                        state,
+                                    )
+                                }
+                            }
+                            Some((ast::BoolOp::Or, cont)) => {
+                                if segment_result {
+                                    Ok(true)
+                                } else {
+                                    eval_bool_expr(
+                                        cont,
+                                        posting_amount,
+                                        posting_commodity,
+                                        posting_metadata,
+                                        eval_context,
+                                        state,
+                                    )
+                                }
+                            }
+                        };
+                    }
+                }
+            }
+        }
 
         // Evaluate LHS.
         let lhs_val = eval(expr.lhs.clone(), &ctx, state, posting_metadata)?;
@@ -927,6 +1125,200 @@ mod evaluator {
                         eval_context,
                         state,
                     )
+                }
+            }
+        }
+    }
+
+    /// Evaluate a [`BoolExpr`] using a pre-built context that already has
+    /// parameter bindings in place.
+    ///
+    /// This is the inner workhorse used when expanding a bool-body define call:
+    /// the caller has already bound the define's parameters as zero-param value
+    /// defines in `eval_context`, so we evaluate the body without re-injecting
+    /// `amount`/`commodity` (they are already in the context or in `eval_context`).
+    fn eval_bool_expr_with_context(
+        expr: &BoolExpr,
+        posting_amount: Decimal,
+        posting_commodity: &str,
+        posting_metadata: &BTreeMap<String, String>,
+        eval_context: &resolution::Context,
+        state: &RunningState,
+    ) -> Result<bool, EvaluationError> {
+        // Check for a bool-body define call in the LHS (recursive define calls).
+        if expr.cmp.is_none() {
+            if let ast::ValueExpr::Function { ref name, ref args } = expr.lhs {
+                if let Some(define) = eval_context.defines.get(name.as_str()) {
+                    if let ast::DefineBody::Bool(ref body) = define.body.clone() {
+                        if define.params.len() != args.len() {
+                            return Err(EvaluationError::DefineArgCountMismatch {
+                                name: name.clone(),
+                                expected: define.params.len(),
+                                got: args.len(),
+                            });
+                        }
+                        let mut call_ctx = eval_context.clone();
+                        for (param, arg_expr) in define.params.iter().zip(args.iter()) {
+                            let arg_val =
+                                eval(arg_expr.clone(), eval_context, state, posting_metadata)?;
+                            call_ctx.defines.insert(
+                                param.clone(),
+                                resolution::Define {
+                                    params: vec![],
+                                    body: ast::DefineBody::Value(arg_val),
+                                },
+                            );
+                        }
+                        let segment_result = eval_bool_expr_with_context(
+                            body,
+                            posting_amount,
+                            posting_commodity,
+                            posting_metadata,
+                            &call_ctx,
+                            state,
+                        )?;
+                        return match &expr.chain {
+                            None => Ok(segment_result),
+                            Some((ast::BoolOp::And, cont)) => {
+                                if !segment_result {
+                                    Ok(false)
+                                } else {
+                                    eval_bool_expr_with_context(
+                                        cont,
+                                        posting_amount,
+                                        posting_commodity,
+                                        posting_metadata,
+                                        eval_context,
+                                        state,
+                                    )
+                                }
+                            }
+                            Some((ast::BoolOp::Or, cont)) => {
+                                if segment_result {
+                                    Ok(true)
+                                } else {
+                                    eval_bool_expr_with_context(
+                                        cont,
+                                        posting_amount,
+                                        posting_commodity,
+                                        posting_metadata,
+                                        eval_context,
+                                        state,
+                                    )
+                                }
+                            }
+                        };
+                    }
+                }
+            }
+        }
+
+        let lhs_val = eval(expr.lhs.clone(), eval_context, state, posting_metadata)?;
+        let result = match &expr.cmp {
+            None => match lhs_val {
+                ast::ValueExpr::Amount { value, .. } => !value.is_zero(),
+                _ => false,
+            },
+            Some((cmp_op, rhs_expr)) => {
+                let rhs_val = match rhs_expr {
+                    ast::ValueExpr::Regex(_) => rhs_expr.clone(),
+                    other => eval(other.clone(), eval_context, state, posting_metadata)?,
+                };
+                eval_cmp(cmp_op, &lhs_val, &rhs_val)?
+            }
+        };
+
+        match &expr.chain {
+            None => Ok(result),
+            Some((ast::BoolOp::And, cont)) => {
+                if !result {
+                    Ok(false)
+                } else {
+                    eval_bool_expr_with_context(
+                        cont,
+                        posting_amount,
+                        posting_commodity,
+                        posting_metadata,
+                        eval_context,
+                        state,
+                    )
+                }
+            }
+            Some((ast::BoolOp::Or, cont)) => {
+                if result {
+                    Ok(true)
+                } else {
+                    eval_bool_expr_with_context(
+                        cont,
+                        posting_amount,
+                        posting_commodity,
+                        posting_metadata,
+                        eval_context,
+                        state,
+                    )
+                }
+            }
+        }
+    }
+
+    /// Evaluate a [`BoolExpr`] in the context of a tag metadata value.
+    ///
+    /// `tag_value` is bound as `value` (a `Str`) in the expression context.
+    /// This is the mechanism used by `tag` directive `assert`/`check` bodies
+    /// to refer to the metadata value, e.g. `value =~ /^foo/`.
+    ///
+    /// Tag assertions have no associated posting amount or commodity, so those
+    /// bindings are not injected. The `tag()` built-in is available but looks
+    /// up from an empty metadata map (tag assertions are about the tag value
+    /// itself, not about other metadata on the same entry).
+    pub fn eval_bool_expr_for_tag(
+        expr: &BoolExpr,
+        tag_value: &str,
+        eval_context: &resolution::Context,
+        state: &RunningState,
+    ) -> Result<bool, EvaluationError> {
+        let empty_meta = BTreeMap::default();
+
+        // Inject `value` as a Str binding so the expression can reference it.
+        let mut ctx = eval_context.clone();
+        ctx.defines.insert(
+            "value".into(),
+            resolution::Define {
+                params: vec![],
+                body: ast::DefineBody::Value(ast::ValueExpr::Str(tag_value.to_string())),
+            },
+        );
+
+        let lhs_val = eval(expr.lhs.clone(), &ctx, state, &empty_meta)?;
+
+        let result = match &expr.cmp {
+            None => match lhs_val {
+                ast::ValueExpr::Amount { value, .. } => !value.is_zero(),
+                _ => false,
+            },
+            Some((cmp_op, rhs_expr)) => {
+                let rhs_val = match rhs_expr {
+                    ast::ValueExpr::Regex(_) => rhs_expr.clone(),
+                    other => eval(other.clone(), &ctx, state, &empty_meta)?,
+                };
+                eval_cmp(cmp_op, &lhs_val, &rhs_val)?
+            }
+        };
+
+        match &expr.chain {
+            None => Ok(result),
+            Some((ast::BoolOp::And, cont)) => {
+                if !result {
+                    Ok(false)
+                } else {
+                    eval_bool_expr_for_tag(cont, tag_value, eval_context, state)
+                }
+            }
+            Some((ast::BoolOp::Or, cont)) => {
+                if result {
+                    Ok(true)
+                } else {
+                    eval_bool_expr_for_tag(cont, tag_value, eval_context, state)
                 }
             }
         }
@@ -1155,74 +1547,124 @@ mod evaluator {
                 }
             }
 
-            ast::ValueExpr::Function { name, args } => match (name.as_str(), args.as_slice()) {
-                // scrub(x) — identity function used by some ledger-cli extensions
-                // to mark amounts as "scrubbed" (processed). Treated as a no-op.
-                ("scrub", [arg]) => eval(arg.clone(), eval_context, state, posting_metadata),
-
-                // account("Name") — returns an object with a "total" field
-                // containing the current running balance of the named account.
-                // Only the primary commodity ($) is currently surfaced.
-                ("account", [account]) => {
-                    if let ValueExpr::Str(account) =
-                        eval(account.clone(), eval_context, state, posting_metadata)?
-                    {
-                        let account = eval_context
-                            .account_aliases
-                            .get(&account)
-                            .unwrap_or(&account);
-                        let balance = state
-                            .account_balances
-                            .get(account)
-                            .and_then(|ab| ab.commodity.get("$"))
-                            .cloned()
-                            .unwrap_or_default();
-                        Ok(ast::ValueExpr::Object(BTreeMap::from([(
-                            "total".into(),
-                            ast::ValueExpr::Amount {
-                                value: balance,
-                                commodity: Some("$".into()),
-                            },
-                        )])))
-                    } else {
-                        Err(EvaluationError::InvalidFunctionArgs((
-                            name,
-                            account.clone(),
-                        )))
+            ast::ValueExpr::Function { name, args } => {
+                // Check user-defined parameterized macros before built-ins.
+                if let Some(define) = eval_context.defines.get(name.as_str()) {
+                    if define.params.len() != args.len() {
+                        return Err(EvaluationError::DefineArgCountMismatch {
+                            name: name.clone(),
+                            expected: define.params.len(),
+                            got: args.len(),
+                        });
                     }
+                    return match &define.body {
+                        ast::DefineBody::Bool(_) => {
+                            Err(EvaluationError::BoolDefineInValueContext(name.clone()))
+                        }
+                        ast::DefineBody::Value(body_expr) => {
+                            // Evaluate arguments in the caller's context, then
+                            // bind them by name in a temporary child context.
+                            let mut ctx = eval_context.clone();
+                            for (param, arg_expr) in define.params.iter().zip(args.iter()) {
+                                let arg_val =
+                                    eval(arg_expr.clone(), eval_context, state, posting_metadata)?;
+                                ctx.defines.insert(
+                                    param.clone(),
+                                    resolution::Define {
+                                        params: vec![],
+                                        body: ast::DefineBody::Value(arg_val),
+                                    },
+                                );
+                            }
+                            eval(body_expr.clone(), &ctx, state, posting_metadata)
+                        }
+                    };
                 }
 
-                // tag("name") — looks up a metadata key on the current posting.
-                //
-                // The posting's notes are parsed into key-value pairs by the
-                // resolution stage (e.g. `; Entity: Foo` → `{"Entity": "Foo"}`).
-                // If the key is present its value is returned as a Str; if absent
-                // an empty string is returned so that `tag("X") =~ /pattern/`
-                // works naturally (empty string never matches a non-empty pattern).
-                ("tag", [key_expr]) => {
-                    if let ValueExpr::Str(key) =
-                        eval(key_expr.clone(), eval_context, state, posting_metadata)?
-                    {
-                        let value = posting_metadata.get(&key).cloned().unwrap_or_default();
-                        Ok(ast::ValueExpr::Str(value))
-                    } else {
-                        Err(EvaluationError::InvalidFunctionArgs((
-                            name,
-                            key_expr.clone(),
-                        )))
-                    }
-                }
+                match (name.as_str(), args.as_slice()) {
+                    // scrub(x) — identity function used by some ledger-cli extensions
+                    // to mark amounts as "scrubbed" (processed). Treated as a no-op.
+                    ("scrub", [arg]) => eval(arg.clone(), eval_context, state, posting_metadata),
 
-                _ => Err(EvaluationError::UnknownFunctionArgs((name, args))),
-            },
+                    // account("Name") — returns an object with a "total" field
+                    // containing the current running balance of the named account.
+                    // Only the primary commodity ($) is currently surfaced.
+                    ("account", [account]) => {
+                        if let ValueExpr::Str(account) =
+                            eval(account.clone(), eval_context, state, posting_metadata)?
+                        {
+                            let account = eval_context
+                                .account_aliases
+                                .get(&account)
+                                .unwrap_or(&account);
+                            let balance = state
+                                .account_balances
+                                .get(account)
+                                .and_then(|ab| ab.commodity.get("$"))
+                                .cloned()
+                                .unwrap_or_default();
+                            Ok(ast::ValueExpr::Object(BTreeMap::from([(
+                                "total".into(),
+                                ast::ValueExpr::Amount {
+                                    value: balance,
+                                    commodity: Some("$".into()),
+                                },
+                            )])))
+                        } else {
+                            Err(EvaluationError::InvalidFunctionArgs((
+                                name,
+                                account.clone(),
+                            )))
+                        }
+                    }
+
+                    // tag("name") — looks up a metadata key on the current posting.
+                    //
+                    // The posting's notes are parsed into key-value pairs by the
+                    // resolution stage (e.g. `; Entity: Foo` → `{"Entity": "Foo"}`).
+                    // If the key is present its value is returned as a Str; if absent
+                    // an empty string is returned so that `tag("X") =~ /pattern/`
+                    // works naturally (empty string never matches a non-empty pattern).
+                    ("tag", [key_expr]) => {
+                        if let ValueExpr::Str(key) =
+                            eval(key_expr.clone(), eval_context, state, posting_metadata)?
+                        {
+                            let value = posting_metadata.get(&key).cloned().unwrap_or_default();
+                            Ok(ast::ValueExpr::Str(value))
+                        } else {
+                            Err(EvaluationError::InvalidFunctionArgs((
+                                name,
+                                key_expr.clone(),
+                            )))
+                        }
+                    }
+
+                    _ => Err(EvaluationError::UnknownFunctionArgs((name, args))),
+                }
+            }
 
             // A bare commodity symbol or identifier. If the name matches a
             // `define` alias in the active context, substitute and re-evaluate
             // the stored expression. Otherwise return the Commodity as-is;
             // the Binary handler above resolves it when paired with a number.
             ast::ValueExpr::Commodity(ref name) => {
-                if let Some(defined_expr) = eval_context.defines.get(name.as_str()) {
-                    eval(defined_expr.clone(), eval_context, state, posting_metadata)
+                if let Some(define) = eval_context.defines.get(name.as_str()) {
+                    // Zero-parameter defines act as simple aliases: expand the body.
+                    // Parameterized defines require a call site (handled in the
+                    // Function arm above); a bare reference is not valid.
+                    if define.params.is_empty() {
+                        match &define.body {
+                            ast::DefineBody::Value(expr) => {
+                                eval(expr.clone(), eval_context, state, posting_metadata)
+                            }
+                            // A boolean-body define referenced as a plain identifier is
+                            // not meaningful in a value-expression context; treat it as
+                            // an unresolved commodity (same as if it were undefined).
+                            ast::DefineBody::Bool(_) => Ok(val),
+                        }
+                    } else {
+                        Ok(val)
+                    }
                 } else {
                     Ok(val)
                 }
@@ -2440,5 +2882,329 @@ account Expenses:Food
             msg.contains("[unclosed") && msg.contains("invalid regex"),
             "error message should include the invalid pattern and identify it as a regex; got: {msg}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for tag directive validation — issue #82
+    // -----------------------------------------------------------------------
+
+    /// `tag X\n    assert value =~ /^foo/` with `; X: foobar` passes.
+    #[test]
+    fn test_tag_assert_passes_when_value_matches() {
+        let input = "\
+tag Statement
+    assert value =~ /^foo/
+
+2024-01-01 Test
+    ; Statement: foobar
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// `tag X\n    assert value =~ /^foo/` with `; X: barfoo` fails with
+    /// `TagAssertionFailed`.
+    #[test]
+    fn test_tag_assert_fails_when_value_does_not_match() {
+        let input = "\
+tag Statement
+    assert value =~ /^foo/
+
+2024-01-01 Test
+    ; Statement: barfoo
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        assert!(
+            matches!(result, Err(ElaborationError::TagAssertionFailed { .. })),
+            "expected TagAssertionFailed, got: {result:?}"
+        );
+        if let Err(ElaborationError::TagAssertionFailed {
+            tag_name,
+            tag_value,
+            ..
+        }) = result
+        {
+            assert_eq!(tag_name, "Statement");
+            assert_eq!(tag_value, "barfoo");
+        }
+    }
+
+    /// `tag X\n    check value =~ /^foo/` with `; X: barfoo` warns but
+    /// elaboration succeeds.
+    #[test]
+    fn test_tag_check_warns_does_not_halt() {
+        let input = "\
+tag Statement
+    check value =~ /^foo/
+
+2024-01-01 Test
+    ; Statement: barfoo
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        // Should succeed (check does not halt elaboration).
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// Multiple asserts under one tag: all must pass.
+    #[test]
+    fn test_tag_multiple_asserts_all_must_pass() {
+        let input = "\
+tag IncomeType
+    assert value =~ /^(Donations|RBI|UBTI)$/
+
+2024-01-01 Income
+    ; IncomeType: RBI
+    Income:Donations  $100.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// An invalid value fails all asserts.
+    #[test]
+    fn test_tag_assert_invalid_value_fails() {
+        let input = "\
+tag IncomeType
+    assert value =~ /^(Donations|RBI|UBTI)$/
+
+2024-01-01 Income
+    ; IncomeType: Salary
+    Income:Salary  $100.00
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        assert!(
+            matches!(result, Err(ElaborationError::TagAssertionFailed { .. })),
+            "expected TagAssertionFailed for unrecognised IncomeType"
+        );
+    }
+
+    /// A tag declared but not referenced in any transaction produces no errors.
+    #[test]
+    fn test_tag_declared_but_unused_no_error() {
+        let input = "\
+tag Receipt
+    assert value =~ /foo/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// Posting-level metadata is also validated (not just transaction-level).
+    #[test]
+    fn test_tag_assert_on_posting_level_metadata() {
+        let input = "\
+tag Statement
+    assert value =~ /^foo/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    ; Statement: barfoo
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        assert!(
+            matches!(result, Err(ElaborationError::TagAssertionFailed { .. })),
+            "posting-level tag metadata should also be validated"
+        );
+    }
+
+    /// Posting-level metadata with a passing value succeeds.
+    #[test]
+    fn test_tag_assert_on_posting_level_metadata_passes() {
+        let input = "\
+tag Statement
+    assert value =~ /^foo/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    ; Statement: foobar
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// Bare colon-tags (e.g. `; :payroll:`) have no value and are NOT validated
+    /// by `tag` directive rules — they are skipped entirely.
+    #[test]
+    fn test_tag_directive_does_not_validate_bare_colon_tags() {
+        let input = "\
+tag payroll
+    assert value =~ /^.+$/
+
+2024-01-01 Payroll
+    ; :payroll:
+    Income:Salary  $5000.00
+    Assets:Checking
+";
+        // Bare colon-tags don't have a value, so they never reach the tag
+        // directive validator. Elaboration should succeed.
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for parameterized defines (issue #81)
+    // -----------------------------------------------------------------------
+
+    /// `define isPositive(x) = x > 0` in an account assert — passing case.
+    #[test]
+    fn test_parameterized_define_bool_passing() {
+        let input = "\
+define isPositive(x) = x > 0
+
+account Expenses:Food
+    assert isPositive(amount)
+
+2024-01-01 Lunch
+    Expenses:Food  $10.00
+    Assets:Cash
+";
+        elaborate(input);
+    }
+
+    /// `define isNegative(x) = x < 0` in an account assert — positive amount
+    /// should trigger the assertion.
+    #[test]
+    fn test_parameterized_define_bool_failing() {
+        let input = "\
+define isNegative(x) = x < 0
+
+account Expenses:Food
+    assert isNegative(amount)
+
+2024-01-01 Lunch
+    Expenses:Food  $10.00
+    Assets:Cash
+";
+        let ast = crate::parser::parse_ledger(input).expect("parse failed");
+        let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
+        let result = Journal::try_from(hir);
+        assert!(
+            matches!(result, Err(ElaborationError::AccountAssertionFailed { .. })),
+            "positive amount should fail isNegative assertion; got: {result:?}"
+        );
+    }
+
+    /// Bool define using `tag()` and `!~` regex match.
+    #[test]
+    fn test_parameterized_define_with_tag_and_regex_passing() {
+        let input = "\
+define hasReceipt(x) = tag(\"Receipt\") !~ /^\\s*$/ and x > 0
+
+account Expenses:Food
+    assert hasReceipt(amount)
+
+2024-01-01 Lunch
+    Expenses:Food  $10.00
+    ; Receipt: scan123.pdf
+    Assets:Cash
+";
+        elaborate(input);
+    }
+
+    /// Two-argument define: `between(lo, hi) = amount > lo and amount < hi`
+    /// where `amount` is in scope from the posting context.
+    #[test]
+    fn test_parameterized_define_two_args_passing() {
+        let input = "\
+define between(lo, hi) = amount > lo and amount < hi
+
+account Expenses:Food
+    assert between(0, 100)
+
+2024-01-01 Lunch
+    Expenses:Food  $50.00
+    Assets:Cash
+";
+        elaborate(input);
+    }
+
+    /// Same `between` define — amount outside range fails.
+    #[test]
+    fn test_parameterized_define_two_args_failing() {
+        let input = "\
+define between(lo, hi) = amount > lo and amount < hi
+
+account Expenses:Food
+    assert between(0, 10)
+
+2024-01-01 BigPurchase
+    Expenses:Food  $50.00
+    Assets:Cash
+";
+        let ast = crate::parser::parse_ledger(input).expect("parse failed");
+        let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
+        let result = Journal::try_from(hir);
+        assert!(
+            matches!(result, Err(ElaborationError::AccountAssertionFailed { .. })),
+            "$50 should fail between(0, 10); got: {result:?}"
+        );
+    }
+
+    /// Param named `amount` shadows the implicit posting binding.
+    #[test]
+    fn test_parameterized_define_param_shadows_amount() {
+        let input = "\
+define isPositiveAmt(amount) = amount > 0
+
+account Expenses:Food
+    assert isPositiveAmt(amount)
+
+2024-01-01 Lunch
+    Expenses:Food  $10.00
+    Assets:Cash
+";
+        elaborate(input);
+    }
+
+    /// A zero-parameter value-body define continues to work as before.
+    #[test]
+    fn test_zero_param_define_value_body_still_works() {
+        let input = "\
+define monthly = $1500.00
+
+2024-01-01 Rent
+    Expenses:Rent  monthly
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        let rent = journal.transactions[0]
+            .postings
+            .iter()
+            .find(|p| p.account == "Expenses:Rent")
+            .unwrap();
+        assert_eq!(rent.amount.0.get("$").copied(), Some(dec!(1500.00)));
+    }
+
+    /// A parameterized value-body define can be used in a posting amount.
+    #[test]
+    fn test_parameterized_define_value_body_in_posting() {
+        let input = "\
+define double(x) = x * 2
+
+2024-01-01 Purchase
+    Expenses:Food  double(50 USD)
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        let food = journal.transactions[0]
+            .postings
+            .iter()
+            .find(|p| p.account == "Expenses:Food")
+            .unwrap();
+        assert_eq!(food.amount.0.get("USD").copied(), Some(dec!(100)));
     }
 }
