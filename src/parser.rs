@@ -33,28 +33,44 @@ pub struct LedgerParser;
 /// A stateful parser that resolves `include` directives.
 ///
 /// The generic parameter `F` is the file-opener: a callable that accepts a
-/// file-system path (potentially a glob pattern) and returns its contents as
-/// a `String`. This design makes the parser testable without touching the
-/// file system — pass `|_| String::new()` for a no-op opener.
-pub struct Parser<F: Fn(&str) -> String> {
-    /// Called with an absolute path (or glob pattern) to load included files.
-    /// The path passed in may contain glob wildcards when the source uses
-    /// `include path/to/*.ledger`.
+/// file-system path (potentially a glob pattern) and returns the concatenated
+/// contents of all matching files as a `String`, or an error. This design
+/// makes the parser testable without touching the file system — pass
+/// `|_| Ok(String::new())` for a no-op opener.
+///
+/// The opener receives the fully joined path (base directory + include
+/// argument). For glob patterns (containing `*`, `?`, or `[`) the opener is
+/// responsible for expanding and sorting matches; [`crate::file_opener`] does
+/// this correctly and is the default for CLI use.
+pub struct Parser<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
+    /// Called with the joined include path (or glob pattern) to load included
+    /// files. The path may be relative if `base_path` is relative — callers
+    /// who need absolute paths should canonicalise `base_path` before parsing.
+    ///
+    /// Returns the concatenated file contents on success, or a boxed error
+    /// if the path does not exist, the glob matches nothing, or a file cannot
+    /// be read. The error message is surfaced to the caller of
+    /// [`Parser::parse`].
     pub opener: F,
     /// The directory of the file currently being parsed. Used to resolve
     /// relative paths in `include` directives.
     pub base_path: PathBuf,
 }
 
-impl<F: Fn(&str) -> String> Parser<F> {
+impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
     /// Parse `input` (Ledger-format source text) into an [`ast::Journal`].
     ///
     /// `include` directives are expanded inline: the included file's entries
     /// are inserted at the position of the directive in the parent journal.
     /// The `base_path` and `opener` fields are used to locate included files.
     ///
-    /// Returns a `pest` parse error if the source is syntactically invalid.
-    pub fn parse(&mut self, input: &str) -> Result<Journal, pest::error::Error<Rule>> {
+    /// # Errors
+    ///
+    /// Returns a boxed error if:
+    /// - the source text is syntactically invalid (pest parse error), or
+    /// - an `include` directive's opener call fails (e.g. file not found,
+    ///   glob with no matches, I/O error).
+    pub fn parse(&mut self, input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
         let pairs = LedgerParser::parse(Rule::journal, input)?;
         let mut entries = Vec::new();
 
@@ -89,7 +105,7 @@ impl<F: Fn(&str) -> String> Parser<F> {
                     // relative paths (e.g. "include accounts/*.ledger") work
                     // regardless of the process working directory.
                     let include_path = self.base_path.join(pair.into_inner().as_str());
-                    let new_input = (self.opener)(include_path.as_os_str().to_str().unwrap());
+                    let new_input = (self.opener)(include_path.as_os_str().to_str().unwrap())?;
                     // Temporarily update base_path to the included file's directory
                     // so that any further includes within it are resolved correctly.
                     let new_base_path = include_path
@@ -119,10 +135,11 @@ impl<F: Fn(&str) -> String> Parser<F> {
 /// Convenience function: parse Ledger source with no `include` support.
 ///
 /// Useful in tests and benchmarks where a self-contained string is parsed
-/// and no file I/O is needed.
-pub fn parse_ledger(input: &str) -> Result<Journal, pest::error::Error<Rule>> {
+/// and no file I/O is needed. Any `include` directives in the input are
+/// silently resolved to an empty string (no entries are included).
+pub fn parse_ledger(input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
     Parser {
-        opener: |_| String::new(),
+        opener: |_| Ok(String::new()),
         base_path: PathBuf::new(),
     }
     .parse(input)
