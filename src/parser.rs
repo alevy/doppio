@@ -1041,4 +1041,36 @@ mod directed_tests {
         assert_eq!(a.account, "Liabilities:CreditCard");
         assert!(a.strict, "== should be strict");
     }
+
+    #[test]
+    fn test_bool_expr_and_chain_parses() {
+        // Regression test for issue #78: `and` was being consumed as a commodity
+        // by value_expr, causing the bool chain to be silently dropped.
+        // After the grammar fix, the chain must survive round-trip through the parser.
+        let input = "\
+account Assets:Savings
+    assert amount > 0 and amount < 0
+";
+        let journal = parse_ledger(input).unwrap();
+        assert_eq!(journal.entries.len(), 1);
+        let Entry::Directive(Directive::Account { items, .. }) = &journal.entries[0] else {
+            panic!("expected Account directive");
+        };
+        let assert_item = items
+            .iter()
+            .find(|item| matches!(item, AccountItem::Assert(_)))
+            .expect("assert item not found");
+        let AccountItem::Assert(bool_expr) = assert_item else {
+            unreachable!()
+        };
+        // The chain must be present — if it's None, the grammar still drops `and`.
+        assert!(
+            bool_expr.chain.is_some(),
+            "bool_expr.chain should be Some(And, ...), got None — grammar fix may not be applied"
+        );
+        assert!(
+            matches!(bool_expr.chain.as_ref().unwrap().0, BoolOp::And),
+            "expected BoolOp::And in chain"
+        );
+    }
 }

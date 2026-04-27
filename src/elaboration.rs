@@ -1813,6 +1813,42 @@ account Assets:Checking
         assert_eq!(account, "Assets:Checking");
     }
 
+    #[test]
+    fn test_bool_expr_and_chain_fails_when_rhs_false() {
+        // Regression test for issue #78: `and`/`or` in a bool_expr chain were
+        // being silently consumed as a commodity by value_expr's postfix, causing
+        // the chain to be dropped and the assertion to pass incorrectly.
+        //
+        // With $50, `amount > 0 and amount < 0` evaluates as `true AND false = false`,
+        // so the assertion must fail.
+        let input = "\
+account Assets:Savings
+    assert amount > 0 and amount < 0
+
+2024-01-01 Deposit
+    Assets:Savings  $50.00
+    Assets:Checking
+";
+        let (account, _, _) = elaborate_assert_fails(input);
+        assert_eq!(account, "Assets:Savings");
+    }
+
+    #[test]
+    fn test_bool_expr_or_chain_passes_when_either_true() {
+        // `amount > 0 or amount < 0` — true for any nonzero amount.
+        // $50 > 0 is true, so the OR chain should pass.
+        let input = "\
+account Assets:Savings
+    assert amount > 0 or amount < 0
+
+2024-01-01 Deposit
+    Assets:Savings  $50.00
+    Assets:Checking
+";
+        let journal = elaborate_ok(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
     // -----------------------------------------------------------------------
     // Tests for balance assignment commodity inference (issue #71)
     // -----------------------------------------------------------------------
