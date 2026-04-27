@@ -1028,6 +1028,42 @@ mod resolution_tests {
     }
 
     #[test]
+    fn test_commodity_note_stored_in_global_context() {
+        // Regression test for issue #91: CommodityItem::Note must be wired
+        // through resolution so that note text lands in CommodityProperties,
+        // not the Unknown arm that emits a spurious warning.
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::Directive(ast::Directive::Commodity {
+                name: "$".into(),
+                notes: vec![],
+                items: vec![
+                    ast::CommodityItem::Note("American Dollars".into()),
+                    ast::CommodityItem::Format("$1,000.00".into()),
+                ],
+            })],
+        };
+
+        let hir = HIR::try_from(journal).unwrap();
+
+        let props = hir
+            .global_context
+            .commodity_properties
+            .get("$")
+            .expect("commodity '$' should have properties");
+
+        assert_eq!(
+            props.note.as_deref(),
+            Some("American Dollars"),
+            "note should be stored in CommodityProperties"
+        );
+        assert_eq!(
+            props.format.as_deref(),
+            Some("$1,000.00"),
+            "format should also be stored"
+        );
+    }
+
+    #[test]
     fn test_assertion_directive_resolution() {
         use chrono::Datelike;
 

@@ -478,6 +478,7 @@ fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
         "format" => CommodityItem::Format(val.unwrap_or_default()),
         "nomarket" => CommodityItem::NoMarket,
         "default" => CommodityItem::Default,
+        "note" => CommodityItem::Note(val.unwrap_or_default()),
         _ => CommodityItem::Unknown(key.to_string(), val),
     }
 }
@@ -1074,6 +1075,36 @@ mod directed_tests {
         } else {
             panic!("Expected a Commodity Directive");
         }
+    }
+
+    #[test]
+    fn test_commodity_note_parses_to_note_item() {
+        // Regression test for issue #91: `note` sub-key was falling through to
+        // `CommodityItem::Unknown`, causing a spurious "unrecognised" warning.
+        let input = "commodity $\n    note American Dollars\n    format $1,000.00\n";
+        let journal = parse_ledger(input).expect("Should parse commodity with note");
+
+        let Entry::Directive(Directive::Commodity { name, items, .. }) = &journal.entries[0] else {
+            panic!("Expected Commodity directive");
+        };
+        assert_eq!(name, "$");
+        // Verify that `note` produces CommodityItem::Note, not Unknown.
+        let note_item = items.iter().find(|i| matches!(i, CommodityItem::Note(_)));
+        assert!(
+            note_item.is_some(),
+            "expected CommodityItem::Note, got: {items:?}"
+        );
+        let CommodityItem::Note(text) = note_item.unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(text, "American Dollars");
+        // Also confirm no Unknown item snuck through.
+        assert!(
+            !items
+                .iter()
+                .any(|i| matches!(i, CommodityItem::Unknown(..))),
+            "unexpected Unknown item in: {items:?}"
+        );
     }
 
     #[test]
