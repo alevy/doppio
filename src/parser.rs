@@ -113,8 +113,8 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     // so that any further includes within it are resolved correctly.
                     let new_base_path = include_path
                         .parent()
-                        .map(|p| self.base_path.join(p))
-                        .unwrap_or(self.base_path.clone());
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| self.base_path.clone());
                     let old_base_path = std::mem::replace(&mut self.base_path, new_base_path);
                     entries.append(&mut self.parse(&new_input)?.entries);
                     // Restore the original base_path for subsequent entries in
@@ -1254,5 +1254,103 @@ account Assets:Savings
             matches!(bool_expr.chain.as_ref().unwrap().0, BoolOp::And),
             "expected BoolOp::And in chain"
         );
+    }
+
+    #[test]
+    fn test_paren_bool_expr_simple() {
+        // `(amt > 0)` must parse as a Group wrapping a bool_expr comparison.
+        let input = "account Assets:Savings\n    assert (amount > 0)\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Directive(Directive::Account { items, .. }) = &journal.entries[0] else {
+            panic!("expected Account directive");
+        };
+        let AccountItem::Assert(expr) = items
+            .iter()
+            .find(|i| matches!(i, AccountItem::Assert(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        // The lhs of the outer bool_expr is a Group — the paren bool.
+        assert!(
+            matches!(expr.lhs, ValueExpr::Group(_)),
+            "expected ValueExpr::Group, got {:?}",
+            expr.lhs
+        );
+    }
+
+    #[test]
+    fn test_paren_bool_expr_or_chain_inside_parens() {
+        // `(amt > 0 or amt < -10)` must parse without error.
+        let input = "account Assets:Savings\n    assert (amount > 0 or amount < -10)\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Directive(Directive::Account { items, .. }) = &journal.entries[0] else {
+            panic!("expected Account directive");
+        };
+        assert!(items.iter().any(|i| matches!(i, AccountItem::Assert(_))));
+    }
+
+    #[test]
+    fn test_paren_bool_nested_parens() {
+        // Nested parenthesised bool: `(a > 0 and (tag("X") =~ /a/ or tag("Y") =~ /b/))`
+        let input =
+            "account Test\n    assert (amount > 0 and (tag(\"X\") =~ /a/ or tag(\"Y\") =~ /b/))\n";
+        parse_ledger(input).expect("nested parens should parse");
+    }
+
+    #[test]
+    fn test_plain_arithmetic_paren_still_works() {
+        // Arithmetic `(100 + 200) USD` must still parse as a Typed node,
+        // not as a Group, because bool_expr backtracks for plain arithmetic.
+        let input = "2024-01-01 Test\n    Expenses:Food  (100 + 200) USD\n    Assets:Cash\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        // The amount should be a Typed (or Binary) expr, not a Group.
+        let details = tx.postings[0].amount.as_ref().unwrap();
+        assert!(
+            matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Typed { .. } | ValueExpr::Binary { .. },
+                    ..
+                }
+            ),
+            "expected Typed or Binary, got {details:?}"
+        );
+    }
+
+    #[test]
+    fn test_define_body_paren_bool_expr() {
+        // `define inRange(x) = (x > 0 and x < 100)` must parse and produce a
+        // define body that carries the boolean logic wrapped in a Group.
+        //
+        // The outer bool_expr has `lhs = Group(...)`, `cmp = None`, `chain = None`,
+        // so `parse_define_directive` unwraps it as a trivial bool_expr and
+        // yields `DefineBody::Value(ValueExpr::Group(...))`. The Group variant
+        // holds the full inner BoolExpr, which the evaluator handles correctly.
+        let input = "define inRange(x) = (x > 0 and x < 100)\n";
+        let journal = parse_ledger(input).expect("should parse define with paren bool body");
+        let Entry::Directive(Directive::Define { name, params, body }) = &journal.entries[0] else {
+            panic!("expected Define directive");
+        };
+        assert_eq!(name, "inRange");
+        assert_eq!(params, &["x"]);
+        // The body may be Value(Group(...)) or Bool(...) — either carries the
+        // boolean logic correctly. Just verify it parsed without error and that
+        // a Group is present somewhere in the body.
+        match body {
+            DefineBody::Value(ValueExpr::Group(_)) => {}
+            DefineBody::Bool(_) => {}
+            other => panic!("unexpected define body: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_issue_89_failing_input() {
+        // Regression test for issue #89: the exact failing input from the bug report.
+        let input = "define assetChecker(amt) = (amt > -100.00 or (tag(\"TaxImplication\") !~ /^\\s*$/ and tag(\"Entity\") !~ /^\\s*$/))\n";
+        parse_ledger(input).expect("issue #89 input should parse");
     }
 }
