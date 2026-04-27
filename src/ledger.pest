@@ -244,7 +244,9 @@ bool_op = @{ "and" | "or" }
 
 // A value_expr is an expression optionally followed by a commodity annotation.
 // The trailing commodity form "(1 + 2) USD" creates a ValueExpr::Typed node.
-value_expr = ${ expr ~ (ws+ ~ commodity)? }
+// The negative lookahead `!bool_op` prevents `and`/`or` from being consumed as
+// a commodity, which would silently drop the boolean chain in `bool_expr`.
+value_expr = ${ expr ~ (ws+ ~ !bool_op ~ commodity)? }
 
 // An expression is one or more terms joined by infix operators.
 expr = ${ term ~ (ws* ~ infix_op ~ ws* ~ term)* }
@@ -278,9 +280,11 @@ function_call = ${ identifier ~ ws* ~ "(" ~ ws* ~ (expr ~ (ws* ~ "," ~ ws* ~ exp
 //   "$100"      — symbol before number (no space required)
 //   "100 USD"   — identifier commodity after number (space required)
 //   "100"       — bare number (commodity filled in from context later)
+// The negative lookahead `!bool_op` in the number-first alternative prevents
+// `and`/`or` from being consumed as a commodity (e.g., `0 and` in `amount > 0 and`).
 amount = ${
     (commodity ~ ws* ~ number)
-    | (number ~ ws+ ~ commodity)
+    | (number ~ ws+ ~ !bool_op ~ commodity)
     | number
 }
 
