@@ -698,12 +698,24 @@ fn detect_separators(number: &str) -> (Option<char>, Option<char>, usize) {
             (Some(','), places)
         }
         (Some(di), None) => {
-            let places = number.len() - di - 1;
-            (Some('.'), places)
+            // Single '.' with nothing else. Per ledger convention, a lone
+            // separator followed by exactly 3 digits (e.g. `1.000`) is a
+            // thousands separator, not a decimal point.
+            let trailing = number.len() - di - 1;
+            if trailing == 3 {
+                (None, 0) // treat as thousands sep; decimal_sep stays None
+            } else {
+                (Some('.'), trailing)
+            }
         }
         (None, Some(ci)) => {
-            let places = number.len() - ci - 1;
-            (Some(','), places)
+            // Same logic for a lone ',': `1,000` → thousands sep.
+            let trailing = number.len() - ci - 1;
+            if trailing == 3 {
+                (None, 0)
+            } else {
+                (Some(','), trailing)
+            }
         }
         _ => (None, 0),
     };
@@ -774,8 +786,11 @@ fn apply_format(
 
     // The prefix/suffix may already contain the commodity symbol. Use the
     // format's prefix/suffix as-is if non-empty, otherwise fall back.
+    //
+    // Sign placement: for prefix formats (e.g. `$`) the sign goes before the
+    // prefix so the result is `-$100`, not `$-100`.
     if !prefix.is_empty() || !suffix.is_empty() {
-        format!("{prefix}{sign}{number}{suffix}")
+        format!("{sign}{prefix}{number}{suffix}")
     } else {
         // No prefix/suffix in format (shouldn't happen, but safe fallback).
         format!("{sign}{number} {commodity}")

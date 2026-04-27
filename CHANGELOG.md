@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking changes
+
+- `.dop` binary format version bumped from 1 → 2 (adds `CommodityProperties`
+  to `elaboration::Journal`). Existing `.dop` files compiled with v0.1.0 are
+  **no longer readable** and must be recompiled with `dop compile`.
+
+### Added
+
+- `commodity` directive: `format`, `nomarket`, `note`, and `default` sub-keys
+  are now parsed, resolved, and stored in `elaboration::Journal::commodities`.
+- `balance` and `register` commands apply the declared `format` string when
+  rendering amounts (correct prefix/suffix, thousands separator, decimal places,
+  and sign placement).
+- Unrecognised `commodity` sub-keys now emit a warning instead of panicking.
+
+### Fixed
+
+- `detect_separators`: a lone separator followed by exactly 3 digits (e.g.
+  `$1.000`) is now correctly treated as a thousands separator rather than a
+  decimal point, matching ledger convention.
+- Sign placement for prefix-symbol formats: `-$100` instead of `$-100`.
+
+### Not in scope
+
+- `print` re-emits raw source text and intentionally does not apply format
+  strings — source amounts are not reformatted. Users who want formatted amounts
+  should use `balance` or `register`.
+
+---
+
 ## [0.1.0] - 2026-04-22
 
 First tagged release.

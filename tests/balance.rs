@@ -156,3 +156,24 @@ fn commodity_format_suffix_symbol_applied_to_register() {
         "formatted amount should appear as '2.500,00 EUR': {out}"
     );
 }
+
+#[test]
+fn commodity_format_single_separator_three_digits_is_thousands() {
+    // `format $1.000` — a single separator followed by exactly 3 digits is a
+    // *thousands* separator per ledger convention, not a decimal point.
+    // A balance of 1000 should render as `$1.000`, not `$1` (which would
+    // result from misinterpreting `.000` as 3 decimal places on `1.000`).
+    let content = "commodity $
+    format $1.000
+
+2024-01-01 Deposit
+    Assets:Checking  1000 $
+    Income:Salary
+";
+    let f = tmp_journal_file(content);
+    let out = run(&["balance", f.path().to_str().unwrap(), "--flat"]);
+    assert!(
+        out.contains("$1.000"),
+        "amount 1000 with format '$1.000' should render as '$1.000': {out}"
+    );
+}
