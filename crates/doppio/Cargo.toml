@@ -9,6 +9,7 @@ license-file = "../../LICENSE"
 keywords.workspace = true
 categories.workspace = true
 autobenches = false
+build = false
 
 [dependencies]
 chrono = { workspace = true }

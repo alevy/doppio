@@ -36,7 +36,10 @@
 //! # Modules
 //!
 //! - [`ast`] — abstract syntax tree produced by the parser.
-//! - [`parser`] — pest-based parser and `include` directive handling.
+//! - [`frontend`] — the [`Frontend`] trait for pluggable file-format support.
+//! - [`grammars`] — grammar implementations ([`grammars::ledger`] for
+//!   ledger-cli; future: hledger).
+//! - [`parser`] — re-exported ledger parser types for backwards compatibility.
 //! - [`resolution`] — alias resolution, date normalisation, metadata
 //!   extraction.
 //! - [`elaboration`] — expression evaluation, transaction balancing, and the
@@ -63,10 +66,53 @@
 
 pub mod ast;
 pub mod elaboration;
-pub mod parser;
+pub mod frontend;
+pub mod grammars;
 pub mod resolution;
 
+/// Re-export of the ledger parser module for backwards compatibility.
+///
+/// All items previously at `doppio::parser::*` remain accessible here.
+/// New code should prefer [`grammars::ledger`] directly.
+pub mod parser {
+    pub use crate::grammars::ledger::{LedgerParser, Parser, Rule, parse_ledger};
+    // parse_expr is crate-internal; re-exported with the same visibility so
+    // ast.rs can still use it via `crate::parser::parse_expr`.
+    pub(crate) use crate::grammars::ledger::parse_expr;
+}
+
 pub use elaboration::Journal;
+pub use frontend::Frontend;
+pub use grammars::ledger::LedgerFrontend;
+
+/// Select a frontend by file extension.
+///
+/// Returns the appropriate [`Frontend`] implementation for `ext`. Currently
+/// only the ledger-cli frontend is registered; it is also used as the default
+/// for unrecognised extensions, preserving today's behaviour.
+///
+/// When the hledger frontend lands (issue #103), it will be added here.
+///
+/// # Example
+///
+/// ```rust
+/// let fe = doppio::frontend_for_extension(Some("ledger"));
+/// assert!(fe.extensions().contains(&"ledger"));
+///
+/// // Unknown extensions fall back to the ledger frontend.
+/// let fe2 = doppio::frontend_for_extension(None);
+/// assert!(fe2.extensions().contains(&"ledger"));
+/// ```
+pub fn frontend_for_extension(ext: Option<&str>) -> Box<dyn Frontend> {
+    let frontends: &[&dyn Frontend] = &[&LedgerFrontend];
+    for fe in frontends {
+        if ext.is_some_and(|e| fe.extensions().contains(&e)) {
+            return Box::new(LedgerFrontend);
+        }
+    }
+    // Default: ledger frontend (preserves existing behaviour for unknown extensions).
+    Box::new(LedgerFrontend)
+}
 
 /// Write a sequence of [`resolution::Transaction`] values to `writer` in
 /// canonical Ledger source text format.
