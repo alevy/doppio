@@ -1,10 +1,10 @@
 # doppio: Supported Ledger features
 
-**Last updated**: 2026-04-27 (doppio v0.2.0)
+**Last updated**: 2026-04-26 (doppio v0.3.0)
 
 This document is a feature-by-feature comparison of doppio's syntax surface
-against [ledger-cli](https://ledger-cli.org/). The authoritative behaviour is
-the test suite — this matrix is a navigation aid.
+against [ledger-cli](https://ledger-cli.org/) and [hledger](https://hledger.org/).
+The authoritative behaviour is the test suite — this matrix is a navigation aid.
 
 Status legend:
 
@@ -128,19 +128,65 @@ Status legend:
 | `.dop` binary format v2 (`elaboration::Journal` with `commodities`) | ✅ | v0.2.0 breaking change. v1 files are rejected with a clear "recompile" message |
 | Append / framed `.dop` (range-scan, partial decode) | 🚫 | Phase 4 / issues #17, #39–41 |
 
+## hledger frontend
+
+Added in v0.3.0 (issue #103). Recognised by the `.hledger` and `.journal`
+file extensions; selected automatically by `dop` and by
+`doppio::frontend_for_extension`.
+
+### Parity with the ledger-cli frontend
+
+| Feature | Status | Notes |
+|---|---|---|
+| Transactions, cleared/pending state, code, description | ✅ | |
+| Postings with two-space rule | ✅ | Same convention as ledger-cli |
+| Number-first amounts `100 USD` | ✅ | |
+| Symbol-first amounts `$100` | ✅ | |
+| Negative amounts `-$110`, `$-110` | ✅ | |
+| Null posting (auto-inferred amount) | ✅ | |
+| Lot pricing `@ unit` / `@@ total` | ✅ | |
+| Balance assertion `= amount` (single-commodity) | ✅ | |
+| Strict balance assertion `== amount` (all-commodity) | ✅ | |
+| Balance assignment `= target` | ✅ | |
+| Transaction notes / posting notes (`;` lines) | ✅ | |
+| `P` historical price directive | ✅ | Time component not parsed (hledger omits it) |
+| `account` directive with inline note | ✅ | |
+| `account` directive with indented sub-directives | ✅ | `note`, `alias`, `type`, unknown keys |
+| `commodity` directive (format string) | ✅ | Both `$1,000.00` and `1,000.00 EUR` forms |
+| `commodity` directive with indented sub-directives | ✅ | `alias`, `format`, `nomarket`, `default`, `note` |
+| `include` directive (literal and glob) | ✅ | Same glob expansion as ledger-cli frontend |
+| Arithmetic in posting amounts | ✅ | Pratt-parsed; same precedence as ledger-cli |
+| Comment lines `;` | ✅ | |
+| Comment lines `#` | ✅ | hledger extension; not accepted by ledger-cli frontend |
+| Date format `YYYY-MM-DD` | ✅ | |
+| Date format `YYYY/MM/DD` | ✅ | hledger extension |
+| Date format `YYYY.MM.DD` | ✅ | hledger extension |
+| Periodic transactions `~` | ✅ | Parsed but not elaborated (same as ledger-cli `~` budget) |
+
+### Known limitations
+
+| Feature | Status | Notes |
+|---|---|---|
+| Automated posting `*N` arithmetic bodies | 🚫 | TODO(#103). The auto-rule shape is parsed but postings with `*N` multipliers cause a parse error. |
+| `comment` / `end comment` block comments | 🚫 | Not yet supported |
+| `Y year` directive (date inference) | 🚫 | Full four-digit year required in all dates |
+| Per-transaction `= DATE` effective date | 🚫 | hledger uses a different secondary-date syntax; not supported |
+| Multiple commodities per posting | 🚫 | v1 limitation shared with ledger-cli frontend |
+| `assert` / `check` in account sub-directives | 🚫 | Parsed but not enforced (hledger's semantics differ from ledger-cli's) |
+
 ## Out of scope (explicitly)
 
 These ledger-cli features are not modelled by doppio and aren't planned:
 
 - `~` budget directives (parsed but ignored)
-- `= payee` automated transactions
+- `= payee` automated transactions (automated posting rule arithmetic bodies)
 - Third-or-later effective dates in transaction headers
 - ledger-cli's Lisp-style scripting / Python integration
 - Real-time market-price-driven FX conversion in balance reports
 
 ## Reporting gaps
 
-If you find a ledger-cli construct that doppio rejects (or accepts but
-elaborates wrong) and it isn't documented here, please open an issue at
+If you find a ledger-cli or hledger construct that doppio rejects (or accepts
+but elaborates wrong) and it isn't documented here, please open an issue at
 <https://github.com/alevy/doppio/issues> — small minimal-failing-case
-ledger snippets are especially welcome.
+snippets are especially welcome.

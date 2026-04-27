@@ -133,6 +133,23 @@ Full API documentation:
 cargo doc --no-deps --open
 ```
 
+## Supported input formats
+
+doppio recognises two input formats by file extension:
+
+| Extension | Format | Frontend |
+|---|---|---|
+| `.ledger` | [ledger-cli](https://ledger-cli.org/) | `LedgerFrontend` |
+| `.hledger` | [hledger](https://hledger.org/) | `HledgerFrontend` |
+| `.journal` | hledger (alternative extension) | `HledgerFrontend` |
+
+The hledger frontend parses the same core constructs as the ledger-cli frontend
+(transactions, postings, balance assertions/assignments, lot pricing, historical
+prices, account/commodity directives, include) and adds hledger-specific
+extensions (`/` and `.` date separators, `#` comment lines). Automated posting
+rule arithmetic bodies (`*N` multipliers) are stubbed out and produce a parse
+error if encountered — see issue #103.
+
 ## Supported Ledger features
 
 doppio supports the subset of ledger-cli syntax needed for typical day-to-day
@@ -146,6 +163,7 @@ At a glance:
 | Expressions — arithmetic, comparisons, regex `=~`/`!~`, `tag()`, parameterised function calls | Supported |
 | CLI — `compile`, `balance`, `register`, `print`, `stats`, `accounts`, `commodities`; text / JSON / CSV output | Supported |
 | Library API — `compile`, `eval_transaction`, `write_ledger`, `.dop` binary format | Supported |
+| hledger input format (`.hledger`, `.journal`) | Supported (v0.3.0, issue #103) |
 | Budgets (`~`), automated transactions (`= payee expr`), Lisp-style scripting | Not supported |
 
 See [`docs/SUPPORTED_FEATURES.md`](./docs/SUPPORTED_FEATURES.md) for the full
