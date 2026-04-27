@@ -43,7 +43,9 @@ pub struct LedgerParser;
 /// responsible for expanding and sorting matches; [`crate::file_opener`] does
 /// this correctly and is the default for CLI use.
 pub struct Parser<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
-    /// Called with an absolute path (or glob pattern) to load included files.
+    /// Called with the joined include path (or glob pattern) to load included
+    /// files. The path may be relative if `base_path` is relative — callers
+    /// who need absolute paths should canonicalise `base_path` before parsing.
     ///
     /// Returns the concatenated file contents on success, or a boxed error
     /// if the path does not exist, the glob matches nothing, or a file cannot
