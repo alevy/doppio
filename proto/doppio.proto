@@ -1,47 +1,20 @@
 // doppio canonical wire format.
 //
-// This file is the source of truth for `.dop` artifacts. All language
-// consumers (Rust, Python, JS/TS, Go, etc.) can generate bindings via their
-// respective `protoc` plugins and read elaborated journals without going
-// through the doppio Rust runtime.
-//
-// The Rust types in `src/elaboration.rs` are kept in sync with this schema;
-// the .proto file is the authoritative description of the wire shape.
-//
-// =============================================================================
-// Schema-evolution policy
-// =============================================================================
-//
-// Pre-1.0 (current):
-//   No backwards-compatibility guarantee. The `.dop` 8-byte header version
-//   gates incompatible reads ("recompile from source"). Schema may churn
-//   freely between minor versions.
-//
-// At 1.0 and beyond:
-//   - Field tags are RESERVED on deletion; never reuse a number.
-//   - Adding a new field with a fresh tag is non-breaking (proto3 default
-//     value applies for older readers).
-//   - Renaming a field is wire-compatible (the tag is the contract) but
-//     breaks generated code in some languages — bundle with a major bump.
-//   - The `.dop` 8-byte header version (DOP\0 + u16) is bumped only for
-//     truly incompatible changes; additive evolution does not require it.
+// This file defines the wire shape of `.dop` artifacts. Language consumers
+// generate bindings via their respective `protoc` plugins and read elaborated
+// journals directly.
 //
 // =============================================================================
 // Decimal handling
 // =============================================================================
 //
-// `rust_decimal::Decimal` is a 96-bit-mantissa fixed-point type with scale
-// 0..28. Protocol Buffers has no native big-decimal type; we encode the
-// mantissa as a signed 128-bit two's-complement integer split into two
-// halves (low: uint64, high: sint64), plus an unsigned scale.
+// Protocol Buffers has no native big-decimal type. The mantissa is encoded as
+// a signed 128-bit two's-complement integer split into two halves (low:
+// uint64, high: sint64), plus an unsigned scale (0..28).
 //
 // Reassemble client-side with:
 //
 //   value = (((mantissa_high as i128) << 64) | (mantissa_low as i128)) * 10^(-scale)
-//
-// This encoding is deliberately the same as the Cap'n Proto and FlatBuffers
-// prototypes documented in the doppio-research repo, so cross-format
-// comparisons stay apples-to-apples.
 
 syntax = "proto3";
 
@@ -58,22 +31,14 @@ message Decimal {
 }
 
 // Cleared / pending / uncleared state of a transaction or posting.
-//
-// Note: zero is UNCLEARED to match the Rust `Default` impl. This intentionally
-// deviates from the proto3 convention of an `_UNSPECIFIED = 0` zero value
-// because Uncleared is genuinely the default in ledger-cli semantics, not a
-// "missing" sentinel.
 enum TransactionState {
-  TRANSACTION_STATE_UNCLEARED = 0;
-  TRANSACTION_STATE_PENDING = 1;
-  TRANSACTION_STATE_CLEARED = 2;
+  TRANSACTION_STATE_UNSPECIFIED = 0;
+  TRANSACTION_STATE_UNCLEARED = 1;
+  TRANSACTION_STATE_PENDING = 2;
+  TRANSACTION_STATE_CLEARED = 3;
 }
 
 // A multi-commodity balance: commodity symbol -> Decimal value.
-//
-// `BTreeMap<String, Decimal>` in Rust. Protobuf maps are unordered on the
-// wire but keys are unique; consumers that need a sorted iteration order
-// can sort by key after decode.
 message Amount {
   map<string, Decimal> by_commodity = 1;
 }
@@ -140,7 +105,7 @@ message CommodityProperties {
 message HistoricalPrice {
   // Days since the Unix epoch on which this price was recorded.
   sint32 date = 1;
-  // Optional wall-clock time of the price quote ("HH:MM" or "HH:MM:SS").
+  // Optional wall-clock time of the price quote.
   optional string time = 2;
   // The commodity whose price is being recorded.
   string commodity = 3;
@@ -151,8 +116,8 @@ message HistoricalPrice {
 }
 
 // Top-level elaborated journal. This is the canonical wire shape of the
-// `.dop` artifact body. The body follows the 8-byte file header defined in
-// `src/lib.rs`: magic (`DOP\0`, 4 bytes) + version (u16 LE) + reserved (u16).
+// `.dop` artifact body. The body follows the 8-byte file header
+// (magic + version + reserved).
 message Journal {
   // All transactions in source order, with amounts fully evaluated.
   repeated Transaction transactions = 1;
