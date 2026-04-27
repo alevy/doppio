@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`.dop` binary format version bumped from 2 → 3.** The body encoding
+  has been migrated from `postcard` + `xz` to canonical Protocol Buffers
+  (via `prost 0.13`) with optional deflate compression (`miniz_oxide
+  0.8`). The header layout is unchanged (8 bytes: `DOP\0` magic, u16
+  version, compression byte, reserved byte) but byte 6 now encodes the
+  compression algorithm: `0 = none`, `1 = deflate`. Existing `.dop` files
+  compiled with v0.2.0 are **no longer readable** and must be recompiled
+  with `dop compile`.
+
 ### Added
 
 - **hledger frontend** (issue #103): `.hledger` and `.journal` files are now
@@ -21,6 +32,19 @@
   - The `Frontend` trait, `frontend_for_extension()`, and
     `HledgerFrontend` are all public so library consumers can select or
     instantiate the frontend directly.
+- `doppio::write_dop(journal, writer, compression)` — public API to
+  serialise a compiled journal to any `Write` sink.
+- `doppio::read_dop(reader, path)` — public API to deserialise a `.dop`
+  file from any `Read` source with clear error messages.
+- `doppio::Compression` enum (`None` | `Deflate`) — controls the
+  compression algorithm used by `write_dop`.
+- `--no-compression` flag on `dop compile` — produces uncompressed `.dop`
+  files (useful for streaming or tooling that reads raw protobuf).
+
+### Removed
+
+- `postcard` and `xz` runtime dependencies from `doppio` and
+  `doppio-cli`; replaced by `prost` and `miniz_oxide`.
 
 ### Internal
 

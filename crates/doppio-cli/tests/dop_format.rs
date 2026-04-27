@@ -1,21 +1,26 @@
-//! Integration tests for the `.dop` binary format header.
+//! Integration tests for the `.dop` binary format header and round-trip.
 //!
 //! These tests exercise the [`doppio::dop_write_header`] /
-//! [`doppio::dop_read_header`] helpers and verify the full compile → load
-//! round-trip via the library's public API.
+//! [`doppio::dop_read_header`] helpers and the full compile → load
+//! round-trip via the library's public [`doppio::write_dop`] / [`doppio::read_dop`] API.
 
-use std::{
-    io::{Seek as _, SeekFrom, Write as _},
-    path::Path,
-};
+use std::{io::Write as _, path::Path};
 
 use tempfile::NamedTempFile;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Compile a small ledger source string into a temp `.dop` file and return the
-/// file handle (positioned at offset 0 so the caller can verify raw bytes).
+/// Compile a small ledger source string into a temp `.dop` file (deflate
+/// compressed) and return the file handle (positioned at offset 0).
 fn compile_to_dop(source: &str) -> NamedTempFile {
+    compile_to_dop_with_compression(source, doppio::Compression::Deflate)
+}
+
+/// Compile with an explicit compression setting.
+fn compile_to_dop_with_compression(
+    source: &str,
+    compression: doppio::Compression,
+) -> NamedTempFile {
     // Build the journal in memory.
     let mut parser = doppio::parser::Parser {
         opener: |_: &str| Ok(String::new()),
@@ -25,39 +30,28 @@ fn compile_to_dop(source: &str) -> NamedTempFile {
     let hir: doppio::resolution::HIR = ast.try_into().expect("resolution failed");
     let journal: doppio::elaboration::Journal = hir.try_into().expect("elaboration failed");
 
-    // Write to a named temp file so we can pass its path to `dop_read_header`.
+    // Write to a named temp file so we can pass its path to `read_dop`.
     let mut tmp = NamedTempFile::new().expect("tmp file");
-    doppio::dop_write_header(tmp.as_file_mut()).expect("write header");
-    let mut xz_enc = xz::write::XzEncoder::new(tmp.as_file_mut(), 6);
-    {
-        let mut buf = std::io::BufWriter::new(&mut xz_enc);
-        postcard::to_io(&journal, &mut buf).expect("postcard");
-        buf.flush().expect("flush");
-    }
-    xz_enc.finish().expect("xz finish");
+    doppio::write_dop(&journal, tmp.as_file_mut(), compression).expect("write_dop");
 
     // Seek back to the beginning so the file is ready for reading.
+    use std::io::Seek as _;
     tmp.as_file_mut()
-        .seek(SeekFrom::Start(0))
+        .seek(std::io::SeekFrom::Start(0))
         .expect("seek to start");
     tmp
 }
 
-/// Load a journal from a named temp file using the library header reader.
+/// Load a journal from a named temp file using the library's public reader.
 fn load_dop(path: &Path) -> doppio::Journal {
     let mut f = std::fs::File::open(path).expect("open dop");
-    doppio::dop_read_header(&mut f, path).expect("read header");
-    let input_xz = xz::read::XzDecoder::new(f);
-    let mut buf = vec![0u8; 102400];
-    postcard::from_io((input_xz, &mut buf))
-        .expect("deserialise")
-        .0
+    doppio::read_dop(&mut f, path).expect("read_dop")
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-/// A full compile → load round-trip: the deserialized journal should contain
-/// the same transactions as the original source.
+/// A full compile → load round-trip using deflate compression: the deserialized
+/// journal should contain the same transactions as the original source.
 #[test]
 fn round_trip_compile_and_load() {
     let source = "\
@@ -86,6 +80,22 @@ fn round_trip_compile_and_load() {
         journal.transactions[1].description, "Rent",
         "second transaction description mismatch"
     );
+}
+
+/// Round-trip with no compression (`Compression::None`) also works.
+#[test]
+fn round_trip_no_compression() {
+    let source = "\
+2024-03-01 Coffee
+    Expenses:Coffee  5 $
+    Assets:Checking
+";
+
+    let tmp = compile_to_dop_with_compression(source, doppio::Compression::None);
+    let journal = load_dop(tmp.path());
+
+    assert_eq!(journal.transactions.len(), 1);
+    assert_eq!(journal.transactions[0].description, "Coffee");
 }
 
 /// Writing garbage bytes to a `.dop`-named file and attempting to load it
@@ -138,15 +148,15 @@ fn wrong_version_returns_error_with_version_number() {
         .tempfile()
         .expect("tmp file");
 
-    // Write correct magic but version = 99.
+    // Write correct magic, version=99, compression=0 (none), reserved=0.
     tmp.write_all(b"DOP\0").expect("write magic");
     tmp.write_all(&99u16.to_le_bytes()).expect("write version");
-    tmp.write_all(&0u16.to_le_bytes()).expect("write reserved");
+    tmp.write_all(&[0u8, 0u8])
+        .expect("write compression+reserved");
     tmp.flush().expect("flush");
 
     let path = tmp.path().to_owned();
     let mut f = std::fs::File::open(&path).expect("open");
-    // Seek is not needed — file was just written and we opened a fresh handle.
     let err =
         doppio::dop_read_header(&mut f, &path).expect_err("expected an error for wrong version");
 

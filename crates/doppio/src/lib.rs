@@ -4,18 +4,20 @@
 //! # `.dop` binary format
 //!
 //! The `dop compile` command serialises an elaborated journal to a `.dop`
-//! file. The file begins with an 8-byte header followed by the postcard +
-//! XZ-compressed journal body:
+//! file. The file begins with an 8-byte header followed by the payload:
 //!
 //! ```text
 //! Offset  Length  Content
 //! 0       4       Magic: b"DOP\0"
-//! 4       2       Version: u16 LE (currently 1)
-//! 6       2       Reserved: u16 LE (write 0, ignore on read)
+//! 4       2       Format version: u16 LE (currently 3)
+//! 6       1       Compression: u8  (0 = none, 1 = deflate)
+//! 7       1       Reserved (write 0, ignore on read)
+//! 8       N       Payload (protobuf, optionally deflate-compressed per byte 6)
 //! ```
 //!
 //! Use [`dop_write_header`] / [`dop_read_header`] for portable, tested I/O of
-//! this header.
+//! this header.  Use [`write_dop`] / [`read_dop`] for the full
+//! header + (optional) compression + protobuf round-trip.
 //!
 //! # Pipeline
 //!
@@ -26,7 +28,7 @@
 //!   → [parser]      ast::Journal        (PEG grammar + Pratt expressions)
 //!   → [resolution]  resolution::HIR     (dates, aliases, metadata)
 //!   → [elaboration] elaboration::Journal (evaluation, balancing)
-//!   → serialisation                     (postcard + XZ → .dop)
+//!   → serialisation                     (protobuf + optional deflate → .dop)
 //! ```
 //!
 //! The top-level entry point is [`compile`], which runs all three in-memory
@@ -44,6 +46,7 @@
 //!   extraction.
 //! - [`elaboration`] — expression evaluation, transaction balancing, and the
 //!   final serialisable [`Journal`] type.
+//! - [`proto`] — prost-generated Protocol Buffers types (canonical wire shape).
 //!
 //! # Serialising transactions as Ledger text
 //!
@@ -79,6 +82,11 @@ pub mod parser {
     // parse_expr is crate-internal; re-exported with the same visibility so
     // ast.rs can still use it via `crate::parser::parse_expr`.
     pub(crate) use crate::grammars::ledger::parse_expr;
+}
+
+/// Prost-generated Protocol Buffers types — canonical wire shape of `.dop` bodies.
+pub mod proto {
+    include!(concat!(env!("OUT_DIR"), "/doppio.rs"));
 }
 
 pub use elaboration::Journal;
@@ -131,6 +139,309 @@ pub fn frontend_for_extension(ext: Option<&str>) -> Box<dyn Frontend> {
     }
     // Default: ledger frontend (preserves existing behaviour for unknown extensions).
     Box::new(LedgerFrontend)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Proto conversion: elaboration types ↔ proto wire types
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Convert a `rust_decimal::Decimal` to the proto [`proto::Decimal`] encoding.
+///
+/// The mantissa is split into low (u64) and high (i64, sign-extended) halves of
+/// the 128-bit two's-complement integer, with the scale preserved as-is.
+fn decimal_to_proto(d: rust_decimal::Decimal) -> proto::Decimal {
+    let mantissa: i128 = d.mantissa();
+    let scale = d.scale();
+    let mantissa_low = mantissa as u64;
+    let mantissa_high = (mantissa >> 64) as i64;
+    proto::Decimal {
+        mantissa_low,
+        mantissa_high,
+        scale,
+    }
+}
+
+/// Reconstruct a `rust_decimal::Decimal` from its proto encoding.
+fn decimal_from_proto(p: &proto::Decimal) -> rust_decimal::Decimal {
+    let mantissa = ((p.mantissa_high as i128) << 64) | (p.mantissa_low as i128);
+    rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
+}
+
+/// Convert an [`elaboration::TransactionState`] to its proto enum value (i32).
+fn state_to_proto(s: &elaboration::TransactionState) -> i32 {
+    match s {
+        elaboration::TransactionState::Uncleared => proto::TransactionState::Uncleared as i32,
+        elaboration::TransactionState::Pending => proto::TransactionState::Pending as i32,
+        elaboration::TransactionState::Cleared => proto::TransactionState::Cleared as i32,
+    }
+}
+
+/// Convert a proto enum i32 to [`elaboration::TransactionState`].
+///
+/// `Unspecified` (0) and unknown values both map to `Uncleared`.
+fn state_from_proto(v: i32) -> elaboration::TransactionState {
+    match proto::TransactionState::try_from(v) {
+        Ok(proto::TransactionState::Cleared) => elaboration::TransactionState::Cleared,
+        Ok(proto::TransactionState::Pending) => elaboration::TransactionState::Pending,
+        _ => elaboration::TransactionState::Uncleared,
+    }
+}
+
+impl From<&elaboration::Journal> for proto::Journal {
+    fn from(j: &elaboration::Journal) -> Self {
+        proto::Journal {
+            transactions: j
+                .transactions
+                .iter()
+                .map(|t| proto::Transaction {
+                    date: t.date,
+                    secondary_date: t.secondary_date,
+                    state: state_to_proto(&t.state),
+                    code: t.code.clone(),
+                    description: t.description.clone(),
+                    tags: t.tags.clone(),
+                    metadata: t
+                        .metadata
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                    postings: t
+                        .postings
+                        .iter()
+                        .map(|p| proto::Posting {
+                            account: p.account.clone(),
+                            payee: p.payee.clone(),
+                            amount: Some(proto::Amount {
+                                by_commodity: p
+                                    .amount
+                                    .0
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), decimal_to_proto(*v)))
+                                    .collect(),
+                            }),
+                            state: state_to_proto(&p.state),
+                            tags: p.tags.clone(),
+                            metadata: p
+                                .metadata
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            accounts: j
+                .accounts
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        proto::AccountProperties {
+                            note: v.note.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            commodities: j
+                .commodities
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        proto::CommodityProperties {
+                            format: v.format.clone(),
+                            no_market: v.no_market,
+                            note: v.note.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            prices: j
+                .prices
+                .iter()
+                .map(|hp| proto::HistoricalPrice {
+                    date: hp.date,
+                    time: hp.time.clone(),
+                    commodity: hp.commodity.clone(),
+                    price: Some(decimal_to_proto(hp.price)),
+                    price_commodity: hp.price_commodity.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<proto::Journal> for elaboration::Journal {
+    fn from(p: proto::Journal) -> Self {
+        use std::collections::BTreeMap;
+
+        let transactions = p
+            .transactions
+            .into_iter()
+            .map(|t| elaboration::ResolvedTransaction {
+                date: t.date,
+                secondary_date: t.secondary_date,
+                state: state_from_proto(t.state),
+                code: t.code,
+                description: t.description,
+                tags: t.tags,
+                metadata: t.metadata.into_iter().collect(),
+                postings: t
+                    .postings
+                    .into_iter()
+                    .map(|posting| elaboration::ResolvedPosting {
+                        account: posting.account,
+                        payee: posting.payee,
+                        amount: elaboration::Amount(
+                            posting
+                                .amount
+                                .map(|a| {
+                                    a.by_commodity
+                                        .into_iter()
+                                        .map(|(k, v)| (k, decimal_from_proto(&v)))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        ),
+                        state: state_from_proto(posting.state),
+                        tags: posting.tags,
+                        metadata: posting.metadata.into_iter().collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let accounts: BTreeMap<_, _> = p
+            .accounts
+            .into_iter()
+            .map(|(k, v)| (k, elaboration::AccountProperties { note: v.note }))
+            .collect();
+
+        let commodities: BTreeMap<_, _> = p
+            .commodities
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    elaboration::CommodityProperties {
+                        format: v.format,
+                        no_market: v.no_market,
+                        note: v.note,
+                    },
+                )
+            })
+            .collect();
+
+        let prices = p
+            .prices
+            .into_iter()
+            .map(|hp| elaboration::HistoricalPrice {
+                date: hp.date,
+                time: hp.time,
+                commodity: hp.commodity,
+                price: hp
+                    .price
+                    .as_ref()
+                    .map(decimal_from_proto)
+                    .unwrap_or_default(),
+                price_commodity: hp.price_commodity,
+            })
+            .collect();
+
+        elaboration::Journal {
+            transactions,
+            accounts,
+            commodities,
+            prices,
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Public write/read API
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Compression algorithm used in the `.dop` payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compression {
+    /// No compression — raw protobuf bytes.
+    None,
+    /// Deflate compression via `miniz_oxide`.
+    Deflate,
+}
+
+impl Compression {
+    fn as_byte(self) -> u8 {
+        match self {
+            Compression::None => 0,
+            Compression::Deflate => 1,
+        }
+    }
+
+    fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Compression::None),
+            1 => Some(Compression::Deflate),
+            _ => std::option::Option::None,
+        }
+    }
+}
+
+/// Serialise `journal` to `writer` as a complete `.dop` file
+/// (8-byte header + optional deflate + protobuf body).
+///
+/// # Errors
+///
+/// Propagates any [`std::io::Error`] from `writer`.
+pub fn write_dop<W: std::io::Write>(
+    journal: &elaboration::Journal,
+    writer: &mut W,
+    compression: Compression,
+) -> std::io::Result<()> {
+    use prost::Message as _;
+
+    let wire: proto::Journal = journal.into();
+    let encoded = wire.encode_to_vec();
+
+    dop_write_header(writer, compression)?;
+
+    let payload = match compression {
+        Compression::None => encoded,
+        Compression::Deflate => miniz_oxide::deflate::compress_to_vec(&encoded, 6),
+    };
+
+    writer.write_all(&payload)
+}
+
+/// Deserialise a `.dop` file from `reader` into a [`Journal`].
+///
+/// `path` is used only in error messages.
+///
+/// # Errors
+///
+/// Returns a boxed error if the header is invalid, the compression byte is
+/// unrecognised, decompression fails, or protobuf decoding fails.
+pub fn read_dop<R: std::io::Read>(
+    reader: &mut R,
+    path: &std::path::Path,
+) -> Result<elaboration::Journal, Box<dyn std::error::Error>> {
+    use prost::Message as _;
+
+    let compression = dop_read_header(reader, path)?;
+
+    let mut payload = Vec::new();
+    reader.read_to_end(&mut payload)?;
+
+    let proto_bytes = match compression {
+        Compression::None => payload,
+        Compression::Deflate => miniz_oxide::inflate::decompress_to_vec(&payload)
+            .map_err(|e| format!("{}: deflate decompression failed: {e:?}", path.display()))?,
+    };
+
+    let wire = proto::Journal::decode(proto_bytes.as_slice())
+        .map_err(|e| format!("{}: protobuf decode failed: {e}", path.display()))?;
+
+    Ok(elaboration::Journal::from(wire))
 }
 
 /// Write a sequence of [`resolution::Transaction`] values to `writer` in
@@ -207,6 +518,7 @@ where
 /// - the pattern contains glob metacharacters but matches no files,
 /// - a matched path cannot be read (I/O error), or
 /// - a literal path does not exist (I/O error).
+#[cfg(not(target_family = "wasm"))]
 pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> {
     use std::io::Read as _;
 
@@ -349,23 +661,29 @@ pub const DOP_MAGIC: [u8; 4] = *b"DOP\0";
 ///
 /// Bump this constant (and update [`dop_read_header`]) whenever the
 /// serialisation format changes in a breaking way.
-pub const DOP_FORMAT_VERSION: u16 = 2;
+pub const DOP_FORMAT_VERSION: u16 = 3;
 
 /// Write the 8-byte `.dop` header to `writer`.
 ///
-/// Layout: magic (4 bytes) + version LE u16 (2 bytes) + reserved u16 (2 bytes).
+/// Layout: magic (4 bytes) + version LE u16 (2 bytes) +
+///         compression byte (1 byte) + reserved byte (1 byte).
 ///
 /// # Errors
 ///
 /// Propagates any [`std::io::Error`] from `writer`.
-pub fn dop_write_header<W: std::io::Write>(writer: &mut W) -> std::io::Result<()> {
+pub fn dop_write_header<W: std::io::Write>(
+    writer: &mut W,
+    compression: Compression,
+) -> std::io::Result<()> {
     writer.write_all(&DOP_MAGIC)?;
     writer.write_all(&DOP_FORMAT_VERSION.to_le_bytes())?;
-    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&[compression.as_byte(), 0u8])?;
     Ok(())
 }
 
 /// Read and validate the 8-byte `.dop` header from `reader`.
+///
+/// Returns the [`Compression`] method declared in the header.
 ///
 /// `path` is used only for error messages; it should be the path of the file
 /// being opened so diagnostics point to the right location.
@@ -374,11 +692,12 @@ pub fn dop_write_header<W: std::io::Write>(writer: &mut W) -> std::io::Result<()
 ///
 /// Returns a boxed error with a user-actionable message if:
 /// - the magic bytes are missing or incorrect,
-/// - the format version is not [`DOP_FORMAT_VERSION`].
+/// - the format version is not [`DOP_FORMAT_VERSION`], or
+/// - the compression byte is unrecognised.
 pub fn dop_read_header<R: std::io::Read>(
     reader: &mut R,
     path: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Compression, Box<dyn std::error::Error>> {
     let mut magic = [0u8; 4];
     // A short read here means the file is too small to be valid.
     reader.read_exact(&mut magic).map_err(|_| {
@@ -412,10 +731,18 @@ pub fn dop_read_header<R: std::io::Read>(
         .into());
     }
 
-    // Skip the 2 reserved bytes — ignore their value on read.
-    let mut reserved = [0u8; 2];
-    reader.read_exact(&mut reserved)?;
-    Ok(())
+    let mut compression_reserved = [0u8; 2];
+    reader.read_exact(&mut compression_reserved)?;
+    let compression = Compression::from_byte(compression_reserved[0]).ok_or_else(|| {
+        format!(
+            "{}: unknown compression byte {} in .dop header",
+            path.display(),
+            compression_reserved[0],
+        )
+    })?;
+    // byte 7 is reserved — ignored on read.
+
+    Ok(compression)
 }
 
 #[cfg(test)]
@@ -507,9 +834,6 @@ mod write_ledger_tests {
 
     #[test]
     fn round_trip_preserves_metadata_and_tags() {
-        // Use two comments so they are emitted as indented `; comment` note
-        // lines (rather than inlined on the header), which round-trip cleanly
-        // through the parser/resolver pipeline.
         let original = resolution::Transaction::new(date(2024, 6, 1), "Grant revenue")
             .with_tag("income")
             .with_comment("Q2 payment")
@@ -739,8 +1063,6 @@ mod eval_transaction_tests {
         let mut context = resolution::Context::default();
         context.default_commodity = Some("USD".into());
 
-        // Amount with no commodity — should use the context default.
-        // Use ValueExpr::Amount with commodity: None to produce a bare amount.
         let bare = ast::ValueExpr::Amount {
             value: Decimal::from(25u32),
             commodity: None,

@@ -10,12 +10,7 @@
 //! This tool is useful for identifying which stage dominates compile time
 //! for a given ledger file, particularly when tuning the parser or evaluator.
 
-use std::{
-    fs::File,
-    io::{Read as _, Write as _},
-    path::PathBuf,
-    time::Instant,
-};
+use std::{fs::File, io::Read as _, path::PathBuf, time::Instant};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = PathBuf::from(std::env::args().nth(1).expect("usage: timings <source>"));
@@ -52,12 +47,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("elaboration: {:>8.3}s", t3.elapsed().as_secs_f64());
 
     // --- serialize ---
-    // Postcard serialisation to a no-op sink. BufWriter batches postcard's
-    // many small writes so that sink overhead does not distort the measurement.
+    // Protobuf + deflate serialisation to a no-op sink.
     let t4 = Instant::now();
-    let mut output = std::io::BufWriter::new(std::io::sink());
-    postcard::to_io(&journal, &mut output)?;
-    output.flush()?;
+    let mut output = std::io::sink();
+    doppio::write_dop(&journal, &mut output, doppio::Compression::Deflate)?;
     eprintln!("serialize:   {:>8.3}s", t4.elapsed().as_secs_f64());
 
     eprintln!("total:       {:>8.3}s", t0.elapsed().as_secs_f64());

@@ -28,7 +28,6 @@
 use std::{collections::BTreeMap, fmt::Display};
 
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     ast::{self, AmountDetails, ValueExpr},
@@ -37,10 +36,9 @@ use crate::{
 
 /// The fully elaborated journal: the final output of the compilation pipeline.
 ///
-/// `Journal` implements [`serde::Serialize`] and [`serde::Deserialize`] so it
-/// can be written to a `.bki` file (via `postcard` + XZ) and read back later
-/// without re-parsing the source.
-#[derive(Debug, Serialize, Deserialize)]
+/// Convert to [`crate::proto::Journal`] via `From<&Journal>` for serialisation
+/// to the `.dop` binary format (Protocol Buffers + optional deflate).
+#[derive(Debug)]
 pub struct Journal {
     /// All transactions in source order, with amounts fully evaluated.
     pub transactions: Vec<ResolvedTransaction>,
@@ -54,7 +52,7 @@ pub struct Journal {
 }
 
 /// Display and market-data properties of a commodity, persisted in the journal.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default)]
 pub struct CommodityProperties {
     /// A display format string from a `format` sub-directive (e.g. `"$1,000.00"`).
     pub format: Option<String>,
@@ -65,7 +63,7 @@ pub struct CommodityProperties {
 }
 
 /// A fully evaluated historical price entry produced from a `P` directive.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct HistoricalPrice {
     /// Days since the Unix epoch on which this price was recorded.
     pub date: i32,
@@ -80,7 +78,7 @@ pub struct HistoricalPrice {
 }
 
 /// Properties of an account declared with an `account` directive.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default)]
 pub struct AccountProperties {
     /// A free-form note describing the account.
     pub note: Option<String>,
@@ -112,14 +110,13 @@ struct RunningState {
 /// Note: this type does not implement [`std::fmt::Display`]. To serialise
 /// transactions back to Ledger source text, use [`crate::resolution::Transaction`]
 /// with [`crate::write_ledger`].
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug)]
 pub struct ResolvedTransaction {
     /// Days since the Unix epoch (1970-01-01 = 0).
     ///
-    /// Stored as `i32` rather than a `NaiveDate` because `i32` serialises
-    /// compactly with postcard (4 bytes, fixed-width), is trivially sortable,
-    /// and avoids embedding chrono's internal representation in the on-disk
-    /// format.
+    /// Stored as `i32` rather than a `NaiveDate` because it is trivially
+    /// sortable and avoids embedding chrono's internal representation in the
+    /// on-disk format.
     pub date: i32,
     /// Optional secondary date in the same epoch-days format.
     pub secondary_date: Option<i32>,
@@ -138,7 +135,7 @@ pub struct ResolvedTransaction {
 }
 
 /// A posting with a fully evaluated, concrete amount.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Debug)]
 pub struct ResolvedPosting {
     /// The canonical account name (after alias resolution).
     pub account: String,
@@ -159,40 +156,11 @@ pub struct ResolvedPosting {
 pub type Commodity = String;
 
 /// A multi-commodity amount: a map from commodity symbol to a `Decimal` value.
-///
-/// The serde representation uses `[u8; 16]` per value — the fixed-size binary
-/// encoding produced by [`rust_decimal::Decimal::serialize`] — so the `.bki`
-/// wire format is identical to the original byte-array storage. The conversion
-/// is handled by the manual `Serialize`/`Deserialize` impls below.
 #[derive(Default, Debug)]
 pub struct Amount(pub BTreeMap<Commodity, Decimal>);
 
-impl serde::Serialize for Amount {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let bytes_map: BTreeMap<&Commodity, [u8; 16]> =
-            self.0.iter().map(|(k, v)| (k, v.serialize())).collect();
-        bytes_map.serialize(s)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Amount {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let bytes_map = BTreeMap::<Commodity, [u8; 16]>::deserialize(d)?;
-        Ok(Amount(
-            bytes_map
-                .into_iter()
-                .map(|(k, v)| (k, Decimal::deserialize(v)))
-                .collect(),
-        ))
-    }
-}
-
 /// Cleared/pending state of a resolved transaction or posting.
-///
-/// This is a separate type from [`ast::TransactionState`] because it derives
-/// `Serialize`/`Deserialize` for the on-disk format; `ast::TransactionState`
-/// does not need those traits.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Debug)]
 pub enum TransactionState {
     /// No state marker.
     Uncleared,
@@ -1844,39 +1812,20 @@ mod tests {
     use rust_decimal::dec;
 
     #[test]
-    fn test_amount_serde_wire_format() {
-        // Verify that Amount serializes identically to BTreeMap<Commodity, [u8; 16]>,
-        // preserving the binary wire format for .bki files.
-        let decimal = dec!(182.50);
-        let amount = Amount(BTreeMap::from([("$".to_string(), decimal)]));
-
-        // Serialize via our custom impl
-        let amount_bytes = postcard::to_allocvec(&amount).unwrap();
-
-        // Serialize the equivalent [u8; 16] map directly
-        let raw_map: BTreeMap<&str, [u8; 16]> = BTreeMap::from([("$", decimal.serialize())]);
-        let raw_bytes = postcard::to_allocvec(&raw_map).unwrap();
-
-        assert_eq!(
-            amount_bytes, raw_bytes,
-            "Amount wire format must match [u8;16] map"
-        );
+    fn test_amount_default_is_empty() {
+        let amount = Amount::default();
+        assert!(amount.0.is_empty());
     }
 
     #[test]
-    fn test_amount_serde_roundtrip() {
-        let decimal = dec!(42.123456789);
-        let original = Amount(BTreeMap::from([
-            ("USD".to_string(), decimal),
+    fn test_amount_multi_commodity() {
+        let amount = Amount(BTreeMap::from([
+            ("USD".to_string(), dec!(42.5)),
             ("$".to_string(), dec!(-1.5)),
         ]));
-        let bytes = postcard::to_allocvec(&original).unwrap();
-        let recovered: Amount = postcard::from_bytes(&bytes).unwrap();
-
-        assert_eq!(original.0.len(), recovered.0.len());
-        for (k, v) in &original.0 {
-            assert_eq!(recovered.0[k], *v);
-        }
+        assert_eq!(amount.0.len(), 2);
+        assert_eq!(amount.0["USD"], dec!(42.5));
+        assert_eq!(amount.0["$"], dec!(-1.5));
     }
 
     #[test]

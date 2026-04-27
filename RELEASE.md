@@ -90,19 +90,26 @@ for cmd in balance register print stats accounts commodities; do
 done
 ```
 
-## `.dop` v1 → v2 rejection
+## `.dop` version-rejection smoke test
 
-Verify that a `.dop` file produced by an older release fails cleanly with a
-clear "recompile" message rather than mis-parsing. A v0.1.0-built fixture
-lives at `crates/doppio-cli/tests/fixtures/v1.dop`:
+Verify that `.dop` files produced by older releases fail cleanly with a
+clear "recompile" message rather than mis-parsing. Fixtures for each old
+format version live under `crates/doppio-cli/tests/fixtures/`:
+
+- `v0.1.0.dop` — format version 1 (postcard + XZ), produced by v0.1.0
+- `v0.2.0.dop` — format version 2 (postcard + XZ header layout), produced by v0.2.0
 
 ```sh
-./target/release/dop balance crates/doppio-cli/tests/fixtures/v1.dop
+./target/release/dop balance crates/doppio-cli/tests/fixtures/v0.1.0.dop
 # Expect: an Err mentioning the version mismatch and pointing at `dop compile`.
+
+./target/release/dop balance crates/doppio-cli/tests/fixtures/v0.2.0.dop
+# Expect: same.
 ```
 
-When the format version bumps in a future release, regenerate this fixture
-from the previous release's binary.
+When the format version bumps in a future release, copy the last-known-good
+`.dop` file produced by the previous release binary into this directory and
+name it `v<version>.dop`.
 
 ## Dry-run publish
 
