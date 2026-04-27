@@ -453,6 +453,9 @@ impl Display for ValueExpr {
                 Ok(())
             }
             ValueExpr::Str(s) => write!(f, "\"{s}\""),
+            // TODO: forward-slashes inside `pattern` are not re-escaped, so a
+            // pattern like `a/b` renders as `/a/b/` which does not round-trip
+            // through the parser. Fix when round-trip fidelity is required.
             ValueExpr::Regex(pattern) => write!(f, "/{pattern}/"),
             ValueExpr::Unary { op, expr } => {
                 let op = match op {

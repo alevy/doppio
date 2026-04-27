@@ -25,7 +25,7 @@
 //!   to [`Journal::accounts`], merging any properties declared in `account`
 //!   directives.
 
-use std::{collections::BTreeMap, fmt::Display};
+use std::{cell::RefCell, collections::BTreeMap, collections::HashMap, fmt::Display};
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -89,9 +89,18 @@ struct AccountBalances {
 /// Account balances are updated as each transaction is processed so that
 /// balance assertions and the `account()` function see the balance *before*
 /// the current posting is applied (which matches ledger-cli semantics).
+///
+/// `regex_cache` memoises compiled regexes across all postings within one
+/// elaboration run. A typical bb-ledger workload has ~10 distinct patterns
+/// repeated over hundreds of postings; compiling each once rather than per
+/// evaluation reduces compilation overhead to O(distinct patterns).
 #[derive(Default, Clone, Debug)]
 struct RunningState {
     account_balances: BTreeMap<String, AccountBalances>,
+    /// Cache of compiled regexes keyed by pattern string.
+    /// `RefCell` provides interior mutability so the cache can be populated
+    /// from `eval_cmp`, which receives only a shared reference to `RunningState`.
+    regex_cache: RefCell<HashMap<String, regex::Regex>>,
 }
 
 /// A fully evaluated and balanced transaction, ready for serialisation.
@@ -274,6 +283,52 @@ pub enum EvaluationError {
     TypedCommodityToIncompatibleAmount((String, ValueExpr)),
     /// A function received an argument of the wrong type.
     InvalidFunctionArgs((String, ValueExpr)),
+    /// A regex literal could not be compiled.
+    ///
+    /// Carries the offending pattern string and the error message from the
+    /// `regex` crate. Using `String` rather than `regex::Error` keeps this
+    /// error type free of a public dependency on the `regex` crate.
+    InvalidRegexPattern(String, String),
+}
+
+impl Display for EvaluationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvaluationError::UnaryMultiplyOrDivide => {
+                write!(f, "* and / cannot be used as unary prefix operators")
+            }
+            EvaluationError::UnaryOnNonAmount(val) => {
+                write!(f, "unary operator applied to non-amount value: {val:?}")
+            }
+            EvaluationError::BinaryOperationTypeError((lhs, rhs, op)) => {
+                write!(f, "binary operation type mismatch: {lhs:?} {op:?} {rhs:?}")
+            }
+            EvaluationError::NoSuchField(field) => {
+                write!(f, "no such field: {field}")
+            }
+            EvaluationError::FieldAccessTypeError(val) => {
+                write!(f, "field access on non-object value: {val:?}")
+            }
+            EvaluationError::UnknownFunctionArgs((name, args)) => {
+                write!(
+                    f,
+                    "unknown function or wrong argument count: {name}({args:?})"
+                )
+            }
+            EvaluationError::TypedCommodityToIncompatibleAmount((commodity, val)) => {
+                write!(
+                    f,
+                    "commodity annotation '{commodity}' is incompatible with value: {val:?}"
+                )
+            }
+            EvaluationError::InvalidFunctionArgs((name, arg)) => {
+                write!(f, "invalid argument to function {name}: {arg:?}")
+            }
+            EvaluationError::InvalidRegexPattern(pattern, err) => {
+                write!(f, "invalid regex pattern /{pattern}/: {err}")
+            }
+        }
+    }
 }
 
 impl From<EvaluationError> for ElaborationError {
@@ -294,7 +349,7 @@ impl Display for ElaborationError {
                 write!(f, "expected an amount but got: {expr:?}")
             }
             ElaborationError::EvaluationError(e) => {
-                write!(f, "evaluation error: {e:?}")
+                write!(f, "evaluation error: {e}")
             }
             ElaborationError::PostingBalanceAssertionFailed => {
                 write!(f, "posting balance assertion failed")
@@ -818,7 +873,7 @@ mod evaluator {
                     ast::ValueExpr::Regex(_) => rhs_expr.clone(),
                     other => eval(other.clone(), &ctx, state, posting_metadata)?,
                 };
-                eval_cmp(cmp_op, &lhs_val, &rhs_val)?
+                eval_cmp(cmp_op, &lhs_val, &rhs_val, state)?
             }
         };
 
@@ -865,35 +920,42 @@ mod evaluator {
     ///
     /// Regex matching is case-sensitive by default (Rust `regex` crate semantics).
     /// Returns an error for type mismatches or an invalid regex pattern.
+    ///
+    /// `state` is used to look up (and populate) the per-run regex cache, so
+    /// each distinct pattern is compiled at most once across all postings.
     fn eval_cmp(
         op: &CmpOp,
         lhs: &ast::ValueExpr,
         rhs: &ast::ValueExpr,
+        state: &RunningState,
     ) -> Result<bool, EvaluationError> {
         match (lhs, rhs) {
             // Regex match: LHS must be a string, RHS must be a Regex literal.
             (ast::ValueExpr::Str(text), ast::ValueExpr::Regex(pattern)) => {
-                // Compile the regex each call. For the bb-ledger workload this
-                // is acceptable — patterns appear in account directives which are
-                // few in number. A cache can be added later if profiling shows it
-                // as a hot path.
-                let re = Regex::new(pattern).map_err(|_| {
-                    EvaluationError::BinaryOperationTypeError((
-                        lhs.clone(),
-                        rhs.clone(),
-                        ast::Op::Add,
-                    ))
-                })?;
+                // Look up the compiled regex in the per-run cache. On a miss,
+                // compile and insert. This ensures each distinct pattern is
+                // compiled exactly once across all postings in one elaboration run.
+                let mut cache = state.regex_cache.borrow_mut();
+                let re = if let Some(re) = cache.get(pattern.as_str()) {
+                    // SAFETY: we return a reference into the map entry; to avoid
+                    // lifetime issues we clone the Regex (cheap — Arc inside).
+                    re.clone()
+                } else {
+                    let re = Regex::new(pattern).map_err(|e| {
+                        EvaluationError::InvalidRegexPattern(pattern.clone(), e.to_string())
+                    })?;
+                    cache.insert(pattern.clone(), re.clone());
+                    re
+                };
+                drop(cache);
+                // The only CmpOps valid with a Regex RHS are RegexMatch and
+                // RegexNotMatch — any other combination is a parser-level bug.
                 Ok(match op {
                     CmpOp::RegexMatch => re.is_match(text),
                     CmpOp::RegexNotMatch => !re.is_match(text),
-                    _ => {
-                        return Err(EvaluationError::BinaryOperationTypeError((
-                            lhs.clone(),
-                            rhs.clone(),
-                            ast::Op::Add,
-                        )));
-                    }
+                    _ => unreachable!(
+                        "parser should only produce RegexMatch/RegexNotMatch with a Regex RHS"
+                    ),
                 })
             }
             // String equality: used for `commodity == "$"`.
@@ -2283,6 +2345,83 @@ account Income:Salary
         assert!(
             result.is_err(),
             "chained tag() check should fail when one tag is absent"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for `tag()` with bare (`:foo:`) tags
+    // -----------------------------------------------------------------------
+
+    /// `tag()` only inspects key-value metadata (`; Key: value`), not bare
+    /// colon-delimited tags (`; :foo:`).  A posting with `:foo:` and an
+    /// assertion `tag("foo") =~ /foo/` fails because `tag("foo")` returns ""
+    /// (the bare tag name is not in the metadata map).
+    ///
+    /// This is intentional: bare tags carry no associated value, so `tag()`
+    /// returning "" is the correct "not found" signal.  Use bare tags for
+    /// filtering via external tooling rather than in `assert`/`check` expressions.
+    #[test]
+    fn test_tag_fn_does_not_see_bare_colon_tags() {
+        let input = "\
+account Expenses:Food
+    assert tag(\"foo\") =~ /foo/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    ; :foo:
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        assert!(
+            result.is_err(),
+            "tag() must return \"\" for bare colon-style tags; /foo/ should not match"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for invalid regex error — issue #79
+    // -----------------------------------------------------------------------
+
+    /// An invalid regex pattern in an `assert` expression should produce
+    /// `EvaluationError::InvalidRegexPattern`, not a generic type-mismatch error.
+    #[test]
+    fn test_invalid_regex_produces_named_error() {
+        let input = "\
+account Expenses:Food
+    assert commodity =~ /[unclosed/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        let err = result.expect_err("invalid regex should cause elaboration to fail");
+        assert!(
+            matches!(
+                err,
+                ElaborationError::EvaluationError(EvaluationError::InvalidRegexPattern(_, _))
+            ),
+            "expected InvalidRegexPattern error, got: {err}"
+        );
+    }
+
+    /// The `Display` of `InvalidRegexPattern` should mention the offending pattern.
+    #[test]
+    fn test_invalid_regex_error_message_mentions_pattern() {
+        let input = "\
+account Expenses:Food
+    assert commodity =~ /[unclosed/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        let err = result.expect_err("invalid regex should cause elaboration to fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[unclosed"),
+            "error message should include the invalid pattern; got: {msg}"
         );
     }
 }
