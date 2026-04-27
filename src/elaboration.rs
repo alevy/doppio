@@ -318,6 +318,9 @@ pub enum EvaluationError {
         /// Number of arguments provided at the call site.
         got: usize,
     },
+    /// Expression evaluation exceeded the recursion limit. The most common
+    /// cause is mutually-recursive defines, e.g. `define a = b; define b = a`.
+    RecursionLimitExceeded,
 }
 
 impl Display for EvaluationError {
@@ -370,6 +373,12 @@ impl Display for EvaluationError {
                 write!(
                     f,
                     "define '{name}' expects {expected} argument(s), got {got}"
+                )
+            }
+            EvaluationError::RecursionLimitExceeded => {
+                write!(
+                    f,
+                    "expression evaluation exceeded recursion limit (likely a cyclic `define`)"
                 )
             }
         }
@@ -1409,12 +1418,45 @@ mod evaluator {
     /// `posting_metadata` carries the key-value tag pairs from the posting's
     /// notes. It is forwarded into recursive calls and is read by the `tag()`
     /// built-in function.
+    /// Maximum recursion depth for [`eval`]. Protects against cyclic
+    /// `define`s (e.g. `define a = b; define b = a`), which would otherwise
+    /// recurse until the OS aborts the process with a stack overflow.
+    /// 64 is well above any sane real-world expression depth and well below
+    /// debug-build stack limits (debug frames are large).
+    const MAX_EVAL_DEPTH: usize = 64;
+
+    thread_local! {
+        static EVAL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// RAII guard that increments the eval recursion counter on construction
+    /// and decrements on drop, regardless of how the calling function exits.
+    struct EvalDepthGuard;
+    impl EvalDepthGuard {
+        fn enter() -> Result<Self, EvaluationError> {
+            EVAL_DEPTH.with(|d| {
+                let depth = d.get();
+                if depth >= MAX_EVAL_DEPTH {
+                    return Err(EvaluationError::RecursionLimitExceeded);
+                }
+                d.set(depth + 1);
+                Ok(EvalDepthGuard)
+            })
+        }
+    }
+    impl Drop for EvalDepthGuard {
+        fn drop(&mut self) {
+            EVAL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        }
+    }
+
     fn eval(
         val: ast::ValueExpr,
         eval_context: &resolution::Context,
         state: &RunningState,
         posting_metadata: &BTreeMap<String, String>,
     ) -> Result<ast::ValueExpr, EvaluationError> {
+        let _guard = EvalDepthGuard::enter()?;
         match val {
             // Base cases: already-reduced values pass through unchanged.
             a @ ast::ValueExpr::Amount { .. } => Ok(a),
@@ -3185,6 +3227,52 @@ define monthly = $1500.00
             .find(|p| p.account == "Expenses:Rent")
             .unwrap();
         assert_eq!(rent.amount.0.get("$").copied(), Some(dec!(1500.00)));
+    }
+
+    /// Mutually-recursive defines must produce a `RecursionLimitExceeded`
+    /// error rather than crash the process with a stack overflow.
+    #[test]
+    fn test_mutually_recursive_defines_caught() {
+        let input = "\
+define a = b
+define b = a
+
+2024-01-01 Test
+    Expenses:Food  a
+    Assets:Cash
+";
+        let result = try_elaborate(input);
+        assert!(
+            matches!(
+                result,
+                Err(ElaborationError::EvaluationError(
+                    EvaluationError::RecursionLimitExceeded
+                ))
+            ),
+            "cyclic defines should produce RecursionLimitExceeded; got: {result:?}"
+        );
+    }
+
+    /// Self-referential define caught the same way.
+    #[test]
+    fn test_self_referential_define_caught() {
+        let input = "\
+define x = x
+
+2024-01-01 Test
+    Expenses:Food  x
+    Assets:Cash
+";
+        let result = try_elaborate(input);
+        assert!(
+            matches!(
+                result,
+                Err(ElaborationError::EvaluationError(
+                    EvaluationError::RecursionLimitExceeded
+                ))
+            ),
+            "self-referential define should produce RecursionLimitExceeded; got: {result:?}"
+        );
     }
 
     /// A parameterized value-body define can be used in a posting amount.
