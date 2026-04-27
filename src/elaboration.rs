@@ -1005,72 +1005,70 @@ mod evaluator {
         // Check whether the LHS is a call to a bool-body define. If it is and
         // there is no comparison operator, we expand the define body as a full
         // bool expression rather than treating the call result as a numeric value.
-        if expr.cmp.is_none() {
-            if let ast::ValueExpr::Function { ref name, ref args } = expr.lhs {
-                if let Some(define) = ctx.defines.get(name.as_str()) {
-                    if let ast::DefineBody::Bool(ref body) = define.body.clone() {
-                        if define.params.len() != args.len() {
-                            return Err(EvaluationError::DefineArgCountMismatch {
-                                name: name.clone(),
-                                expected: define.params.len(),
-                                got: args.len(),
-                            });
-                        }
-                        // Bind arguments into a new context and evaluate the bool body.
-                        let mut call_ctx = ctx.clone();
-                        for (param, arg_expr) in define.params.iter().zip(args.iter()) {
-                            let arg_val = eval(arg_expr.clone(), &ctx, state, posting_metadata)?;
-                            call_ctx.defines.insert(
-                                param.clone(),
-                                resolution::Define {
-                                    params: vec![],
-                                    body: ast::DefineBody::Value(arg_val),
-                                },
-                            );
-                        }
-                        // Evaluate the define's bool body, then apply any chain.
-                        let segment_result = eval_bool_expr_with_context(
-                            body,
+        if expr.cmp.is_none()
+            && let ast::ValueExpr::Function { name, args } = &expr.lhs
+            && let Some(define) = ctx.defines.get(name.as_str())
+            && let ast::DefineBody::Bool(body) = define.body.clone()
+        {
+            if define.params.len() != args.len() {
+                return Err(EvaluationError::DefineArgCountMismatch {
+                    name: name.clone(),
+                    expected: define.params.len(),
+                    got: args.len(),
+                });
+            }
+            // Bind arguments into a new context and evaluate the bool body.
+            let mut call_ctx = ctx.clone();
+            for (param, arg_expr) in define.params.iter().zip(args.iter()) {
+                let arg_val = eval(arg_expr.clone(), &ctx, state, posting_metadata)?;
+                call_ctx.defines.insert(
+                    param.clone(),
+                    resolution::Define {
+                        params: vec![],
+                        body: ast::DefineBody::Value(arg_val),
+                    },
+                );
+            }
+            // Evaluate the define's bool body, then apply any chain.
+            let segment_result = eval_bool_expr_with_context(
+                &body,
+                posting_amount,
+                posting_commodity,
+                posting_metadata,
+                &call_ctx,
+                state,
+            )?;
+            return match &expr.chain {
+                None => Ok(segment_result),
+                Some((ast::BoolOp::And, cont)) => {
+                    if !segment_result {
+                        Ok(false)
+                    } else {
+                        eval_bool_expr(
+                            cont,
                             posting_amount,
                             posting_commodity,
                             posting_metadata,
-                            &call_ctx,
+                            eval_context,
                             state,
-                        )?;
-                        return match &expr.chain {
-                            None => Ok(segment_result),
-                            Some((ast::BoolOp::And, cont)) => {
-                                if !segment_result {
-                                    Ok(false)
-                                } else {
-                                    eval_bool_expr(
-                                        cont,
-                                        posting_amount,
-                                        posting_commodity,
-                                        posting_metadata,
-                                        eval_context,
-                                        state,
-                                    )
-                                }
-                            }
-                            Some((ast::BoolOp::Or, cont)) => {
-                                if segment_result {
-                                    Ok(true)
-                                } else {
-                                    eval_bool_expr(
-                                        cont,
-                                        posting_amount,
-                                        posting_commodity,
-                                        posting_metadata,
-                                        eval_context,
-                                        state,
-                                    )
-                                }
-                            }
-                        };
+                        )
                     }
                 }
-            }
+                Some((ast::BoolOp::Or, cont)) => {
+                    if segment_result {
+                        Ok(true)
+                    } else {
+                        eval_bool_expr(
+                            cont,
+                            posting_amount,
+                            posting_commodity,
+                            posting_metadata,
+                            eval_context,
+                            state,
+                        )
+                    }
+                }
+            };
         }
 
         // Evaluate LHS.
@@ -1137,6 +1135,9 @@ mod evaluator {
     /// the caller has already bound the define's parameters as zero-param value
     /// defines in `eval_context`, so we evaluate the body without re-injecting
     /// `amount`/`commodity` (they are already in the context or in `eval_context`).
+    // posting_amount and posting_commodity are forwarded through recursive calls
+    // to eval_bool_expr (for chains); they are not used directly in the body.
+    #[allow(clippy::only_used_in_recursion)]
     fn eval_bool_expr_with_context(
         expr: &BoolExpr,
         posting_amount: Decimal,
@@ -1146,71 +1147,68 @@ mod evaluator {
         state: &RunningState,
     ) -> Result<bool, EvaluationError> {
         // Check for a bool-body define call in the LHS (recursive define calls).
-        if expr.cmp.is_none() {
-            if let ast::ValueExpr::Function { ref name, ref args } = expr.lhs {
-                if let Some(define) = eval_context.defines.get(name.as_str()) {
-                    if let ast::DefineBody::Bool(ref body) = define.body.clone() {
-                        if define.params.len() != args.len() {
-                            return Err(EvaluationError::DefineArgCountMismatch {
-                                name: name.clone(),
-                                expected: define.params.len(),
-                                got: args.len(),
-                            });
-                        }
-                        let mut call_ctx = eval_context.clone();
-                        for (param, arg_expr) in define.params.iter().zip(args.iter()) {
-                            let arg_val =
-                                eval(arg_expr.clone(), eval_context, state, posting_metadata)?;
-                            call_ctx.defines.insert(
-                                param.clone(),
-                                resolution::Define {
-                                    params: vec![],
-                                    body: ast::DefineBody::Value(arg_val),
-                                },
-                            );
-                        }
-                        let segment_result = eval_bool_expr_with_context(
-                            body,
+        if expr.cmp.is_none()
+            && let ast::ValueExpr::Function { name, args } = &expr.lhs
+            && let Some(define) = eval_context.defines.get(name.as_str())
+            && let ast::DefineBody::Bool(body) = define.body.clone()
+        {
+            if define.params.len() != args.len() {
+                return Err(EvaluationError::DefineArgCountMismatch {
+                    name: name.clone(),
+                    expected: define.params.len(),
+                    got: args.len(),
+                });
+            }
+            let mut call_ctx = eval_context.clone();
+            for (param, arg_expr) in define.params.iter().zip(args.iter()) {
+                let arg_val = eval(arg_expr.clone(), eval_context, state, posting_metadata)?;
+                call_ctx.defines.insert(
+                    param.clone(),
+                    resolution::Define {
+                        params: vec![],
+                        body: ast::DefineBody::Value(arg_val),
+                    },
+                );
+            }
+            let segment_result = eval_bool_expr_with_context(
+                &body,
+                posting_amount,
+                posting_commodity,
+                posting_metadata,
+                &call_ctx,
+                state,
+            )?;
+            return match &expr.chain {
+                None => Ok(segment_result),
+                Some((ast::BoolOp::And, cont)) => {
+                    if !segment_result {
+                        Ok(false)
+                    } else {
+                        eval_bool_expr_with_context(
+                            cont,
                             posting_amount,
                             posting_commodity,
                             posting_metadata,
-                            &call_ctx,
+                            eval_context,
                             state,
-                        )?;
-                        return match &expr.chain {
-                            None => Ok(segment_result),
-                            Some((ast::BoolOp::And, cont)) => {
-                                if !segment_result {
-                                    Ok(false)
-                                } else {
-                                    eval_bool_expr_with_context(
-                                        cont,
-                                        posting_amount,
-                                        posting_commodity,
-                                        posting_metadata,
-                                        eval_context,
-                                        state,
-                                    )
-                                }
-                            }
-                            Some((ast::BoolOp::Or, cont)) => {
-                                if segment_result {
-                                    Ok(true)
-                                } else {
-                                    eval_bool_expr_with_context(
-                                        cont,
-                                        posting_amount,
-                                        posting_commodity,
-                                        posting_metadata,
-                                        eval_context,
-                                        state,
-                                    )
-                                }
-                            }
-                        };
+                        )
                     }
                 }
-            }
+                Some((ast::BoolOp::Or, cont)) => {
+                    if segment_result {
+                        Ok(true)
+                    } else {
+                        eval_bool_expr_with_context(
+                            cont,
+                            posting_amount,
+                            posting_commodity,
+                            posting_metadata,
+                            eval_context,
+                            state,
+                        )
+                    }
+                }
+            };
         }
 
         let lhs_val = eval(expr.lhs.clone(), eval_context, state, posting_metadata)?;
