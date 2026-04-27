@@ -558,8 +558,10 @@ impl TryFrom<resolution::HIR> for Journal {
 
                     // Evaluate account-level assert/check directives for each posting.
                     for (posting_index, posting) in resolved_postings.iter().enumerate() {
-                        if let Some(props) =
-                            value.global_context.account_properties.get(&posting.account)
+                        if let Some(props) = value
+                            .global_context
+                            .account_properties
+                            .get(&posting.account)
                         {
                             // Assertions and checks operate per-commodity. For
                             // multi-commodity postings each commodity is checked
@@ -576,13 +578,11 @@ impl TryFrom<resolution::HIR> for Journal {
                                     )
                                     .map_err(ElaborationError::EvaluationError)?;
                                     if !passed {
-                                        return Err(
-                                            ElaborationError::AccountAssertionFailed {
-                                                account: posting.account.clone(),
-                                                posting_index,
-                                                expression: assert_expr.to_string(),
-                                            },
-                                        );
+                                        return Err(ElaborationError::AccountAssertionFailed {
+                                            account: posting.account.clone(),
+                                            posting_index,
+                                            expression: assert_expr.to_string(),
+                                        });
                                     }
                                 }
                                 for check_expr in &props.checks {
@@ -1640,7 +1640,10 @@ account Income:Salary
 ";
         let (account, _, expression) = elaborate_assert_fails(input);
         assert_eq!(account, "Income:Salary");
-        assert!(expression.contains("amount"), "expression should mention 'amount'");
+        assert!(
+            expression.contains("amount"),
+            "expression should mention 'amount'"
+        );
     }
 
     #[test]

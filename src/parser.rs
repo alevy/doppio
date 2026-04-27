@@ -249,9 +249,9 @@ fn parse_bool_expr(pair: Pair<Rule>) -> BoolExpr {
             "!=" => CmpOp::Ne,
             "<=" => CmpOp::Le,
             ">=" => CmpOp::Ge,
-            "<"  => CmpOp::Lt,
-            ">"  => CmpOp::Gt,
-            _    => unreachable!("unknown cmp_op: {}", op_pair.as_str()),
+            "<" => CmpOp::Lt,
+            ">" => CmpOp::Gt,
+            _ => unreachable!("unknown cmp_op: {}", op_pair.as_str()),
         };
         let rhs = parse_expr(inner.next().expect("cmp_op must be followed by rhs"));
         Some((op, rhs))
@@ -264,8 +264,8 @@ fn parse_bool_expr(pair: Pair<Rule>) -> BoolExpr {
         let op_pair = inner.next().unwrap();
         let op = match op_pair.as_str() {
             "and" => BoolOp::And,
-            "or"  => BoolOp::Or,
-            _     => unreachable!("unknown bool_op: {}", op_pair.as_str()),
+            "or" => BoolOp::Or,
+            _ => unreachable!("unknown bool_op: {}", op_pair.as_str()),
         };
         let cont = parse_bool_expr(inner.next().expect("bool_op must be followed by bool_expr"));
         Some((op, Box::new(cont)))
