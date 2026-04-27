@@ -238,9 +238,26 @@ filename = @{ (!NEWLINE ~ ANY)+ }
 // precedence rules.
 // `cmp_op` separators are punctuation so they take ws*; `bool_op` is alphabetic
 // (`and`/`or`) and must be space-separated to avoid `xand` parsing as `x and`.
-bool_expr = ${ value_expr ~ (ws* ~ cmp_op ~ ws* ~ value_expr)? ~ (ws+ ~ bool_op ~ ws+ ~ bool_expr)? }
+// `bool_expr` supports both ordinary comparisons (cmp_op) and regex matches
+// (regex_cmp_op). The RHS of a regex comparison must be a regex_literal;
+// ordinary comparisons accept any value_expr.
+bool_expr = ${
+    value_expr ~ (
+        (ws* ~ regex_cmp_op ~ ws* ~ regex_literal)
+        | (ws* ~ cmp_op ~ ws* ~ value_expr)
+    )? ~ (ws+ ~ bool_op ~ ws+ ~ bool_expr)?
+}
 cmp_op = @{ "==" | "!=" | "<=" | ">=" | "<" | ">" }
+// Regex match operators: must be tried before cmp_op to avoid `=` prefix ambiguity.
+regex_cmp_op = @{ "=~" | "!~" }
 bool_op = @{ "and" | "or" }
+
+// A regex literal: /pattern/ where \/ is an escaped slash inside the pattern.
+// compound-atomic ($) so that regex_body is named and visible to the parser.
+regex_literal = ${ "/" ~ regex_body ~ "/" }
+// regex_body captures the raw pattern text between the delimiters.
+// Allows backslash-escapes (including \/) and any non-slash character.
+regex_body = @{ (("\\" ~ ANY) | (!"/" ~ ANY))* }
 
 // A value_expr is an expression optionally followed by a commodity annotation.
 // The trailing commodity form "(1 + 2) USD" creates a ValueExpr::Typed node.

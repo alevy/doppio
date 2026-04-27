@@ -287,6 +287,52 @@ pub enum EvaluationError {
     TypedCommodityToIncompatibleAmount((String, ValueExpr)),
     /// A function received an argument of the wrong type.
     InvalidFunctionArgs((String, ValueExpr)),
+    /// A regex literal could not be compiled.
+    ///
+    /// Carries the offending pattern string and the error message from the
+    /// `regex` crate. Using `String` rather than `regex::Error` keeps this
+    /// error type free of a public dependency on the `regex` crate.
+    InvalidRegexPattern(String, String),
+}
+
+impl Display for EvaluationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvaluationError::UnaryMultiplyOrDivide => {
+                write!(f, "* and / cannot be used as unary prefix operators")
+            }
+            EvaluationError::UnaryOnNonAmount(val) => {
+                write!(f, "unary operator applied to non-amount value: {val:?}")
+            }
+            EvaluationError::BinaryOperationTypeError((lhs, rhs, op)) => {
+                write!(f, "binary operation type mismatch: {lhs:?} {op:?} {rhs:?}")
+            }
+            EvaluationError::NoSuchField(field) => {
+                write!(f, "no such field: {field}")
+            }
+            EvaluationError::FieldAccessTypeError(val) => {
+                write!(f, "field access on non-object value: {val:?}")
+            }
+            EvaluationError::UnknownFunctionArgs((name, args)) => {
+                write!(
+                    f,
+                    "unknown function or wrong argument count: {name}({args:?})"
+                )
+            }
+            EvaluationError::TypedCommodityToIncompatibleAmount((commodity, val)) => {
+                write!(
+                    f,
+                    "commodity annotation '{commodity}' is incompatible with value: {val:?}"
+                )
+            }
+            EvaluationError::InvalidFunctionArgs((name, arg)) => {
+                write!(f, "invalid argument to function {name}: {arg:?}")
+            }
+            EvaluationError::InvalidRegexPattern(pattern, err) => {
+                write!(f, "invalid regex pattern /{pattern}/: {err}")
+            }
+        }
+    }
 }
 
 impl From<EvaluationError> for ElaborationError {
@@ -307,7 +353,7 @@ impl Display for ElaborationError {
                 write!(f, "expected an amount but got: {expr:?}")
             }
             ElaborationError::EvaluationError(e) => {
-                write!(f, "evaluation error: {e:?}")
+                write!(f, "evaluation error: {e}")
             }
             ElaborationError::PostingBalanceAssertionFailed => {
                 write!(f, "posting balance assertion failed")
@@ -619,6 +665,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                         assert_expr,
                                         amount_val,
                                         commodity,
+                                        &posting.metadata,
                                         entry_context,
                                         &state,
                                     )
@@ -636,6 +683,7 @@ impl TryFrom<resolution::HIR> for Journal {
                                         check_expr,
                                         amount_val,
                                         commodity,
+                                        &posting.metadata,
                                         entry_context,
                                         &state,
                                     )
@@ -730,6 +778,7 @@ impl TryFrom<resolution::HIR> for Journal {
 mod evaluator {
     use std::collections::BTreeMap;
 
+    use regex::Regex;
     use rust_decimal::Decimal;
 
     use crate::{
@@ -763,7 +812,11 @@ mod evaluator {
         running_state: &RunningState,
         fallback_commodity: Option<&str>,
     ) -> Result<(Decimal, String), ElaborationError> {
-        match eval(val, eval_context, running_state)? {
+        // Amount expressions don't involve posting metadata (tags); pass an
+        // empty map so the `tag()` built-in is a no-op when called from amount
+        // contexts (which would be a programmer error, but we don't panic).
+        let empty_meta = BTreeMap::default();
+        match eval(val, eval_context, running_state, &empty_meta)? {
             ast::ValueExpr::Amount { value, commodity } => {
                 let commodity = if let Some(commodity) = commodity {
                     // Apply commodity alias (e.g. "Bitcoin" → "BTC")
@@ -794,12 +847,17 @@ mod evaluator {
     /// `commodity` in the expression context, which is how account assertions
     /// refer to the current posting's values.
     ///
+    /// `posting_metadata` provides the key-value tag pairs from the posting's
+    /// notes (e.g. `; Entity: Foo` → `{"Entity": "Foo"}`). This is used by
+    /// the `tag("name")` built-in to look up metadata values.
+    ///
     /// Returns `true` if the assertion passes, `false` if it fails, or an
     /// error if expression evaluation itself fails.
     pub fn eval_bool_expr(
         expr: &BoolExpr,
         posting_amount: Decimal,
         posting_commodity: &str,
+        posting_metadata: &BTreeMap<String, String>,
         eval_context: &resolution::Context,
         state: &RunningState,
     ) -> Result<bool, EvaluationError> {
@@ -818,7 +876,7 @@ mod evaluator {
         );
 
         // Evaluate LHS.
-        let lhs_val = eval(expr.lhs.clone(), &ctx, state)?;
+        let lhs_val = eval(expr.lhs.clone(), &ctx, state, posting_metadata)?;
 
         // Compute this segment's boolean value. With no comparison operator,
         // the expression is truthy iff the LHS evaluates to a non-zero amount
@@ -830,7 +888,12 @@ mod evaluator {
                 _ => false,
             },
             Some((cmp_op, rhs_expr)) => {
-                let rhs_val = eval(rhs_expr.clone(), &ctx, state)?;
+                // For regex comparisons the RHS is already a Regex literal in
+                // the AST — pass it through to eval_cmp without re-evaluating.
+                let rhs_val = match rhs_expr {
+                    ast::ValueExpr::Regex(_) => rhs_expr.clone(),
+                    other => eval(other.clone(), &ctx, state, posting_metadata)?,
+                };
                 eval_cmp(cmp_op, &lhs_val, &rhs_val)?
             }
         };
@@ -842,14 +905,28 @@ mod evaluator {
                 if !result {
                     Ok(false)
                 } else {
-                    eval_bool_expr(cont, posting_amount, posting_commodity, eval_context, state)
+                    eval_bool_expr(
+                        cont,
+                        posting_amount,
+                        posting_commodity,
+                        posting_metadata,
+                        eval_context,
+                        state,
+                    )
                 }
             }
             Some((ast::BoolOp::Or, cont)) => {
                 if result {
                     Ok(true)
                 } else {
-                    eval_bool_expr(cont, posting_amount, posting_commodity, eval_context, state)
+                    eval_bool_expr(
+                        cont,
+                        posting_amount,
+                        posting_commodity,
+                        posting_metadata,
+                        eval_context,
+                        state,
+                    )
                 }
             }
         }
@@ -859,15 +936,34 @@ mod evaluator {
     ///
     /// Supported comparisons:
     /// - `Str == Str` / `Str != Str` — commodity identity checks
+    /// - `Str =~ Regex` / `Str !~ Regex` — regex match against a string
     /// - `Amount cmp Amount` — numeric comparisons (same or compatible commodities)
     ///
-    /// Returns an error for type mismatches.
+    /// Regex matching is case-sensitive by default (Rust `regex` crate semantics).
+    /// Returns an error for type mismatches or an invalid regex pattern.
     fn eval_cmp(
         op: &CmpOp,
         lhs: &ast::ValueExpr,
         rhs: &ast::ValueExpr,
     ) -> Result<bool, EvaluationError> {
         match (lhs, rhs) {
+            // Regex match: LHS must be a string, RHS must be a Regex literal.
+            // Patterns are validated at parse time, so compilation here cannot
+            // fail in well-formed input.
+            (ast::ValueExpr::Str(text), ast::ValueExpr::Regex(pattern)) => {
+                let re = Regex::new(pattern).map_err(|e| {
+                    EvaluationError::InvalidRegexPattern(pattern.clone(), e.to_string())
+                })?;
+                // The only CmpOps valid with a Regex RHS are RegexMatch and
+                // RegexNotMatch — any other combination is a parser-level bug.
+                Ok(match op {
+                    CmpOp::RegexMatch => re.is_match(text),
+                    CmpOp::RegexNotMatch => !re.is_match(text),
+                    _ => unreachable!(
+                        "parser should only produce RegexMatch/RegexNotMatch with a Regex RHS"
+                    ),
+                })
+            }
             // String equality: used for `commodity == "$"`.
             (ast::ValueExpr::Str(a), ast::ValueExpr::Str(b)) => Ok(match op {
                 CmpOp::Eq => a == b,
@@ -897,6 +993,14 @@ mod evaluator {
                 CmpOp::Le => v1 <= v2,
                 CmpOp::Gt => v1 > v2,
                 CmpOp::Ge => v1 >= v2,
+                // Regex operators on amounts are a type error.
+                CmpOp::RegexMatch | CmpOp::RegexNotMatch => {
+                    return Err(EvaluationError::BinaryOperationTypeError((
+                        lhs.clone(),
+                        rhs.clone(),
+                        ast::Op::Add,
+                    )));
+                }
             }),
             _ => Err(EvaluationError::BinaryOperationTypeError((
                 lhs.clone(),
@@ -911,34 +1015,42 @@ mod evaluator {
     /// The evaluator reduces arithmetic, applies unary operators, resolves
     /// function calls, and handles type annotations. It does not resolve
     /// commodity aliases — that is done by `eval_and_normalize_amount`.
+    ///
+    /// `posting_metadata` carries the key-value tag pairs from the posting's
+    /// notes. It is forwarded into recursive calls and is read by the `tag()`
+    /// built-in function.
     fn eval(
         val: ast::ValueExpr,
         eval_context: &resolution::Context,
         state: &RunningState,
+        posting_metadata: &BTreeMap<String, String>,
     ) -> Result<ast::ValueExpr, EvaluationError> {
         match val {
             // Base cases: already-reduced values pass through unchanged.
             a @ ast::ValueExpr::Amount { .. } => Ok(a),
             s @ ast::ValueExpr::Str(_) => Ok(s),
+            r @ ast::ValueExpr::Regex(_) => Ok(r),
             o @ ast::ValueExpr::Object(_) => Ok(o),
 
-            ast::ValueExpr::Unary { op, expr } => match eval(*expr, eval_context, state)? {
-                ast::ValueExpr::Amount { value, commodity } => match op {
-                    ast::Op::Sub => Ok(ast::ValueExpr::Amount {
-                        value: -value,
-                        commodity,
-                    }),
-                    ast::Op::Add => Ok(ast::ValueExpr::Amount { value, commodity }),
-                    // Unary * and / are not defined for amounts.
-                    _ => Err(EvaluationError::UnaryMultiplyOrDivide),
-                },
-                val => Err(EvaluationError::UnaryOnNonAmount(val)),
-            },
+            ast::ValueExpr::Unary { op, expr } => {
+                match eval(*expr, eval_context, state, posting_metadata)? {
+                    ast::ValueExpr::Amount { value, commodity } => match op {
+                        ast::Op::Sub => Ok(ast::ValueExpr::Amount {
+                            value: -value,
+                            commodity,
+                        }),
+                        ast::Op::Add => Ok(ast::ValueExpr::Amount { value, commodity }),
+                        // Unary * and / are not defined for amounts.
+                        _ => Err(EvaluationError::UnaryMultiplyOrDivide),
+                    },
+                    val => Err(EvaluationError::UnaryOnNonAmount(val)),
+                }
+            }
 
             ast::ValueExpr::Binary { lhs, rhs, op } => {
                 match (
-                    eval(*lhs, eval_context, state)?,
-                    eval(*rhs, eval_context, state)?,
+                    eval(*lhs, eval_context, state, posting_metadata)?,
+                    eval(*rhs, eval_context, state, posting_metadata)?,
                 ) {
                     // One side has a commodity, the other is dimensionless —
                     // the commodity propagates to the result. Both match arms
@@ -1046,13 +1158,15 @@ mod evaluator {
             ast::ValueExpr::Function { name, args } => match (name.as_str(), args.as_slice()) {
                 // scrub(x) — identity function used by some ledger-cli extensions
                 // to mark amounts as "scrubbed" (processed). Treated as a no-op.
-                ("scrub", [arg]) => eval(arg.clone(), eval_context, state),
+                ("scrub", [arg]) => eval(arg.clone(), eval_context, state, posting_metadata),
 
                 // account("Name") — returns an object with a "total" field
                 // containing the current running balance of the named account.
                 // Only the primary commodity ($) is currently surfaced.
                 ("account", [account]) => {
-                    if let ValueExpr::Str(account) = eval(account.clone(), eval_context, state)? {
+                    if let ValueExpr::Str(account) =
+                        eval(account.clone(), eval_context, state, posting_metadata)?
+                    {
                         let account = eval_context
                             .account_aliases
                             .get(&account)
@@ -1077,6 +1191,28 @@ mod evaluator {
                         )))
                     }
                 }
+
+                // tag("name") — looks up a metadata key on the current posting.
+                //
+                // The posting's notes are parsed into key-value pairs by the
+                // resolution stage (e.g. `; Entity: Foo` → `{"Entity": "Foo"}`).
+                // If the key is present its value is returned as a Str; if absent
+                // an empty string is returned so that `tag("X") =~ /pattern/`
+                // works naturally (empty string never matches a non-empty pattern).
+                ("tag", [key_expr]) => {
+                    if let ValueExpr::Str(key) =
+                        eval(key_expr.clone(), eval_context, state, posting_metadata)?
+                    {
+                        let value = posting_metadata.get(&key).cloned().unwrap_or_default();
+                        Ok(ast::ValueExpr::Str(value))
+                    } else {
+                        Err(EvaluationError::InvalidFunctionArgs((
+                            name,
+                            key_expr.clone(),
+                        )))
+                    }
+                }
+
                 _ => Err(EvaluationError::UnknownFunctionArgs((name, args))),
             },
 
@@ -1086,7 +1222,7 @@ mod evaluator {
             // the Binary handler above resolves it when paired with a number.
             ast::ValueExpr::Commodity(ref name) => {
                 if let Some(defined_expr) = eval_context.defines.get(name.as_str()) {
-                    eval(defined_expr.clone(), eval_context, state)
+                    eval(defined_expr.clone(), eval_context, state, posting_metadata)
                 } else {
                     Ok(val)
                 }
@@ -1095,7 +1231,7 @@ mod evaluator {
             ast::ValueExpr::Typed {
                 expr,
                 commodity: new_commodity,
-            } => match eval(*expr, eval_context, state)? {
+            } => match eval(*expr, eval_context, state, posting_metadata)? {
                 // Accept if the inner expression has no commodity or the same commodity.
                 ast::ValueExpr::Amount { value, commodity }
                     if commodity.is_none() || commodity.as_ref() == Some(&new_commodity) =>
@@ -1111,13 +1247,15 @@ mod evaluator {
                 ))),
             },
 
-            ast::ValueExpr::Access { expr, field } => match eval(*expr, eval_context, state)? {
-                ast::ValueExpr::Object(map) => map
-                    .get(&field)
-                    .cloned()
-                    .ok_or(EvaluationError::NoSuchField(field)),
-                val => Err(EvaluationError::FieldAccessTypeError(val)),
-            },
+            ast::ValueExpr::Access { expr, field } => {
+                match eval(*expr, eval_context, state, posting_metadata)? {
+                    ast::ValueExpr::Object(map) => map
+                        .get(&field)
+                        .cloned()
+                        .ok_or(EvaluationError::NoSuchField(field)),
+                    val => Err(EvaluationError::FieldAccessTypeError(val)),
+                }
+            }
         }
     }
 }
@@ -2071,6 +2209,236 @@ commodity $
         assert!(
             result.is_err(),
             "bare =0 with no commodity context anywhere should error"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for regex match operators (`=~` / `!~`) — issue #79
+    // -----------------------------------------------------------------------
+
+    /// `assert "abc" =~ /^a/` passes: the string starts with 'a'.
+    #[test]
+    fn test_regex_match_string_literal_passes() {
+        let input = "\
+account Expenses:Food
+    assert \"abc\" =~ /^a/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// `assert "abc" =~ /^z/` fails: the string does not start with 'z'.
+    #[test]
+    fn test_regex_match_string_literal_fails() {
+        let input = "\
+account Expenses:Food
+    assert \"abc\" =~ /^z/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        assert!(
+            result.is_err(),
+            "regex match should fail when string doesn't match pattern"
+        );
+    }
+
+    /// `assert "abc" !~ /^z/` passes: the string does not start with 'z'.
+    #[test]
+    fn test_regex_not_match_passes_when_no_match() {
+        let input = "\
+account Expenses:Food
+    assert \"abc\" !~ /^z/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// `assert "abc" !~ /^a/` fails: the string matches, so `!~` is false.
+    #[test]
+    fn test_regex_not_match_fails_when_match() {
+        let input = "\
+account Expenses:Food
+    assert \"abc\" !~ /^a/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        assert!(
+            result.is_err(),
+            "!~ should fail when string matches pattern"
+        );
+    }
+
+    /// Regex with a non-trivial pattern including anchors and character classes.
+    #[test]
+    fn test_regex_match_non_empty_string_pattern() {
+        // Pattern `[^\/].+` requires at least two chars and the first isn't a slash.
+        let input = "\
+account Expenses:Travel
+    assert commodity =~ /[a-z]/
+
+2024-01-01 Test
+    Expenses:Travel  100 usd
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for `tag("name")` function — issue #80
+    // -----------------------------------------------------------------------
+
+    /// `assert tag("X") =~ /^foo/` passes when posting has `; X: foobar`.
+    #[test]
+    fn test_tag_fn_matches_metadata_value() {
+        let input = "\
+account Expenses:Food
+    assert tag(\"Entity\") =~ /^foo/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    ; Entity: foobar
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// `assert tag("X") !~ /^foo/` passes when posting has no X tag (empty
+    /// string does not match `/^foo/`).
+    #[test]
+    fn test_tag_fn_absent_key_returns_empty_string() {
+        let input = "\
+account Expenses:Food
+    assert tag(\"Entity\") !~ /^foo/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// `assert tag("X") =~ /^foo/` fails when posting has no X tag (empty
+    /// string does not match a non-empty pattern).
+    #[test]
+    fn test_tag_fn_absent_key_fails_match() {
+        let input = "\
+account Expenses:Food
+    assert tag(\"Entity\") =~ /^foo/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        assert!(
+            result.is_err(),
+            "tag() on absent key returns empty string, which should not match /^foo/"
+        );
+    }
+
+    /// Chained check: `tag("A") !~ /^\s*$/ and tag("B") !~ /^\s*$/`.
+    /// Both tags present and non-blank → passes.
+    #[test]
+    fn test_tag_fn_chained_and_both_present() {
+        let input = "\
+account Income:Salary
+    assert tag(\"Entity\") !~ /^\\s*$/ and tag(\"IncomeType\") !~ /^\\s*$/
+
+2024-01-01 Paycheck
+    Income:Salary  $-5000.00
+    ; Entity: AcmeCorp
+    ; IncomeType: Salary
+    Assets:Checking  $5000.00
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// Chained check: one tag present, one absent → fails.
+    #[test]
+    fn test_tag_fn_chained_and_one_missing() {
+        let input = "\
+account Income:Salary
+    assert tag(\"Entity\") !~ /^\\s*$/ and tag(\"IncomeType\") !~ /^\\s*$/
+
+2024-01-01 Paycheck
+    Income:Salary  $-5000.00
+    ; Entity: AcmeCorp
+    Assets:Checking  $5000.00
+";
+        let result = try_elaborate(input);
+        assert!(
+            result.is_err(),
+            "chained tag() check should fail when one tag is absent"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for `tag()` with bare (`:foo:`) tags
+    // -----------------------------------------------------------------------
+
+    /// `tag()` only inspects key-value metadata (`; Key: value`), not bare
+    /// colon-delimited tags (`; :foo:`).  A posting with `:foo:` and an
+    /// assertion `tag("foo") =~ /foo/` fails because `tag("foo")` returns ""
+    /// (the bare tag name is not in the metadata map).
+    ///
+    /// This is intentional: bare tags carry no associated value, so `tag()`
+    /// returning "" is the correct "not found" signal.  Use bare tags for
+    /// filtering via external tooling rather than in `assert`/`check` expressions.
+    #[test]
+    fn test_tag_fn_does_not_see_bare_colon_tags() {
+        let input = "\
+account Expenses:Food
+    assert tag(\"foo\") =~ /foo/
+
+2024-01-01 Test
+    Expenses:Food  $10.00
+    ; :foo:
+    Assets:Checking
+";
+        let result = try_elaborate(input);
+        assert!(
+            result.is_err(),
+            "tag() must return \"\" for bare colon-style tags; /foo/ should not match"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for invalid regex error — issue #79
+    // -----------------------------------------------------------------------
+
+    /// An invalid regex pattern in an `assert` expression should fail at
+    /// parse time, not silently accepted to fail later during elaboration.
+    #[test]
+    fn test_invalid_regex_fails_at_parse_time() {
+        use crate::parser::parse_ledger;
+        let input = "\
+account Expenses:Food
+    assert commodity =~ /[unclosed/
+";
+        let result = parse_ledger(input);
+        let err = result.expect_err("invalid regex should fail parsing");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[unclosed") && msg.contains("invalid regex"),
+            "error message should include the invalid pattern and identify it as a regex; got: {msg}"
         );
     }
 }
