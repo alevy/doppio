@@ -222,7 +222,7 @@ let txn = resolution::Transaction::new(date, "Payee")
 
 **REQ-NF-001**: **Parse large journals efficiently**
 - Target: 100k+ transactions should parse in < 5 seconds on commodity hardware
-- **Evidence**: Benchmarks exist in `benches/parse.rs`, `benches/pipeline.rs`; compiled binary should be optimized with `--release`
+- **Evidence**: Benchmarks exist in `crates/doppio/benches/parse.rs`, `crates/doppio/benches/pipeline.rs`; compiled binary should be optimized with `--release`
 
 **REQ-NF-002**: **Compiled `.dop` files deserialize rapidly**
 - Deserialization should be order-of-magnitude faster than parsing source

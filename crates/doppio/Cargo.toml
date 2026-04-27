@@ -1,0 +1,41 @@
+[package]
+name = "doppio"
+description = "A typed compiler pipeline for plain-text Ledger accounting — parse, resolve, and elaborate .ledger files with a library API built for programmatic use."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file = "../../LICENSE"
+keywords.workspace = true
+categories.workspace = true
+autobenches = false
+
+[dependencies]
+chrono = { workspace = true }
+glob = { workspace = true }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+postcard = { workspace = true }
+regex = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+rust_decimal = { version = "1.40.0", features = ["macros"] }
+
+[[bench]]
+name = "parse"
+harness = false
+
+[[bench]]
+name = "pipeline"
+harness = false
+
+[[bench]]
+name = "serial"
+harness = false
+
+[[bench]]
+name = "queries"
+harness = false

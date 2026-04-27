@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Internal
+
+- **Repo restructured into a Cargo workspace.** The library now lives in
+  `crates/doppio/` and the CLI in `crates/doppio-cli/`. The library has
+  no `clap` / `serde_json` / `xz` dependencies, which means the lib
+  alone compiles cleanly to `wasm32-unknown-unknown`. End-user impact:
+  none for `cargo install doppio-cli` or for library consumers depending
+  on the `doppio` crate from crates.io. The `dop` binary is now produced
+  by `doppio-cli`. `serde-pickle` (previously declared but unused) was
+  also dropped from the dep tree.
+
 ---
 
 ## [0.2.0] - 2026-04-27
