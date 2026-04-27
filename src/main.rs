@@ -243,9 +243,8 @@ impl JournalFilter {
 
         let end_date = end
             .map(|s| {
-                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
-                    format!("invalid --end date '{}': expected format YYYY-MM-DD", s)
-                })
+                chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                    .map_err(|_| format!("invalid --end date '{}': expected format YYYY-MM-DD", s))
             })
             .transpose()?;
 
@@ -266,10 +265,14 @@ impl JournalFilter {
             let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
             let txn_date = unix_epoch.checked_add_signed(chrono::Duration::days(txn.date as i64));
             if let Some(txn_date) = txn_date {
-                if let Some(begin) = self.begin_date && txn_date < begin {
+                if let Some(begin) = self.begin_date
+                    && txn_date < begin
+                {
                     return false;
                 }
-                if let Some(end) = self.end_date && txn_date > end {
+                if let Some(end) = self.end_date
+                    && txn_date > end
+                {
                     return false;
                 }
             }
