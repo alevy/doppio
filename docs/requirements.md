@@ -1,6 +1,6 @@
 # doppio Requirements
 
-**Last updated**: 2026-04-27
+**Last updated**: 2026-04-27 (post-v0.2.0; toward-1.0 phasing)
 
 ---
 
@@ -511,12 +511,30 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 ### 5.2 Serialization & Persistence
 
-**REQ-GAP-006** ⏳ Phase 4 (#39–#42) — **Snapshot and restore workflow**
-- Compile journal to `.dop`, ship it, deserialize for queries. Implementation tracked in #39–#42.
-- Gap: no `--snapshot` subcommand; no documented guidance on when to recompile vs. reuse `.dop`.
+**REQ-GAP-006** 🔧 Phase A (#100) — **Canonical wire format**
+- v0.1.0 / v0.2.0 ship `.dop` as postcard + XZ. Postcard is Rust-specific
+  and locks the wire format to the internal struct layout. Migrating to
+  canonical Protocol Buffers (`proto/doppio.proto`) decouples the wire
+  format from internal Rust types and makes `.dop` consumable from any
+  language with a `protoc` plugin (Python, JS/TS, Go, etc.) without an
+  in-process binding to the doppio crate.
+- This supersedes the original "framed format / snapshot workflow"
+  framing (`#17`, `#39`–`#41` — closed as deferred). The format-as-API
+  analysis in [`doppio-research/serialization-followup.md`](https://github.com/alevy/doppio-research) (private)
+  shows that ~80% of plausible downstream consumer use cases (P&L,
+  invoices, registers, charts, reconciliation, custom balance views,
+  etc.) are read-only against an elaborated journal — served fully by
+  the protobuf schema, no PyO3/CGo binding needed.
+- Tracked in milestone "Phase A: Wire format & WASM (toward 1.0)"
+  ([#98](../../doppio/issues/98), [#100](../../doppio/issues/100)).
 
-**REQ-GAP-007** ⏳ Phase 4 — **Incremental `.dop` updates**
-- Appending new transactions to a large journal requires full recompilation. Delta-encoding or append-only mode not yet designed.
+**REQ-GAP-007** ⏳ Post-1.0 — **Incremental `.dop` updates**
+- Appending new transactions to a large journal requires full
+  recompilation. Delta-encoding or append-only mode not yet designed.
+- Real-world journals stay well below the threshold where full
+  recompilation is painful (the bb-ledger production journal compiles
+  in tens of milliseconds). Reconsider only if a downstream consumer
+  reports perceptible compile latency on a real workload.
 
 ---
 
@@ -550,6 +568,22 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 **Export to other formats** (QuickBooks, YNAB, OFX) — Out of scope; consider add-on ecosystem
 
 **Real-time streaming journals** — Out of scope; designed for static batch files
+
+**Native-language bindings (PyO3, CGo, JNI, etc.)** — Superseded by the
+format-as-API approach (REQ-GAP-006, Phase A). The protobuf-canonical
+`.dop` body is consumable from any language with a `protoc` plugin, no
+in-process bindings required for read-only consumers. Re-elaboration
+consumers (re-running balance assertions, FX recalc) are better served
+by invoking `dop` as a CLI subprocess on a `.ledger` source than by a
+language-specific wrapper. See
+[`doppio-research/serialization-followup.md`](https://github.com/alevy/doppio-research) (private).
+
+**Streaming / framed `.dop` format** — Originally tracked as #17 and
+#39–#41 (Phase 4 deferred, then closed). The current format is
+exceptionally compact (10k transactions: postcard+XZ ≈ 31 KB; protobuf
++ XZ ≈ 35 KB), and no consumer has reported perceptible load latency.
+Reconsider only if a multi-million-transaction journal appears in
+practice.
 
 ---
 
@@ -747,6 +781,80 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 ---
 
+## 12. Toward 1.0
+
+doppio v0.2.0 (2026-04-27) closed the Phase 4 / Better Bytes migration
+gaps. The push to **1.0** is about committing to a stable contract for
+downstream consumers across both Rust and other languages, not about
+shipping every remaining feature.
+
+The working roadmap lives in
+[`alevy/doppio-research/roadmap.md`](https://github.com/alevy/doppio-research)
+(private). The summary below is the public-facing sketch; the research
+repo carries the full reasoning, format-comparison data, and prototype
+artefacts that informed the decisions.
+
+### What 1.0 commits to
+
+- **Stable Rust library API** under semver discipline (additive minor,
+  no breaking changes within a major).
+- **Stable canonical wire format** (Protocol Buffers, defined in
+  `proto/doppio.proto`) with proto3 evolution rules — additive only,
+  field tags reserved on deprecation, version bumps only for
+  incompatible changes.
+- **Cross-language consumer story** working in production: at least
+  one consumer outside the doppio crate reads `.dop` files via the
+  published `.proto` schema.
+- **At least one alternative frontend** (hledger) working end-to-end,
+  proving the parser layer's pluggability.
+- **WASM-buildable** so edge / browser / serverless consumers are
+  unblocked.
+
+### Phase A — Wire format & WASM
+
+Migrate `.dop` from postcard+XZ to canonical Protocol Buffers; drop
+xz; add `wasm32-unknown-unknown` to CI. Tracked in milestone
+[Phase A: Wire format & WASM (toward 1.0)](../../doppio/milestone/5).
+
+| Issue | Description | Depends on |
+|---|---|---|
+| [#98](../../doppio/issues/98) | Lock the protobuf schema for `Journal` (field numbers, decimal encoding, file location) | — (review gate) |
+| [#99](../../doppio/issues/99) | Audit dependencies for `wasm32-unknown-unknown` compatibility | — (parallel with #98) |
+| [#100](../../doppio/issues/100) | Migrate `Journal` serialization from postcard+xz to protobuf | #98 |
+| [#101](../../doppio/issues/101) | Add `wasm32-unknown-unknown` to CI build matrix | #99, #100 |
+
+### Phase B — Multi-frontend extensibility
+
+Refactor the parser layer to accept multiple frontends; add hledger
+as the second. Tracked in milestone
+[Phase B: Multi-frontend extensibility (toward 1.0)](../../doppio/milestone/6).
+
+| Issue | Description | Depends on |
+|---|---|---|
+| [#102](../../doppio/issues/102) | Refactor: `Frontend` trait + `src/grammars/` directory + extension dispatch | — (review gate) |
+| [#103](../../doppio/issues/103) | Implement hledger frontend | #102 |
+
+Phase A and Phase B are independent and can run as parallel agent
+streams; the two converge at integration time. The frontends-report in
+the research repo concluded hledger fits the existing AST overwhelmingly
+without changes; no Journal schema changes are expected.
+
+### Beyond 1.0
+
+- Beancount frontend — feasibility-tested in the research repo;
+  defer until demand appears (the `pad` directive needs new evaluator
+  logic that has no clean ledger-cli analogue).
+- Bayesian transaction-matching library (`doppio-match`) — separate
+  Rust crate; downstream proof of the library API.
+- Web visualizer (`doppio-web`) — browser front-end using
+  WASM-compiled doppio plus a JS protobuf consumer; downstream proof
+  of the WASM + format-as-API path.
+- Query DSL (`--limit "expr"`, REQ-GAP-004 / #45) — substantially
+  reduced urgency given format-as-API; reconsider if a recurring
+  CLI-side filtering pattern emerges.
+
+---
+
 ## Appendix A: Issue Cross-Reference
 
 | Issue | Title | Status | M2 | M3 | Notes |
@@ -766,9 +874,15 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 | #36 | Parse AssertionDirective | Done | | X | PR #55 |
 | #37 | Enforce balance assertions in elaboration | Open | | X | #12 sub, blocks #38 |
 | #38 | Tests for balance assertions | Open | | X | #12 sub, blocked by #37 |
-| #43 | JournalFilter query API | Open | | | Phase 4 |
+| #43 | JournalFilter query API | Done | | | v0.2.0 (PR #72) — `--tag KEY` filter shipped |
 | #44 | JSON/CSV output formats | Done | | X | PR #53 |
-| #45 | Query DSL | Deferred | | | Phase 4 |
+| #45 | Query DSL | Deferred | | | Post-1.0 — superseded by format-as-API |
+| #98 | Lock the protobuf schema for Journal | Open | | | Phase A (review gate) |
+| #99 | WASM dependency audit | Open | | | Phase A |
+| #100 | Migrate Journal to protobuf | Open | | | Phase A — depends on #98 |
+| #101 | wasm32 in CI | Open | | | Phase A — depends on #99, #100 |
+| #102 | Frontend trait + grammars/ refactor | Open | | | Phase B (review gate) |
+| #103 | hledger frontend | Open | | | Phase B — depends on #102 |
 
 ---
 
@@ -781,13 +895,13 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 | **Context** | Immutable snapshot of active aliases and default commodity at a point in the journal |
 | **Elaboration** | Third stage: evaluating expressions, balancing txns, enforcing assertions, producing final journal |
 | **HIR** | Higher-level Intermediate Representation; output of resolution stage |
-| **.dop** | Binary doppio format; postcard-serialized, XZ-compressed |
+| **.dop** | Binary doppio format; postcard-serialized + XZ-compressed in v0.2.x. Migrating to canonical protobuf in Phase A (#100). |
 | **Null posting** | A posting with no explicit amount; inferred as negation of sum of other postings |
 | **Resolution** | Second stage: normalizing dates, indexing aliases, extracting metadata |
 | **ValueExpr** | Unevaluated expression tree (numbers, operators, functions, field access) |
 
 ---
 
-**Document Version**: 1.0
-**Last Updated**: 2026-04-21
-**Next Review**: Upon completion of M3
+**Document Version**: 1.1
+**Last Updated**: 2026-04-27
+**Next Review**: Upon completion of Phase A and Phase B (toward 1.0)
