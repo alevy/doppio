@@ -71,6 +71,9 @@ pub struct HistoricalPrice {
 pub struct AccountProperties {
     /// A free-form note describing the account.
     pub note: Option<String>,
+    // Note: assert/check expressions are evaluated during elaboration and are
+    // not persisted to the serialised journal — they are a compile-time check,
+    // not runtime data.
 }
 
 /// Per-account running balance, used during elaboration to evaluate balance
@@ -230,6 +233,16 @@ pub enum ElaborationError {
     TooManyNullPostings,
     /// All postings have explicit amounts but they do not sum to zero.
     TransactionDoesNotBalance(Amount),
+    /// An `assert` expression on an account directive evaluated to `false`
+    /// for a posting to that account.
+    AccountAssertionFailed {
+        /// The account whose assertion fired.
+        account: String,
+        /// Zero-based index of the posting within the transaction.
+        posting_index: usize,
+        /// The source text of the failing expression (for diagnostics).
+        expression: String,
+    },
 }
 
 /// Error produced when evaluating a value expression (e.g., an amount or
@@ -296,6 +309,17 @@ impl Display for ElaborationError {
                      actual {actual_amount} {expected_commodity}"
                 )
             }
+            ElaborationError::AccountAssertionFailed {
+                account,
+                posting_index,
+                expression,
+            } => {
+                write!(
+                    f,
+                    "account assertion failed for posting {posting_index} to {account}: \
+                     assert {expression}"
+                )
+            }
             ElaborationError::TooManyNullPostings => {
                 write!(f, "transaction has more than one null posting")
             }
@@ -317,11 +341,11 @@ impl TryFrom<resolution::HIR> for Journal {
         // Pre-populate the accounts map from directives so that accounts
         // declared with notes but never posted to still appear in the output.
         let mut accounts = BTreeMap::new();
-        for (name, properties) in value.global_context.account_properties {
+        for (name, properties) in &value.global_context.account_properties {
             accounts.insert(
-                name,
+                name.clone(),
                 AccountProperties {
-                    note: properties.note,
+                    note: properties.note.clone(),
                 },
             );
         }
@@ -532,6 +556,57 @@ impl TryFrom<resolution::HIR> for Journal {
                         }
                     }
 
+                    // Evaluate account-level assert/check directives for each posting.
+                    for (posting_index, posting) in resolved_postings.iter().enumerate() {
+                        if let Some(props) =
+                            value.global_context.account_properties.get(&posting.account)
+                        {
+                            // Assertions and checks operate per-commodity. For
+                            // multi-commodity postings each commodity is checked
+                            // independently; in practice postings carry a single
+                            // commodity.
+                            for (commodity, &amount_val) in posting.amount.0.iter() {
+                                for assert_expr in &props.asserts {
+                                    let passed = evaluator::eval_bool_expr(
+                                        assert_expr,
+                                        amount_val,
+                                        commodity,
+                                        entry_context,
+                                        &state,
+                                    )
+                                    .map_err(ElaborationError::EvaluationError)?;
+                                    if !passed {
+                                        return Err(
+                                            ElaborationError::AccountAssertionFailed {
+                                                account: posting.account.clone(),
+                                                posting_index,
+                                                expression: assert_expr.to_string(),
+                                            },
+                                        );
+                                    }
+                                }
+                                for check_expr in &props.checks {
+                                    let passed = evaluator::eval_bool_expr(
+                                        check_expr,
+                                        amount_val,
+                                        commodity,
+                                        entry_context,
+                                        &state,
+                                    )
+                                    .map_err(ElaborationError::EvaluationError)?;
+                                    if !passed {
+                                        eprintln!(
+                                            "warning: check failed for posting {posting_index} \
+                                             to {account}: check {expr}",
+                                            account = posting.account,
+                                            expr = check_expr,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Update running account balances and register new accounts.
                     for posting in resolved_postings.iter() {
                         if !accounts.contains_key(&posting.account) {
@@ -595,7 +670,7 @@ mod evaluator {
     use rust_decimal::Decimal;
 
     use crate::{
-        ast::{self, ValueExpr},
+        ast::{self, BoolExpr, CmpOp, ValueExpr},
         resolution,
     };
 
@@ -631,6 +706,123 @@ mod evaluator {
                 Ok((value, commodity))
             }
             val => Err(ElaborationError::NonAmountWhereAmountExpected(val)),
+        }
+    }
+
+    /// Evaluate a [`BoolExpr`] in the context of a posting.
+    ///
+    /// `posting_amount` and `posting_commodity` are bound as `amount` and
+    /// `commodity` in the expression context, which is how account assertions
+    /// refer to the current posting's values.
+    ///
+    /// Returns `true` if the assertion passes, `false` if it fails, or an
+    /// error if expression evaluation itself fails.
+    pub fn eval_bool_expr(
+        expr: &BoolExpr,
+        posting_amount: Decimal,
+        posting_commodity: &str,
+        eval_context: &resolution::Context,
+        state: &RunningState,
+    ) -> Result<bool, EvaluationError> {
+        // Build a temporary context with `amount` and `commodity` injected.
+        let mut ctx = eval_context.clone();
+        ctx.defines.insert(
+            "amount".into(),
+            ast::ValueExpr::Amount {
+                value: posting_amount,
+                commodity: Some(posting_commodity.to_string()),
+            },
+        );
+        ctx.defines.insert(
+            "commodity".into(),
+            ast::ValueExpr::Str(posting_commodity.to_string()),
+        );
+
+        // Evaluate LHS.
+        let lhs_val = eval(expr.lhs.clone(), &ctx, state)?;
+
+        // If there's no comparison operator, the expression is truthy iff the
+        // LHS evaluates to a non-zero amount (unusual but consistent).
+        let Some((ref cmp_op, ref rhs_expr)) = expr.cmp else {
+            // Plain value — treat non-zero amount as true.
+            return Ok(match lhs_val {
+                ast::ValueExpr::Amount { value, .. } => !value.is_zero(),
+                _ => false,
+            });
+        };
+
+        let rhs_val = eval(rhs_expr.clone(), &ctx, state)?;
+
+        let result = eval_cmp(cmp_op, &lhs_val, &rhs_val)?;
+
+        // If there is a boolean chain, short-circuit accordingly.
+        match &expr.chain {
+            None => Ok(result),
+            Some((ast::BoolOp::And, cont)) => {
+                if !result {
+                    Ok(false)
+                } else {
+                    eval_bool_expr(cont, posting_amount, posting_commodity, eval_context, state)
+                }
+            }
+            Some((ast::BoolOp::Or, cont)) => {
+                if result {
+                    Ok(true)
+                } else {
+                    eval_bool_expr(cont, posting_amount, posting_commodity, eval_context, state)
+                }
+            }
+        }
+    }
+
+    /// Compare two evaluated [`ast::ValueExpr`] values with a [`CmpOp`].
+    ///
+    /// Supported comparisons:
+    /// - `Str == Str` / `Str != Str` — commodity identity checks
+    /// - `Amount cmp Amount` — numeric comparisons (same or compatible commodities)
+    ///
+    /// Returns an error for type mismatches.
+    fn eval_cmp(
+        op: &CmpOp,
+        lhs: &ast::ValueExpr,
+        rhs: &ast::ValueExpr,
+    ) -> Result<bool, EvaluationError> {
+        match (lhs, rhs) {
+            // String equality: used for `commodity == "$"`.
+            (ast::ValueExpr::Str(a), ast::ValueExpr::Str(b)) => Ok(match op {
+                CmpOp::Eq => a == b,
+                CmpOp::Ne => a != b,
+                _ => {
+                    return Err(EvaluationError::BinaryOperationTypeError((
+                        lhs.clone(),
+                        rhs.clone(),
+                        ast::Op::Add, // placeholder op; no ordering on strings
+                    )));
+                }
+            }),
+            // Numeric comparisons: used for `amount > 0`, etc.
+            (
+                ast::ValueExpr::Amount {
+                    value: v1,
+                    commodity: c1,
+                },
+                ast::ValueExpr::Amount {
+                    value: v2,
+                    commodity: c2,
+                },
+            ) if c1 == c2 || c2.is_none() => Ok(match op {
+                CmpOp::Eq => v1 == v2,
+                CmpOp::Ne => v1 != v2,
+                CmpOp::Lt => v1 < v2,
+                CmpOp::Le => v1 <= v2,
+                CmpOp::Gt => v1 > v2,
+                CmpOp::Ge => v1 >= v2,
+            }),
+            _ => Err(EvaluationError::BinaryOperationTypeError((
+                lhs.clone(),
+                rhs.clone(),
+                ast::Op::Add,
+            ))),
         }
     }
 
@@ -1361,5 +1553,158 @@ define myval = $99.00
 ";
         let journal = elaborate(input);
         assert_eq!(journal.transactions.len(), 1);
+    }
+
+    // ── Account-level assert/check tests ─────────────────────────────────────
+
+    /// Helper: attempt elaboration and expect success.
+    fn elaborate_ok(input: &str) -> Journal {
+        elaborate(input)
+    }
+
+    /// Helper: attempt elaboration and expect an `AccountAssertionFailed` error.
+    fn elaborate_assert_fails(input: &str) -> (String, usize, String) {
+        use crate::{parser::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        match Journal::try_from(hir).expect_err("expected assertion failure") {
+            ElaborationError::AccountAssertionFailed {
+                account,
+                posting_index,
+                expression,
+            } => (account, posting_index, expression),
+            e => panic!("expected AccountAssertionFailed, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn test_account_assert_commodity_passes() {
+        // Posting to Assets:Checking with "$" commodity — assertion must pass.
+        let input = "\
+account Assets:Checking
+    assert commodity == \"$\"
+
+2024-01-01 Deposit
+    Assets:Checking  $500.00
+    Income:Salary
+";
+        let journal = elaborate_ok(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    #[test]
+    fn test_account_assert_commodity_fails() {
+        // Posting with wrong commodity triggers the assertion.
+        let input = "\
+account Assets:Checking
+    assert commodity == \"$\"
+
+2024-01-01 Foreign deposit
+    Assets:Checking  500 EUR
+    Income:Salary
+";
+        let (account, posting_index, expression) = elaborate_assert_fails(input);
+        assert_eq!(account, "Assets:Checking");
+        assert_eq!(posting_index, 0);
+        assert!(
+            expression.contains("commodity"),
+            "expression should mention 'commodity', got: {expression}"
+        );
+    }
+
+    #[test]
+    fn test_account_assert_amount_positive_passes() {
+        // Income account asserts amount < 0 (income postings are negative).
+        let input = "\
+account Income:Salary
+    assert amount < 0
+
+2024-01-01 Paycheck
+    Income:Salary  $-3000.00
+    Assets:Checking
+";
+        let journal = elaborate_ok(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    #[test]
+    fn test_account_assert_amount_fails() {
+        // A positive posting to an income account should trip the assertion.
+        let input = "\
+account Income:Salary
+    assert amount < 0
+
+2024-01-01 Bad entry
+    Income:Salary  $100.00
+    Assets:Checking
+";
+        let (account, _, expression) = elaborate_assert_fails(input);
+        assert_eq!(account, "Income:Salary");
+        assert!(expression.contains("amount"), "expression should mention 'amount'");
+    }
+
+    #[test]
+    fn test_multiple_asserts_all_must_pass() {
+        // Two assert lines — both must hold. First passes, second fails.
+        let input = "\
+account Assets:Savings
+    assert commodity == \"$\"
+    assert amount > 0
+
+2024-01-01 Withdrawal
+    Assets:Savings  $-100.00
+    Assets:Checking
+";
+        // commodity == "$" passes, but amount > 0 fails for -100.
+        let (account, _, _) = elaborate_assert_fails(input);
+        assert_eq!(account, "Assets:Savings");
+    }
+
+    #[test]
+    fn test_account_check_failure_does_not_halt() {
+        // `check` produces a warning but elaboration succeeds.
+        let input = "\
+account Expenses:Food
+    check amount > 0
+
+2024-01-01 Refund
+    Expenses:Food  $-10.00
+    Assets:Checking
+";
+        // Should NOT error — check is non-fatal.
+        let journal = elaborate_ok(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    #[test]
+    fn test_account_check_passing_no_warning() {
+        // check passes silently.
+        let input = "\
+account Expenses:Food
+    check amount > 0
+
+2024-01-01 Dinner
+    Expenses:Food  $25.00
+    Assets:Checking
+";
+        let journal = elaborate_ok(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    #[test]
+    fn test_assert_only_applies_to_declared_account() {
+        // Assertion on Assets:Checking does not affect Expenses:Food postings.
+        let input = "\
+account Assets:Checking
+    assert commodity == \"$\"
+
+2024-01-01 Euro lunch
+    Expenses:Food  50 EUR
+    Assets:Checking  -50 EUR
+";
+        // The Expenses:Food posting has no assertion — no error there.
+        // The Assets:Checking posting uses EUR, which fails the assertion.
+        let (account, _, _) = elaborate_assert_fails(input);
+        assert_eq!(account, "Assets:Checking");
     }
 }

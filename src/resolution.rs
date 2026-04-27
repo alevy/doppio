@@ -131,6 +131,12 @@ pub struct CommodityProperties {
 pub struct AccountProperties {
     /// A free-form note describing the account.
     pub note: Option<String>,
+    /// Fatal assertions: every posting to this account must satisfy all of
+    /// these expressions. Elaboration halts if any fails.
+    pub asserts: Vec<ast::BoolExpr>,
+    /// Non-fatal checks: if any fail, a warning is printed to stderr but
+    /// elaboration continues.
+    pub checks: Vec<ast::BoolExpr>,
 }
 
 /// A single entry in the resolved journal, paired with its active context.
@@ -560,6 +566,12 @@ impl TryFrom<ast::Journal> for HIR {
                                     });
                             }
                             ast::AccountItem::Note(note) => global_context.note = Some(note),
+                            ast::AccountItem::Assert(expr) => {
+                                global_context.asserts.push(expr);
+                            }
+                            ast::AccountItem::Check(expr) => {
+                                global_context.checks.push(expr);
+                            }
                             ast::AccountItem::Unknown(_, _) => { /* TODO */ }
                         }
                     }
