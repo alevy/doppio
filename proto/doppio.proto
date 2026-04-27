@@ -1,0 +1,130 @@
+// doppio canonical wire format.
+//
+// This file defines the wire shape of `.dop` artifacts. Language consumers
+// generate bindings via their respective `protoc` plugins and read elaborated
+// journals directly.
+//
+// =============================================================================
+// Decimal handling
+// =============================================================================
+//
+// Protocol Buffers has no native big-decimal type. The mantissa is encoded as
+// a signed 128-bit two's-complement integer split into two halves (low:
+// uint64, high: sint64), plus an unsigned scale (0..28).
+//
+// Reassemble client-side with:
+//
+//   value = (((mantissa_high as i128) << 64) | (mantissa_low as i128)) * 10^(-scale)
+
+syntax = "proto3";
+
+package doppio;
+
+// A 96-bit-mantissa fixed-point decimal value with scale 0..28.
+message Decimal {
+  // Lower 64 bits of the two's-complement mantissa.
+  uint64 mantissa_low = 1;
+  // Upper 64 bits of the two's-complement mantissa.
+  sint64 mantissa_high = 2;
+  // Number of decimal places (0..28).
+  uint32 scale = 3;
+}
+
+// Cleared / pending / uncleared state of a transaction or posting.
+enum TransactionState {
+  TRANSACTION_STATE_UNSPECIFIED = 0;
+  TRANSACTION_STATE_UNCLEARED = 1;
+  TRANSACTION_STATE_PENDING = 2;
+  TRANSACTION_STATE_CLEARED = 3;
+}
+
+// A multi-commodity balance: commodity symbol -> Decimal value.
+message Amount {
+  map<string, Decimal> by_commodity = 1;
+}
+
+// A posting with a fully evaluated, concrete amount.
+message Posting {
+  // The canonical account name (after alias resolution).
+  string account = 1;
+  // Payee for this posting — taken from posting-level `payee:` metadata if
+  // present, otherwise inherited from the transaction description.
+  string payee = 2;
+  // The posting amount, keyed by commodity.
+  Amount amount = 3;
+  // Per-posting state.
+  TransactionState state = 4;
+  // Bare tags from `; :tag1:tag2:` syntax in posting notes.
+  repeated string tags = 5;
+  // Key-value metadata from `; key: value` in posting notes.
+  map<string, string> metadata = 6;
+}
+
+// A fully evaluated and balanced transaction.
+message Transaction {
+  // Days since the Unix epoch (1970-01-01 = 0). Negative for pre-epoch dates.
+  sint32 date = 1;
+  // Optional secondary (effective) date in the same epoch-days format.
+  optional sint32 secondary_date = 2;
+  // Cleared / pending / uncleared.
+  TransactionState state = 3;
+  // Optional reference code from the transaction header `( ... )`.
+  optional string code = 4;
+  // Payee / description.
+  string description = 5;
+  // Bare tags from `; :tag1:tag2:` syntax in transaction-header notes.
+  repeated string tags = 6;
+  // Key-value metadata from `; key: value` in transaction-header notes.
+  map<string, string> metadata = 7;
+  // The resolved postings (all amounts concrete, null posting filled in).
+  repeated Posting postings = 8;
+}
+
+// Properties of an account declared with an `account` directive.
+//
+// Note: `assert` / `check` expressions declared on accounts are evaluated
+// during elaboration and are not persisted — they are a compile-time check,
+// not runtime data.
+message AccountProperties {
+  // Free-form note from the `note` sub-directive.
+  optional string note = 1;
+}
+
+// Display and market-data properties of a commodity declared with a
+// `commodity` directive.
+message CommodityProperties {
+  // Display format string from the `format` sub-directive (e.g. "$1,000.00").
+  optional string format = 1;
+  // True iff `nomarket` was declared.
+  bool no_market = 2;
+  // Free-form note from the `note` sub-directive.
+  optional string note = 3;
+}
+
+// A historical-price entry from a `P` directive.
+message HistoricalPrice {
+  // Days since the Unix epoch on which this price was recorded.
+  sint32 date = 1;
+  // Optional wall-clock time of the price quote.
+  optional string time = 2;
+  // The commodity whose price is being recorded.
+  string commodity = 3;
+  // The evaluated price of one unit of `commodity`.
+  Decimal price = 4;
+  // The commodity the price is expressed in.
+  string price_commodity = 5;
+}
+
+// Top-level elaborated journal. This is the canonical wire shape of the
+// `.dop` artifact body. The body follows the 8-byte file header
+// (magic + version + reserved).
+message Journal {
+  // All transactions in source order, with amounts fully evaluated.
+  repeated Transaction transactions = 1;
+  // Accounts referenced by any posting, keyed by canonical account name.
+  map<string, AccountProperties> accounts = 2;
+  // Commodity properties from `commodity` directives, keyed by commodity name.
+  map<string, CommodityProperties> commodities = 3;
+  // Market price quotes from `P` directives, in source order.
+  repeated HistoricalPrice prices = 4;
+}
