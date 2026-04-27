@@ -346,7 +346,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Per-commodity running total across all matching postings.
             let mut running: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
 
-            // Build an iterator over transactions filtered by cleared/begin/end.
+            // Build an iterator over transactions filtered by cleared, date range, and tag.
             let filtered_txns: Vec<_> = journal
                 .transactions
                 .iter()
