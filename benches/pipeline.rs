@@ -3,8 +3,8 @@ use std::{path::PathBuf, time::Duration};
 
 mod data;
 
-fn make_parser() -> doppio::parser::Parser<impl Fn(&str) -> Result<String, Box<dyn std::error::Error>>>
-{
+fn make_parser()
+-> doppio::parser::Parser<impl Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
     doppio::parser::Parser {
         opener: |_: &str| Ok(String::new()),
         base_path: PathBuf::new(),
