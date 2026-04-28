@@ -1,24 +1,70 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0-rc.1] - 2026-04-28
 
-### Breaking changes
+This release-candidate cuts the toward-1.0 architectural surface for
+review-by-use. **Not published to crates.io** — referenced by
+downstream consumers via the `v0.4.0-rc.1` git tag.
 
-- **`.dop` binary format version bumped from 2 → 3.** The body encoding
-  has been migrated from `postcard` + `xz` to canonical Protocol Buffers
-  (via `prost 0.13`) with optional deflate compression (`miniz_oxide
-  0.8`). The header layout is unchanged (8 bytes: `DOP\0` magic, u16
-  version, compression byte, reserved byte) but byte 6 now encodes the
-  compression algorithm: `0 = none`, `1 = deflate`. Existing `.dop` files
-  compiled with v0.2.0 are **no longer readable** and must be recompiled
-  with `dop compile`.
+### Breaking changes — public type surface (Phase C, milestone 7)
 
-### Added
+- **`doppio::elaboration::*` is now the prost-generated Protocol Buffers
+  namespace.** The previous BTreeMap-based wrapper types
+  (`elaboration::Journal`, `ResolvedTransaction`, `ResolvedPosting`,
+  `Amount(BTreeMap<...>)`, `AccountProperties`, `CommodityProperties`,
+  `HistoricalPrice`, `TransactionState`) are removed from the public
+  API. Replacements: same names under `elaboration::*`, but with the
+  proto wire-shape (`Option<Amount>`, `Decimal` as a 3-field message,
+  `state: i32`). Inherent methods cover the read-side ergonomic
+  surface (see "Added").
+- **`compile()`, `read_dop()`, `write_dop()` take/return the new
+  `elaboration::Journal` directly.** No more conversion at call
+  sites. `read_dop_proto()` removed (now identical to `read_dop()`).
+- **`eval_transaction()` returns `elaboration::Transaction`**
+  (previously `elaboration::ResolvedTransaction`).
+- **`.dop` binary format version bumped from 2 → 3.** Body encoding
+  migrated from `postcard` + `xz` to canonical Protocol Buffers
+  (`prost 0.13`) with optional deflate compression (`miniz_oxide
+  0.8`). Header layout unchanged (8 bytes: `DOP\0` magic, u16
+  version, compression byte, reserved byte) but byte 6 now encodes
+  the compression algorithm: `0 = none`, `1 = deflate`. Existing
+  `.dop` files compiled with v0.2.0 are **no longer readable** and
+  must be recompiled with `dop compile`.
 
-- **hledger frontend** (issue #103): `.hledger` and `.journal` files are now
+### Added — Phase C ergonomic accessors
+
+Inherent methods on the prost-generated `elaboration::*` types so
+consumers don't reinvent wire-shape unwrapping at every call site.
+Per the standing project rule, all consumer-facing helpers for the
+read-side public API are method-style on the generated types; free
+functions like `decimal_from_proto` exist but are not the documented
+surface.
+
+- `Decimal::to_decimal() -> rust_decimal::Decimal` — reassemble the
+  proto-encoded i128 mantissa (#117).
+- `Display for Decimal` — formats via `to_decimal()` so output
+  matches `rust_decimal::Decimal`'s Display (#116).
+- `Amount::iter() -> impl Iterator<Item = (&str, Decimal)>` — sorted
+  by commodity symbol (BTreeMap-based per build.rs config) (#114).
+- `Amount::get(commodity) -> Option<Decimal>` (#114).
+- `Posting::amounts()` / `amount_in(commodity)` — same shape as
+  `Amount::iter` / `get`, applied through the `Option<Amount>`
+  wrapper (#114).
+- `Posting::amount() -> &Amount` — infallible accessor that papers
+  over the proto3 `Option<Amount>` quirk (returns a static empty
+  `Amount` if the field is `None`, which the elaborator never
+  legitimately produces) (#121).
+- `Transaction::date_naive() -> chrono::NaiveDate` and
+  `Transaction::secondary_date_naive() -> Option<chrono::NaiveDate>`
+  (#122).
+- `HistoricalPrice::date_naive() -> chrono::NaiveDate` (#122).
+
+### Added — frontend / serialization
+
+- **hledger frontend** (#103): `.hledger` and `.journal` files are now
   parsed by a dedicated hledger frontend (`HledgerFrontend`) rather than
-  falling through to the ledger-cli parser. Key additions over the ledger-cli
-  grammar:
+  falling through to the ledger-cli parser. Key additions over the
+  ledger-cli grammar:
   - Date separators `/` and `.` in addition to `-` (e.g. `2024/01/15`,
     `2024.01.15`).
   - Comment lines starting with `#` (in addition to `;`).
@@ -36,15 +82,23 @@
   serialise a compiled journal to any `Write` sink.
 - `doppio::read_dop(reader, path)` — public API to deserialise a `.dop`
   file from any `Read` source with clear error messages.
+- `doppio::elaborate(hir)` — convenience function: runs the elaboration
+  stage on a resolved HIR, returning `elaboration::Journal`. Used by
+  the CLI when dispatching to a `Frontend` manually.
 - `doppio::Compression` enum (`None` | `Deflate`) — controls the
   compression algorithm used by `write_dop`.
 - `--no-compression` flag on `dop compile` — produces uncompressed `.dop`
   files (useful for streaming or tooling that reads raw protobuf).
+- `wasm32-unknown-unknown` library build is now part of CI (#101).
 
 ### Removed
 
 - `postcard` and `xz` runtime dependencies from `doppio` and
   `doppio-cli`; replaced by `prost` and `miniz_oxide`.
+- The `doppio::proto` module (renamed to `doppio::elaboration`).
+- `read_dop_proto()` (now identical to `read_dop()`).
+- The previous BTreeMap-based public types in `elaboration::*` (see
+  Breaking changes).
 
 ### Internal
 
@@ -53,9 +107,27 @@
   no `clap` / `serde_json` / `xz` dependencies, which means the lib
   alone compiles cleanly to `wasm32-unknown-unknown`. End-user impact:
   none for `cargo install doppio-cli` or for library consumers depending
-  on the `doppio` crate from crates.io. The `dop` binary is now produced
-  by `doppio-cli`. `serde-pickle` (previously declared but unused) was
+  on the `doppio` crate. The `dop` binary is now produced by
+  `doppio-cli`. `serde-pickle` (previously declared but unused) was
   also dropped from the dep tree.
+- **Multi-frontend extensibility (Phase B, milestone 6).** A `Frontend`
+  trait + `crates/doppio/src/grammars/` directory + extension dispatch
+  refactor (#102) makes the parser layer pluggable; the hledger
+  frontend is the second consumer.
+- **Elaborator emits proto types directly (#133 / PR #134).** The
+  transitional `elaboration_pipeline` types are gone; the elaborator's
+  `try_from` constructs `elaboration::Journal` (= the prost-generated
+  proto type) at every output site. Eliminates the per-load boundary
+  conversion (~50ms per 100k transactions).
+- **prost configured to generate `BTreeMap` for every map field**
+  (`btree_map(["."])` in `build.rs`). Doppio's Rust binding has
+  deterministic iteration on map fields; the protobuf spec still says
+  map order is unspecified for other-language bindings.
+- CLI read-only commands iterate `proto::Journal` directly via
+  `read_dop_proto` (#111 / #113). Closed in this release as the
+  `proto::Journal` rename made the optimization the only path.
+
+## [Unreleased]
 
 ---
 
