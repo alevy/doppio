@@ -2,9 +2,9 @@
 //! Lives in a sibling module so prost regeneration (which writes into
 //! `OUT_DIR` via the `build.rs` `include!`) doesn't clobber these impls.
 
-use crate::proto;
+use crate::elaboration;
 
-impl proto::Decimal {
+impl elaboration::Decimal {
     /// Reconstruct a [`rust_decimal::Decimal`] from this proto-encoded value.
     ///
     /// Equivalent to the free function [`crate::decimal_from_proto`]; available
@@ -15,7 +15,7 @@ impl proto::Decimal {
     }
 }
 
-impl std::fmt::Display for proto::Decimal {
+impl std::fmt::Display for elaboration::Decimal {
     /// Formats the decimal using the same output as [`rust_decimal::Decimal`]'s
     /// `Display` impl, so precision and sign are consistent with the
     /// elaboration-side type.
@@ -24,7 +24,7 @@ impl std::fmt::Display for proto::Decimal {
     }
 }
 
-impl proto::Amount {
+impl elaboration::Amount {
     /// Iterate `(commodity, decimal)` pairs in this amount.
     ///
     /// Order is unspecified — the underlying `by_commodity` map is a
@@ -46,16 +46,37 @@ impl proto::Amount {
     pub fn get(&self, commodity: &str) -> Option<rust_decimal::Decimal> {
         self.by_commodity
             .get(commodity)
-            .map(proto::Decimal::to_decimal)
+            .map(elaboration::Decimal::to_decimal)
     }
 }
 
-impl proto::Posting {
+impl elaboration::Posting {
+    /// Return this posting's amount, treating an absent amount field as an
+    /// empty [`elaboration::Amount`].
+    ///
+    /// `elaboration::Posting.amount` is `Option<Amount>` because proto3 wraps
+    /// every nested message in `Option`, but in practice doppio's elaboration
+    /// stage always populates `amount: Some(_)` — null postings are filled
+    /// in during balancing rather than left as `None`. This accessor papers
+    /// over the proto3 quirk so consumers don't need to thread `Option`
+    /// through every call site, while still being defensive: a malformed
+    /// wire payload with `amount = None` produces an empty `Amount` rather
+    /// than a panic.
+    pub fn amount(&self) -> &elaboration::Amount {
+        static EMPTY: std::sync::OnceLock<elaboration::Amount> = std::sync::OnceLock::new();
+        match self.amount.as_ref() {
+            Some(a) => a,
+            None => EMPTY.get_or_init(|| elaboration::Amount {
+                by_commodity: Default::default(),
+            }),
+        }
+    }
+
     /// Iterate `(commodity, decimal)` pairs across this posting's amount.
     ///
     /// Yields nothing if `self.amount` is `None` or the amount's
     /// `by_commodity` map is empty. Order is unspecified — see
-    /// [`proto::Amount::iter`] for the canonical sort pattern when stable
+    /// [`elaboration::Amount::iter`] for the canonical sort pattern when stable
     /// output is needed.
     pub fn amounts(&self) -> impl Iterator<Item = (&str, rust_decimal::Decimal)> + '_ {
         self.amount.iter().flat_map(|a| {
@@ -74,35 +95,35 @@ impl proto::Posting {
 
 #[cfg(test)]
 mod tests {
-    use crate::{decimal_from_proto, proto};
+    use crate::{decimal_from_proto, elaboration};
     use rust_decimal::Decimal;
 
-    fn make_decimal(mantissa_high: i64, mantissa_low: u64, scale: u32) -> proto::Decimal {
-        proto::Decimal {
+    fn make_decimal(mantissa_high: i64, mantissa_low: u64, scale: u32) -> elaboration::Decimal {
+        elaboration::Decimal {
             mantissa_high,
             mantissa_low,
             scale,
         }
     }
 
-    /// Build a `proto::Decimal` from a `rust_decimal::Decimal` so we can
+    /// Build a `elaboration::Decimal` from a `rust_decimal::Decimal` so we can
     /// round-trip arbitrary values without the full journal encoding path.
-    fn proto_from_decimal(d: Decimal) -> proto::Decimal {
+    fn proto_from_decimal(d: Decimal) -> elaboration::Decimal {
         let mantissa = d.mantissa();
-        proto::Decimal {
+        elaboration::Decimal {
             mantissa_high: (mantissa >> 64) as i64,
             mantissa_low: mantissa as u64,
             scale: d.scale(),
         }
     }
 
-    /// `proto::Decimal` for 7.58 — mantissa 758, scale 2.
-    fn dec_7_58() -> proto::Decimal {
+    /// `elaboration::Decimal` for 7.58 — mantissa 758, scale 2.
+    fn dec_7_58() -> elaboration::Decimal {
         make_decimal(0, 758, 2)
     }
 
-    /// `proto::Decimal` for 1.23 — mantissa 123, scale 2.
-    fn dec_1_23() -> proto::Decimal {
+    /// `elaboration::Decimal` for 1.23 — mantissa 123, scale 2.
+    fn dec_1_23() -> elaboration::Decimal {
         make_decimal(0, 123, 2)
     }
 
@@ -194,7 +215,7 @@ mod tests {
 
     #[test]
     fn amount_iter_empty_map_yields_nothing() {
-        let amount = proto::Amount {
+        let amount = elaboration::Amount {
             by_commodity: Default::default(),
         };
         assert_eq!(amount.iter().count(), 0);
@@ -202,7 +223,7 @@ mod tests {
 
     #[test]
     fn amount_iter_single_commodity() {
-        let amount = proto::Amount {
+        let amount = elaboration::Amount {
             by_commodity: [("USD".to_string(), dec_7_58())].into(),
         };
         let pairs: Vec<_> = amount.iter().collect();
@@ -213,7 +234,7 @@ mod tests {
 
     #[test]
     fn amount_iter_multi_commodity_all_present() {
-        let amount = proto::Amount {
+        let amount = elaboration::Amount {
             by_commodity: [
                 ("USD".to_string(), dec_7_58()),
                 ("EUR".to_string(), dec_1_23()),
@@ -234,7 +255,7 @@ mod tests {
 
     #[test]
     fn amount_get_hit_returns_decimal() {
-        let amount = proto::Amount {
+        let amount = elaboration::Amount {
             by_commodity: [("USD".to_string(), dec_7_58())].into(),
         };
         assert_eq!(amount.get("USD"), Some(Decimal::new(758, 2)));
@@ -242,7 +263,7 @@ mod tests {
 
     #[test]
     fn amount_get_miss_returns_none() {
-        let amount = proto::Amount {
+        let amount = elaboration::Amount {
             by_commodity: [("USD".to_string(), dec_7_58())].into(),
         };
         assert_eq!(amount.get("EUR"), None);
@@ -254,7 +275,7 @@ mod tests {
 
     #[test]
     fn posting_amounts_none_amount_yields_nothing() {
-        let posting = proto::Posting {
+        let posting = elaboration::Posting {
             account: "Assets:Cash".to_string(),
             amount: None,
             ..Default::default()
@@ -264,9 +285,9 @@ mod tests {
 
     #[test]
     fn posting_amounts_some_empty_amount_yields_nothing() {
-        let posting = proto::Posting {
+        let posting = elaboration::Posting {
             account: "Assets:Cash".to_string(),
-            amount: Some(proto::Amount {
+            amount: Some(elaboration::Amount {
                 by_commodity: Default::default(),
             }),
             ..Default::default()
@@ -276,9 +297,9 @@ mod tests {
 
     #[test]
     fn posting_amounts_single_commodity() {
-        let posting = proto::Posting {
+        let posting = elaboration::Posting {
             account: "Expenses:Food".to_string(),
-            amount: Some(proto::Amount {
+            amount: Some(elaboration::Amount {
                 by_commodity: [("USD".to_string(), dec_7_58())].into(),
             }),
             ..Default::default()
@@ -291,9 +312,9 @@ mod tests {
 
     #[test]
     fn posting_amounts_multi_commodity() {
-        let posting = proto::Posting {
+        let posting = elaboration::Posting {
             account: "Assets:Brokerage".to_string(),
-            amount: Some(proto::Amount {
+            amount: Some(elaboration::Amount {
                 by_commodity: [
                     ("USD".to_string(), dec_7_58()),
                     ("EUR".to_string(), dec_1_23()),
@@ -315,7 +336,7 @@ mod tests {
 
     #[test]
     fn posting_amount_in_none_amount_returns_none() {
-        let posting = proto::Posting {
+        let posting = elaboration::Posting {
             account: "Assets:Cash".to_string(),
             amount: None,
             ..Default::default()
@@ -325,9 +346,9 @@ mod tests {
 
     #[test]
     fn posting_amount_in_commodity_absent_returns_none() {
-        let posting = proto::Posting {
+        let posting = elaboration::Posting {
             account: "Assets:Cash".to_string(),
-            amount: Some(proto::Amount {
+            amount: Some(elaboration::Amount {
                 by_commodity: [("USD".to_string(), dec_7_58())].into(),
             }),
             ..Default::default()
@@ -337,9 +358,9 @@ mod tests {
 
     #[test]
     fn posting_amount_in_commodity_present_returns_decimal() {
-        let posting = proto::Posting {
+        let posting = elaboration::Posting {
             account: "Assets:Cash".to_string(),
-            amount: Some(proto::Amount {
+            amount: Some(elaboration::Amount {
                 by_commodity: [("USD".to_string(), dec_7_58())].into(),
             }),
             ..Default::default()

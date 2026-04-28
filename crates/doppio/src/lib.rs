@@ -68,7 +68,13 @@
 //! ```
 
 pub mod ast;
-pub mod elaboration_pipeline;
+// Crate-private elaboration pipeline. Exposes `ElaborationError` (re-exported
+// at crate root) so callers can catch elaboration failures without needing to
+// know about the internal pipeline types. Eventually this module's job will
+// be folded directly into `elaboration::*` (the proto-shaped types) but for
+// now it stays as a transitional intermediate.
+pub(crate) mod elaboration_pipeline;
+pub use elaboration_pipeline::{ElaborationError, EvaluationError};
 pub mod frontend;
 pub mod grammars;
 pub mod resolution;
@@ -85,13 +91,13 @@ pub mod parser {
 }
 
 /// Prost-generated Protocol Buffers types — canonical wire shape of `.dop` bodies.
-pub mod proto {
+pub mod elaboration {
     include!(concat!(env!("OUT_DIR"), "/doppio.rs"));
 }
 
-mod proto_ext;
+mod elaboration_ext;
 
-pub use elaboration_pipeline::Journal;
+pub use elaboration::Journal;
 pub use frontend::Frontend;
 pub use grammars::hledger::HledgerFrontend;
 pub use grammars::ledger::LedgerFrontend;
@@ -147,29 +153,29 @@ pub fn frontend_for_extension(ext: Option<&str>) -> Box<dyn Frontend> {
 // Proto conversion: elaboration types ↔ proto wire types
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Convert a `rust_decimal::Decimal` to the proto [`proto::Decimal`] encoding.
+/// Convert a `rust_decimal::Decimal` to the proto [`elaboration::Decimal`] encoding.
 ///
 /// The mantissa is split into low (u64) and high (i64, sign-extended) halves of
 /// the 128-bit two's-complement integer, with the scale preserved as-is.
-fn decimal_to_proto(d: rust_decimal::Decimal) -> proto::Decimal {
+fn decimal_to_proto(d: rust_decimal::Decimal) -> elaboration::Decimal {
     let mantissa: i128 = d.mantissa();
     let scale = d.scale();
     let mantissa_low = mantissa as u64;
     let mantissa_high = (mantissa >> 64) as i64;
-    proto::Decimal {
+    elaboration::Decimal {
         mantissa_low,
         mantissa_high,
         scale,
     }
 }
 
-/// Reconstruct a `rust_decimal::Decimal` from its [`proto::Decimal`] encoding.
+/// Reconstruct a `rust_decimal::Decimal` from its [`elaboration::Decimal`] encoding.
 ///
 /// This is the inverse of the private `decimal_to_proto` helper. It is exposed
-/// publicly so that callers working directly with `proto::Journal` (e.g. via
+/// publicly so that callers working directly with `elaboration::Journal` (e.g. via
 /// [`read_dop_proto`]) can materialise `Decimal` values on demand without
 /// going through the full `elaboration_pipeline::Journal` conversion.
-pub fn decimal_from_proto(p: &proto::Decimal) -> rust_decimal::Decimal {
+pub fn decimal_from_proto(p: &elaboration::Decimal) -> rust_decimal::Decimal {
     let mantissa = ((p.mantissa_high as i128) << 64) | (p.mantissa_low as i128);
     rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
 }
@@ -177,9 +183,15 @@ pub fn decimal_from_proto(p: &proto::Decimal) -> rust_decimal::Decimal {
 /// Convert an [`elaboration_pipeline::TransactionState`] to its proto enum value (i32).
 fn state_to_proto(s: &elaboration_pipeline::TransactionState) -> i32 {
     match s {
-        elaboration_pipeline::TransactionState::Uncleared => proto::TransactionState::Uncleared as i32,
-        elaboration_pipeline::TransactionState::Pending => proto::TransactionState::Pending as i32,
-        elaboration_pipeline::TransactionState::Cleared => proto::TransactionState::Cleared as i32,
+        elaboration_pipeline::TransactionState::Uncleared => {
+            elaboration::TransactionState::Uncleared as i32
+        }
+        elaboration_pipeline::TransactionState::Pending => {
+            elaboration::TransactionState::Pending as i32
+        }
+        elaboration_pipeline::TransactionState::Cleared => {
+            elaboration::TransactionState::Cleared as i32
+        }
     }
 }
 
@@ -187,20 +199,24 @@ fn state_to_proto(s: &elaboration_pipeline::TransactionState) -> i32 {
 ///
 /// `Unspecified` (0) and unknown values both map to `Uncleared`.
 fn state_from_proto(v: i32) -> elaboration_pipeline::TransactionState {
-    match proto::TransactionState::try_from(v) {
-        Ok(proto::TransactionState::Cleared) => elaboration_pipeline::TransactionState::Cleared,
-        Ok(proto::TransactionState::Pending) => elaboration_pipeline::TransactionState::Pending,
+    match elaboration::TransactionState::try_from(v) {
+        Ok(elaboration::TransactionState::Cleared) => {
+            elaboration_pipeline::TransactionState::Cleared
+        }
+        Ok(elaboration::TransactionState::Pending) => {
+            elaboration_pipeline::TransactionState::Pending
+        }
         _ => elaboration_pipeline::TransactionState::Uncleared,
     }
 }
 
-impl From<&elaboration_pipeline::Journal> for proto::Journal {
+impl From<&elaboration_pipeline::Journal> for elaboration::Journal {
     fn from(j: &elaboration_pipeline::Journal) -> Self {
-        proto::Journal {
+        elaboration::Journal {
             transactions: j
                 .transactions
                 .iter()
-                .map(|t| proto::Transaction {
+                .map(|t| elaboration::Transaction {
                     date: t.date,
                     secondary_date: t.secondary_date,
                     state: state_to_proto(&t.state),
@@ -215,10 +231,10 @@ impl From<&elaboration_pipeline::Journal> for proto::Journal {
                     postings: t
                         .postings
                         .iter()
-                        .map(|p| proto::Posting {
+                        .map(|p| elaboration::Posting {
                             account: p.account.clone(),
                             payee: p.payee.clone(),
-                            amount: Some(proto::Amount {
+                            amount: Some(elaboration::Amount {
                                 by_commodity: p
                                     .amount
                                     .0
@@ -243,7 +259,7 @@ impl From<&elaboration_pipeline::Journal> for proto::Journal {
                 .map(|(k, v)| {
                     (
                         k.clone(),
-                        proto::AccountProperties {
+                        elaboration::AccountProperties {
                             note: v.note.clone(),
                         },
                     )
@@ -255,7 +271,7 @@ impl From<&elaboration_pipeline::Journal> for proto::Journal {
                 .map(|(k, v)| {
                     (
                         k.clone(),
-                        proto::CommodityProperties {
+                        elaboration::CommodityProperties {
                             format: v.format.clone(),
                             no_market: v.no_market,
                             note: v.note.clone(),
@@ -266,7 +282,7 @@ impl From<&elaboration_pipeline::Journal> for proto::Journal {
             prices: j
                 .prices
                 .iter()
-                .map(|hp| proto::HistoricalPrice {
+                .map(|hp| elaboration::HistoricalPrice {
                     date: hp.date,
                     time: hp.time.clone(),
                     commodity: hp.commodity.clone(),
@@ -278,14 +294,14 @@ impl From<&elaboration_pipeline::Journal> for proto::Journal {
     }
 }
 
-impl From<elaboration_pipeline::Journal> for proto::Journal {
+impl From<elaboration_pipeline::Journal> for elaboration::Journal {
     fn from(j: elaboration_pipeline::Journal) -> Self {
         (&j).into()
     }
 }
 
-impl From<proto::Journal> for elaboration_pipeline::Journal {
-    fn from(p: proto::Journal) -> Self {
+impl From<elaboration::Journal> for elaboration_pipeline::Journal {
+    fn from(p: elaboration::Journal) -> Self {
         use std::collections::BTreeMap;
 
         let transactions = p
@@ -407,14 +423,13 @@ impl Compression {
 ///
 /// Propagates any [`std::io::Error`] from `writer`.
 pub fn write_dop<W: std::io::Write>(
-    journal: &elaboration_pipeline::Journal,
+    journal: &elaboration::Journal,
     writer: &mut W,
     compression: Compression,
 ) -> std::io::Result<()> {
     use prost::Message as _;
 
-    let wire: proto::Journal = journal.into();
-    let encoded = wire.encode_to_vec();
+    let encoded = journal.encode_to_vec();
 
     dop_write_header(writer, compression)?;
 
@@ -437,7 +452,7 @@ pub fn write_dop<W: std::io::Write>(
 pub fn read_dop<R: std::io::Read>(
     reader: &mut R,
     path: &std::path::Path,
-) -> Result<elaboration_pipeline::Journal, Box<dyn std::error::Error>> {
+) -> Result<elaboration::Journal, Box<dyn std::error::Error>> {
     use prost::Message as _;
 
     let compression = dop_read_header(reader, path)?;
@@ -451,47 +466,8 @@ pub fn read_dop<R: std::io::Read>(
             .map_err(|e| format!("{}: deflate decompression failed: {e:?}", path.display()))?,
     };
 
-    let wire = proto::Journal::decode(proto_bytes.as_slice())
-        .map_err(|e| format!("{}: protobuf decode failed: {e}", path.display()))?;
-
-    Ok(elaboration_pipeline::Journal::from(wire))
-}
-
-/// Deserialise a `.dop` file from `reader` into a raw [`proto::Journal`],
-/// skipping the conversion to [`elaboration_pipeline::Journal`].
-///
-/// This is the fast path for CLI read-only commands: it performs the header
-/// check, optional decompression, and prost decode, but does **not** allocate
-/// the `BTreeMap`s, `String` clones, and `Amount` wrappers that
-/// `elaboration_pipeline::Journal` requires. Callers iterate `proto::Journal::transactions`
-/// directly.
-///
-/// `path` is used only in error messages.
-///
-/// # Errors
-///
-/// Returns a boxed error if the header is invalid, the compression byte is
-/// unrecognised, decompression fails, or protobuf decoding fails.
-pub fn read_dop_proto<R: std::io::Read>(
-    reader: &mut R,
-    path: &std::path::Path,
-) -> Result<proto::Journal, Box<dyn std::error::Error>> {
-    use prost::Message as _;
-
-    let compression = dop_read_header(reader, path)?;
-
-    let mut payload = Vec::new();
-    reader.read_to_end(&mut payload)?;
-
-    let proto_bytes = match compression {
-        Compression::None => payload,
-        Compression::Deflate => miniz_oxide::inflate::decompress_to_vec(&payload)
-            .map_err(|e| format!("{}: deflate decompression failed: {e:?}", path.display()))?,
-    };
-
-    proto::Journal::decode(proto_bytes.as_slice())
-        .map_err(|e| format!("{}: protobuf decode failed: {e}", path.display()))
-        .map_err(Into::into)
+    elaboration::Journal::decode(proto_bytes.as_slice())
+        .map_err(|e| format!("{}: protobuf decode failed: {e}", path.display()).into())
 }
 
 /// Write a sequence of [`resolution::Transaction`] values to `writer` in
@@ -630,13 +606,25 @@ pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> 
 pub fn compile<F>(
     input: &str,
     mut parser: parser::Parser<F>,
-) -> Result<elaboration_pipeline::Journal, Box<dyn std::error::Error>>
+) -> Result<elaboration::Journal, Box<dyn std::error::Error>>
 where
     F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>,
 {
     let output = parser.parse(input)?;
     let hir: resolution::HIR = output.try_into()?;
-    Ok(hir.try_into()?)
+    Ok(elaborate(hir)?)
+}
+
+/// Run the elaboration stage on a resolved [`resolution::HIR`], producing a
+/// fully-balanced [`elaboration::Journal`]. This is the conversion bridge
+/// inside [`compile`]; expose it as a public function so callers that
+/// dispatch to a [`Frontend`] manually (like the CLI) can hand off to
+/// elaboration without reaching for the crate-private intermediate type.
+pub fn elaborate(
+    hir: resolution::HIR,
+) -> Result<elaboration::Journal, elaboration_pipeline::ElaborationError> {
+    let pipeline_journal: elaboration_pipeline::Journal = hir.try_into()?;
+    Ok((&pipeline_journal).into())
 }
 
 /// Evaluate a single [`resolution::Transaction`] through the elaboration stage.
@@ -1203,8 +1191,8 @@ mod proto_from_journal_tests {
     /// Owned `From` produces the same result as the borrowed form.
     #[test]
     fn owned_and_borrowed_forms_agree() {
-        let from_borrow: proto::Journal = (&make_journal()).into();
-        let from_owned: proto::Journal = make_journal().into();
+        let from_borrow: elaboration::Journal = (&make_journal()).into();
+        let from_owned: elaboration::Journal = make_journal().into();
 
         assert_eq!(
             from_owned.transactions.len(),
@@ -1219,7 +1207,7 @@ mod proto_from_journal_tests {
     /// The owned form produces a non-trivial result with the expected description.
     #[test]
     fn owned_form_converts_description() {
-        let p: proto::Journal = make_journal().into();
+        let p: elaboration::Journal = make_journal().into();
 
         assert_eq!(p.transactions.len(), 1);
         assert_eq!(p.transactions[0].description, "Coffee Shop");

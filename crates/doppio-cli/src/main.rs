@@ -152,7 +152,7 @@ impl OutputFormat {
     }
 }
 
-/// Load a [`doppio::proto::Journal`] from either a compiled `.dop` file or a
+/// Load a [`doppio::elaboration::Journal`] from either a compiled `.dop` file or a
 /// raw source file, without performing the `proto::Journal → elaboration::Journal`
 /// reverse conversion.
 ///
@@ -160,14 +160,14 @@ impl OutputFormat {
 /// - `.dop` — validate header, decompress (if needed), and decode protobuf directly.
 /// - anything else — select a [`doppio::Frontend`] via
 ///   [`doppio::frontend_for_extension`], parse and elaborate, then convert the
-///   resulting [`doppio::Journal`] to [`doppio::proto::Journal`] (the cheaper
+///   resulting [`doppio::Journal`] to [`doppio::elaboration::Journal`] (the cheaper
 ///   forward direction).
 fn load_proto_journal(
     path: &PathBuf,
-) -> Result<doppio::proto::Journal, Box<dyn std::error::Error>> {
+) -> Result<doppio::elaboration::Journal, Box<dyn std::error::Error>> {
     if let Some("dop") = path.extension().and_then(|e| e.to_str()) {
         let mut f = File::open(path)?;
-        doppio::read_dop_proto(&mut f, path)
+        doppio::read_dop(&mut f, path)
     } else {
         let ext = path.extension().and_then(|e| e.to_str());
         let frontend = doppio::frontend_for_extension(ext);
@@ -176,8 +176,7 @@ fn load_proto_journal(
         File::open(path)?.read_to_string(&mut file)?;
         let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
         let hir: doppio::resolution::HIR = ast_journal.try_into()?;
-        let journal: doppio::elaboration_pipeline::Journal = hir.try_into()?;
-        Ok(doppio::proto::Journal::from(&journal))
+        Ok(doppio::elaborate(hir)?)
     }
 }
 
@@ -226,7 +225,7 @@ fn build_pattern_regex(pattern: Option<String>) -> Result<Regex, Box<dyn std::er
 
 /// `TransactionState` integer values from the proto enum, mirrored here so we
 /// can match without importing the whole proto namespace everywhere.
-const STATE_CLEARED: i32 = doppio::proto::TransactionState::Cleared as i32;
+const STATE_CLEARED: i32 = doppio::elaboration::TransactionState::Cleared as i32;
 
 struct JournalFilter {
     pattern: Regex,
@@ -271,7 +270,7 @@ impl JournalFilter {
     }
 
     /// Returns `true` if `txn` passes all active filters.
-    fn matches_transaction(&self, txn: &doppio::proto::Transaction) -> bool {
+    fn matches_transaction(&self, txn: &doppio::elaboration::Transaction) -> bool {
         if self.cleared && txn.state != STATE_CLEARED {
             return false;
         }
@@ -316,7 +315,7 @@ impl JournalFilter {
 /// Returns `None` if the commodity has no declared format.
 fn commodity_format<'a>(
     commodity: &str,
-    commodities: &'a std::collections::HashMap<String, doppio::proto::CommodityProperties>,
+    commodities: &'a std::collections::HashMap<String, doppio::elaboration::CommodityProperties>,
 ) -> Option<&'a str> {
     commodities.get(commodity).and_then(|p| p.format.as_deref())
 }
@@ -337,7 +336,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             File::open(&source)?.read_to_string(&mut file)?;
             let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
             let hir: doppio::resolution::HIR = ast_journal.try_into()?;
-            let journal: doppio::elaboration_pipeline::Journal = hir.try_into()?;
+            let journal: doppio::elaboration::Journal = doppio::elaborate(hir)?;
             let compression = if no_compression {
                 doppio::Compression::None
             } else {
