@@ -15,6 +15,57 @@
 // Reassemble client-side with:
 //
 //   value = (((mantissa_high as i128) << 64) | (mantissa_low as i128)) * 10^(-scale)
+//
+// Two things are easy to get wrong: (1) sign-extension of the high half when
+// reconstructing the 128-bit integer, and (2) the direction of scale (it is
+// 10^-scale, so a scale of 2 means divide by 100). The Rust reference
+// implementation lives at `crates/doppio/src/lib.rs::decimal_from_proto`.
+//
+// Recipes for common languages:
+//
+//   Rust (the reference):
+//     fn decimal_from_proto(p: &Decimal) -> rust_decimal::Decimal {
+//         let mantissa = ((p.mantissa_high as i128) << 64) | (p.mantissa_low as i128);
+//         rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
+//     }
+//
+//   Python (using stdlib `decimal.Decimal`):
+//     from decimal import Decimal
+//     def decimal_from_proto(p) -> Decimal:
+//         # Reconstruct as a signed Python int. Python ints are arbitrary
+//         # precision, so we shift the (already-signed) high 64 bits and
+//         # OR in the unsigned low 64 bits.
+//         mantissa = (p.mantissa_high << 64) | (p.mantissa_low & ((1 << 64) - 1))
+//         return Decimal(mantissa).scaleb(-p.scale)
+//
+//   TypeScript / JavaScript (using `BigInt`; `Number` is too narrow):
+//     // `decimal.js` or similar is recommended for the final type; the
+//     // reassembly itself is `BigInt`-only:
+//     function decimalFromProto(p: { mantissaLow: bigint, mantissaHigh: bigint, scale: number }): { mantissa: bigint, scale: number } {
+//       const MASK64 = (1n << 64n) - 1n;
+//       // p.mantissaHigh is a signed sint64; bigint preserves the sign.
+//       // p.mantissaLow is uint64; mask defensively.
+//       const mantissa = (p.mantissaHigh << 64n) | (p.mantissaLow & MASK64);
+//       return { mantissa, scale: p.scale };
+//     }
+//
+//   Go (using `math/big.Int` + manual scale; convert to `big.Float` or
+//   shopspring/decimal at the boundary):
+//     import "math/big"
+//     func DecimalFromProto(p *Decimal) (*big.Int, uint32) {
+//         mantissa := new(big.Int).Lsh(big.NewInt(p.MantissaHigh), 64)
+//         lo := new(big.Int).SetUint64(p.MantissaLow)
+//         mantissa.Or(mantissa, lo)
+//         return mantissa, p.Scale
+//     }
+//
+// Note that the protobuf wire types (`uint64` / `sint64`) determine sign
+// handling: `sint64` uses ZigZag encoding for the high half so that small
+// negative numbers stay compact on the wire, but consumers see a normal
+// signed 64-bit value after decoding. `uint64` for the low half is intentional
+// — it carries the lower bits of the two's-complement representation, not a
+// magnitude. This is why the language recipes mask `mantissaLow` defensively
+// rather than treating it as signed.
 
 syntax = "proto3";
 
