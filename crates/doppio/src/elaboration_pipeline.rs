@@ -421,7 +421,7 @@ impl Display for ElaborationError {
     }
 }
 
-impl TryFrom<resolution::HIR> for Journal {
+impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
     type Error = ElaborationError;
 
     fn try_from(value: resolution::HIR) -> Result<Self, Self::Error> {
@@ -435,7 +435,7 @@ impl TryFrom<resolution::HIR> for Journal {
         for (name, properties) in &value.global_context.account_properties {
             accounts.insert(
                 name.clone(),
-                AccountProperties {
+                crate::elaboration::AccountProperties {
                     note: properties.note.clone(),
                 },
             );
@@ -622,12 +622,13 @@ impl TryFrom<resolution::HIR> for Journal {
                                 *dec += value;
                             }
 
-                            let amount = Amount(BTreeMap::from([(commodity, value)]));
-                            resolved_postings.push(ResolvedPosting {
+                            let by_commodity =
+                                BTreeMap::from([(commodity, crate::decimal_to_proto(value))]);
+                            resolved_postings.push(crate::elaboration::Posting {
                                 account: account_name,
                                 payee,
-                                amount,
-                                state: posting.state.into(),
+                                amount: Some(crate::elaboration::Amount { by_commodity }),
+                                state: crate::state_to_proto(&posting.state.into()),
                                 tags: posting.tags,
                                 metadata: posting.metadata,
                             });
@@ -651,19 +652,17 @@ impl TryFrom<resolution::HIR> for Journal {
 
                         // The null posting's amount is the negation of the sum of all
                         // other postings, making the transaction balance to zero.
-                        let amount = Amount(
-                            transaction_state
-                                .0
-                                .iter()
-                                .map(|(c, v)| (c.clone(), -v))
-                                .collect(),
-                        );
+                        let by_commodity = transaction_state
+                            .0
+                            .iter()
+                            .map(|(c, v)| (c.clone(), crate::decimal_to_proto(-v)))
+                            .collect();
 
-                        resolved_postings.push(ResolvedPosting {
+                        resolved_postings.push(crate::elaboration::Posting {
                             account: account_name,
                             payee,
-                            amount,
-                            state: posting.state.into(),
+                            amount: Some(crate::elaboration::Amount { by_commodity }),
+                            state: crate::state_to_proto(&posting.state.into()),
                             tags: posting.tags,
                             metadata: posting.metadata,
                         });
@@ -694,7 +693,7 @@ impl TryFrom<resolution::HIR> for Journal {
                             // multi-commodity postings each commodity is checked
                             // independently; in practice postings carry a single
                             // commodity.
-                            for (commodity, &amount_val) in posting.amount.0.iter() {
+                            for (commodity, amount_val) in posting.amounts() {
                                 for assert_expr in &props.asserts {
                                     let passed = evaluator::eval_bool_expr(
                                         assert_expr,
@@ -771,15 +770,16 @@ impl TryFrom<resolution::HIR> for Journal {
                             .account_balances
                             .entry(posting.account.clone())
                             .or_default();
-                        for (commodity, delta) in posting.amount.0.iter() {
-                            *(balances.commodity.entry(commodity.clone()).or_default()) += delta;
+                        for (commodity, delta) in posting.amounts() {
+                            *(balances.commodity.entry(commodity.to_string()).or_default()) +=
+                                delta;
                         }
                     }
 
-                    transactions.push(ResolvedTransaction {
+                    transactions.push(crate::elaboration::Transaction {
                         date: transaction.date.to_epoch_days(),
                         secondary_date: transaction.secondary_date.map(|d| d.to_epoch_days()),
-                        state: transaction.state.into(),
+                        state: crate::state_to_proto(&transaction.state.into()),
                         code: transaction.code,
                         description: transaction.description,
                         tags: transaction.tags,
@@ -800,11 +800,11 @@ impl TryFrom<resolution::HIR> for Journal {
         for hp in value.prices {
             let (price, price_commodity) =
                 evaluator::eval_and_normalize_amount(hp.price, final_context, &state)?;
-            prices.push(HistoricalPrice {
+            prices.push(crate::elaboration::HistoricalPrice {
                 date: hp.date.to_epoch_days(),
                 time: hp.time,
                 commodity: hp.commodity,
-                price,
+                price: Some(crate::decimal_to_proto(price)),
                 price_commodity,
             });
         }
@@ -816,7 +816,7 @@ impl TryFrom<resolution::HIR> for Journal {
             .map(|(name, p)| {
                 (
                     name,
-                    CommodityProperties {
+                    crate::elaboration::CommodityProperties {
                         format: p.format,
                         no_market: p.no_market,
                         note: p.note,
@@ -825,7 +825,7 @@ impl TryFrom<resolution::HIR> for Journal {
             })
             .collect();
 
-        Ok(Journal {
+        Ok(crate::elaboration::Journal {
             transactions,
             accounts,
             commodities,
@@ -1852,7 +1852,8 @@ mod tests {
         assert_eq!(hir.prices.len(), 1, "HIR should contain one price");
 
         // Elaboration stage.
-        let journal = Journal::try_from(hir).expect("elaboration should succeed");
+        let journal =
+            crate::elaboration::Journal::try_from(hir).expect("elaboration should succeed");
 
         assert_eq!(journal.prices.len(), 1, "Journal should contain one price");
         let price = &journal.prices[0];
@@ -1864,17 +1865,20 @@ mod tests {
         assert_eq!(price.date, expected_days);
         assert_eq!(price.time.as_deref(), Some("14:30:00"));
         assert_eq!(price.commodity, "AAPL");
-        assert_eq!(price.price, rust_decimal::Decimal::from(182));
+        assert_eq!(
+            price.price.as_ref().unwrap().to_decimal(),
+            rust_decimal::Decimal::from(182)
+        );
         assert_eq!(price.price_commodity, "$");
     }
 
     /// Parse a ledger journal string through the full pipeline and return the
     /// elaborated `Journal`. Panics on any parse/resolution/elaboration error.
-    fn elaborate(input: &str) -> Journal {
+    fn elaborate(input: &str) -> crate::elaboration::Journal {
         use crate::{parser::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        Journal::try_from(hir).expect("elaboration failed")
+        crate::elaboration::Journal::try_from(hir).expect("elaboration failed")
     }
 
     #[test]
@@ -1897,7 +1901,7 @@ define monthly_rent = $1500.00
             .find(|p| p.account == "Expenses:Rent")
             .unwrap();
         assert_eq!(
-            rent_posting.amount.0.get("$").copied(),
+            rent_posting.amount_in("$"),
             Some(dec!(1500.00)),
             "define alias should expand to $1500.00"
         );
@@ -1908,7 +1912,7 @@ define monthly_rent = $1500.00
             .find(|p| p.account == "Assets:Checking")
             .unwrap();
         assert_eq!(
-            checking_posting.amount.0.get("$").copied(),
+            checking_posting.amount_in("$"),
             Some(dec!(-1500.00)),
             "balancing posting should be -$1500.00"
         );
@@ -1936,7 +1940,7 @@ define base_amount = 100 USD
             .find(|p| p.account == "Expenses:Food")
             .unwrap();
         assert_eq!(
-            food.amount.0.get("USD").copied(),
+            food.amount_in("USD"),
             Some(dec!(200)),
             "2 * define alias should expand to 200 USD"
         );
@@ -1982,14 +1986,14 @@ define myval = $99.00
         assert!(hir.contexts[1].defines.contains_key("myval"));
 
         // Elaboration should succeed end-to-end.
-        let journal = Journal::try_from(hir).expect("elaboration failed");
+        let journal = crate::elaboration::Journal::try_from(hir).expect("elaboration failed");
         let after_tx = &journal.transactions[1];
         let b_posting = after_tx
             .postings
             .iter()
             .find(|p| p.account == "Expenses:B")
             .unwrap();
-        assert_eq!(b_posting.amount.0.get("$").copied(), Some(dec!(99.00)));
+        assert_eq!(b_posting.amount_in("$"), Some(dec!(99.00)));
     }
 
     // -----------------------------------------------------------------------
@@ -2016,15 +2020,15 @@ define myval = $99.00
         let journal = elaborate(input);
         assert_eq!(journal.transactions.len(), 3);
         assert!(
-            matches!(journal.transactions[0].state, TransactionState::Cleared),
+            journal.transactions[0].state == crate::elaboration::TransactionState::Cleared as i32,
             "first transaction should be Cleared"
         );
         assert!(
-            matches!(journal.transactions[1].state, TransactionState::Uncleared),
+            journal.transactions[1].state == crate::elaboration::TransactionState::Uncleared as i32,
             "second transaction should be Uncleared"
         );
         assert!(
-            matches!(journal.transactions[2].state, TransactionState::Pending),
+            journal.transactions[2].state == crate::elaboration::TransactionState::Pending as i32,
             "third transaction should be Pending"
         );
     }
@@ -2055,10 +2059,10 @@ define myval = $99.00
         let cleared_total: rust_decimal::Decimal = journal
             .transactions
             .iter()
-            .filter(|txn| matches!(txn.state, TransactionState::Cleared))
+            .filter(|txn| txn.state == crate::elaboration::TransactionState::Cleared as i32)
             .flat_map(|txn| txn.postings.iter())
             .filter(|p| p.account == "Expenses:Food")
-            .filter_map(|p| p.amount.0.get("$").copied())
+            .filter_map(|p| p.amount_in("$"))
             .sum();
 
         assert_eq!(
@@ -2086,7 +2090,7 @@ define myval = $99.00
         let count = journal
             .transactions
             .iter()
-            .filter(|txn| matches!(txn.state, TransactionState::Cleared))
+            .filter(|txn| txn.state == crate::elaboration::TransactionState::Cleared as i32)
             .count();
 
         assert_eq!(count, 0, "no cleared transactions should be found");
@@ -2113,7 +2117,7 @@ define myval = $99.00
             .iter()
             .flat_map(|txn| txn.postings.iter())
             .filter(|p| p.account == "Expenses:Food")
-            .filter_map(|p| p.amount.0.get("$").copied())
+            .filter_map(|p| p.amount_in("$"))
             .sum();
 
         assert_eq!(
@@ -2129,11 +2133,11 @@ define myval = $99.00
 
     /// Try to elaborate a ledger input string, returning the elaboration
     /// result (including errors) rather than panicking.
-    fn try_elaborate(input: &str) -> Result<Journal, ElaborationError> {
+    fn try_elaborate(input: &str) -> Result<crate::elaboration::Journal, ElaborationError> {
         use crate::{parser::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        Journal::try_from(hir)
+        crate::elaboration::Journal::try_from(hir)
     }
 
     #[test]
@@ -2303,7 +2307,7 @@ define myval = $99.00
     // ── Account-level assert/check tests ─────────────────────────────────────
 
     /// Helper: attempt elaboration and expect success.
-    fn elaborate_ok(input: &str) -> Journal {
+    fn elaborate_ok(input: &str) -> crate::elaboration::Journal {
         elaborate(input)
     }
 
@@ -2312,7 +2316,7 @@ define myval = $99.00
         use crate::{parser::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        match Journal::try_from(hir).expect_err("expected assertion failure") {
+        match crate::elaboration::Journal::try_from(hir).expect_err("expected assertion failure") {
             ElaborationError::AccountAssertionFailed {
                 account,
                 posting_index,
@@ -2578,7 +2582,7 @@ account Assets:Savings
         // The assignment `=0` means: new balance is $0, prior balance is $100,
         // so delta = $0 - $100 = -$100.
         assert_eq!(
-            posting_a.amount.0.get("$").copied(),
+            posting_a.amount_in("$"),
             Some(dec!(-100)),
             "balance assignment =0 after $100 should yield -$100 delta"
         );
@@ -2609,7 +2613,7 @@ account Assets:Savings
             .expect("Account A posting not found");
 
         assert_eq!(
-            posting_a.amount.0.get("$").copied(),
+            posting_a.amount_in("$"),
             Some(dec!(-100)),
             "explicit =$0 should also yield -$100 delta"
         );
@@ -2642,7 +2646,7 @@ commodity $
             .expect("Account A posting not found");
 
         assert_eq!(
-            posting_a.amount.0.get("$").copied(),
+            posting_a.amount_in("$"),
             Some(dec!(-100)),
             "default-commodity path should yield -$100 delta"
         );
@@ -2683,7 +2687,7 @@ commodity $
             .find(|p| p.account == "Account A")
             .expect("Account A posting not found");
         assert_eq!(
-            posting_a.amount.0.get("EUR").copied(),
+            posting_a.amount_in("EUR"),
             Some(dec!(-50)),
             "bare =0 should infer the only non-zero commodity (EUR)"
         );
@@ -2713,12 +2717,12 @@ commodity $
             .find(|p| p.account == "Account B")
             .expect("Account B posting not found");
         assert!(
-            posting_b.amount.0.contains_key("$"),
+            posting_b.amount_in("$").is_some(),
             "bare =0 should infer $ from same-transaction context: {:?}",
-            posting_b.amount.0
+            posting_b.amount
         );
         assert_eq!(
-            posting_b.amount.0.get("$").copied(),
+            posting_b.amount_in("$"),
             Some(dec!(0)),
             "Account B target is 0 with no prior balance, so delta is 0"
         );
@@ -3212,7 +3216,7 @@ account Expenses:Food
 ";
         let ast = crate::parser::parse_ledger(input).expect("parse failed");
         let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
-        let result = Journal::try_from(hir);
+        let result = crate::elaboration::Journal::try_from(hir);
         assert!(
             matches!(result, Err(ElaborationError::AccountAssertionFailed { .. })),
             "positive amount should fail isNegative assertion; got: {result:?}"
@@ -3268,7 +3272,7 @@ account Expenses:Food
 ";
         let ast = crate::parser::parse_ledger(input).expect("parse failed");
         let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
-        let result = Journal::try_from(hir);
+        let result = crate::elaboration::Journal::try_from(hir);
         assert!(
             matches!(result, Err(ElaborationError::AccountAssertionFailed { .. })),
             "$50 should fail between(0, 10); got: {result:?}"
@@ -3307,7 +3311,7 @@ define monthly = $1500.00
             .iter()
             .find(|p| p.account == "Expenses:Rent")
             .unwrap();
-        assert_eq!(rent.amount.0.get("$").copied(), Some(dec!(1500.00)));
+        assert_eq!(rent.amount_in("$"), Some(dec!(1500.00)));
     }
 
     /// Mutually-recursive defines must produce a `RecursionLimitExceeded`
@@ -3372,7 +3376,7 @@ define double(x) = x * 2
             .iter()
             .find(|p| p.account == "Expenses:Food")
             .unwrap();
-        assert_eq!(food.amount.0.get("USD").copied(), Some(dec!(100)));
+        assert_eq!(food.amount_in("USD"), Some(dec!(100)));
     }
 
     // ── Issue #89: parenthesised bool expressions in value/bool positions ──

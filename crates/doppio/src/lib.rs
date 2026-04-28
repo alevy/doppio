@@ -622,8 +622,7 @@ where
 pub fn elaborate(
     hir: resolution::HIR,
 ) -> Result<elaboration::Journal, elaboration_pipeline::ElaborationError> {
-    let pipeline_journal: elaboration_pipeline::Journal = hir.try_into()?;
-    Ok((&pipeline_journal).into())
+    elaboration::Journal::try_from(hir)
 }
 
 /// Evaluate a single [`resolution::Transaction`] through the elaboration stage.
@@ -669,7 +668,7 @@ pub fn elaborate(
 pub fn eval_transaction(
     txn: resolution::Transaction,
     context: &resolution::Context,
-) -> Result<elaboration_pipeline::ResolvedTransaction, elaboration_pipeline::ElaborationError> {
+) -> Result<elaboration::Transaction, elaboration_pipeline::ElaborationError> {
     let hir = resolution::HIR {
         entries: vec![resolution::ResolutionEntry {
             context_id: 0,
@@ -678,7 +677,7 @@ pub fn eval_transaction(
         contexts: vec![context.clone()],
         ..Default::default()
     };
-    let journal = elaboration_pipeline::Journal::try_from(hir)?;
+    let journal = elaboration::Journal::try_from(hir)?;
     // The HIR contained exactly one transaction, so the journal has exactly one.
     Ok(journal
         .transactions
@@ -1000,14 +999,14 @@ mod eval_transaction_tests {
             .iter()
             .find(|p| p.account == "Expenses:Food")
             .unwrap();
-        assert_eq!(food.amount.0.get("$").copied(), Some(dec!(50)));
+        assert_eq!(food.amount_in("$"), Some(dec!(50)));
 
         let checking = resolved
             .postings
             .iter()
             .find(|p| p.account == "Assets:Checking")
             .unwrap();
-        assert_eq!(checking.amount.0.get("$").copied(), Some(dec!(-50)));
+        assert_eq!(checking.amount_in("$"), Some(dec!(-50)));
     }
 
     #[test]
@@ -1027,7 +1026,7 @@ mod eval_transaction_tests {
             .find(|p| p.account == "Assets:Checking")
             .unwrap();
         assert_eq!(
-            checking.amount.0.get("$").copied(),
+            checking.amount_in("$"),
             Some(dec!(-1200)),
             "null posting should be inferred as -$1200"
         );
@@ -1092,7 +1091,7 @@ mod eval_transaction_tests {
             .iter()
             .find(|p| p.account == "Assets:Checking:Mercury:7920")
             .expect("alias should resolve to canonical account name");
-        assert_eq!(checking.amount.0.get("$").copied(), Some(dec!(-5000)));
+        assert_eq!(checking.amount_in("$"), Some(dec!(-5000)));
     }
 
     #[test]
@@ -1116,7 +1115,7 @@ mod eval_transaction_tests {
             .find(|p| p.account == "Expenses:Food")
             .unwrap();
         assert_eq!(
-            food.amount.0.get("USD").copied(),
+            food.amount_in("USD"),
             Some(dec!(25)),
             "bare amount should use default commodity from context"
         );
@@ -1139,10 +1138,10 @@ mod eval_transaction_tests {
         let resolved = eval_transaction(txn, &resolution::Context::default()).unwrap();
 
         assert_eq!(resolved.description, "Independence Day");
-        assert!(matches!(
+        assert_eq!(
             resolved.state,
-            elaboration_pipeline::TransactionState::Cleared
-        ));
+            elaboration::TransactionState::Cleared as i32
+        );
         assert_eq!(resolved.code.as_deref(), Some("IND-04"));
         assert!(resolved.secondary_date.is_some());
         assert!(resolved.tags.contains(&"holiday".to_string()));
@@ -1167,48 +1166,8 @@ mod eval_transaction_tests {
     }
 }
 
-#[cfg(test)]
-mod proto_from_journal_tests {
-    use super::*;
-
-    const SOURCE: &str = "\
-2024-03-01 Coffee Shop
-    Expenses:Food  5 $
-    Assets:Cash
-";
-
-    fn make_journal() -> elaboration_pipeline::Journal {
-        let mut p = parser::Parser {
-            opener: |_: &str| Ok(String::new()),
-            base_path: std::path::PathBuf::new(),
-        };
-        let ast = p.parse(&SOURCE.to_string()).expect("parse");
-        let hir: resolution::HIR = ast.try_into().expect("resolution");
-        hir.try_into().expect("elaboration")
-    }
-
-    /// Owned `From` produces the same result as the borrowed form.
-    #[test]
-    fn owned_and_borrowed_forms_agree() {
-        let from_borrow: elaboration::Journal = (&make_journal()).into();
-        let from_owned: elaboration::Journal = make_journal().into();
-
-        assert_eq!(
-            from_owned.transactions.len(),
-            from_borrow.transactions.len()
-        );
-        assert_eq!(
-            from_owned.transactions[0].description,
-            from_borrow.transactions[0].description
-        );
-    }
-
-    /// The owned form produces a non-trivial result with the expected description.
-    #[test]
-    fn owned_form_converts_description() {
-        let p: elaboration::Journal = make_journal().into();
-
-        assert_eq!(p.transactions.len(), 1);
-        assert_eq!(p.transactions[0].description, "Coffee Shop");
-    }
-}
+// (proto_from_journal_tests module removed: it tested the
+// `From<&pipeline::Journal> for elaboration::Journal` impls that are being
+// deleted in this PR. Equivalent end-to-end coverage is provided by the
+// CLI's dop_format integration tests, which exercise the same compile →
+// write → read round-trip on the new direct path.)
