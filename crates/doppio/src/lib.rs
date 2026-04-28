@@ -278,6 +278,12 @@ impl From<&elaboration::Journal> for proto::Journal {
     }
 }
 
+impl From<elaboration::Journal> for proto::Journal {
+    fn from(j: elaboration::Journal) -> Self {
+        (&j).into()
+    }
+}
+
 impl From<proto::Journal> for elaboration::Journal {
     fn from(p: proto::Journal) -> Self {
         use std::collections::BTreeMap;
@@ -1171,5 +1177,51 @@ mod eval_transaction_tests {
             result.unwrap_err(),
             elaboration::ElaborationError::TooManyNullPostings
         ));
+    }
+}
+
+#[cfg(test)]
+mod proto_from_journal_tests {
+    use super::*;
+
+    const SOURCE: &str = "\
+2024-03-01 Coffee Shop
+    Expenses:Food  5 $
+    Assets:Cash
+";
+
+    fn make_journal() -> elaboration::Journal {
+        let mut p = parser::Parser {
+            opener: |_: &str| Ok(String::new()),
+            base_path: std::path::PathBuf::new(),
+        };
+        let ast = p.parse(&SOURCE.to_string()).expect("parse");
+        let hir: resolution::HIR = ast.try_into().expect("resolution");
+        hir.try_into().expect("elaboration")
+    }
+
+    /// Owned `From` produces the same result as the borrowed form.
+    #[test]
+    fn owned_and_borrowed_forms_agree() {
+        let from_borrow: proto::Journal = (&make_journal()).into();
+        let from_owned: proto::Journal = make_journal().into();
+
+        assert_eq!(
+            from_owned.transactions.len(),
+            from_borrow.transactions.len()
+        );
+        assert_eq!(
+            from_owned.transactions[0].description,
+            from_borrow.transactions[0].description
+        );
+    }
+
+    /// The owned form produces a non-trivial result with the expected description.
+    #[test]
+    fn owned_form_converts_description() {
+        let p: proto::Journal = make_journal().into();
+
+        assert_eq!(p.transactions.len(), 1);
+        assert_eq!(p.transactions[0].description, "Coffee Shop");
     }
 }
