@@ -27,15 +27,12 @@ impl std::fmt::Display for elaboration::Decimal {
 impl elaboration::Amount {
     /// Iterate `(commodity, decimal)` pairs in this amount.
     ///
-    /// Order is unspecified — the underlying `by_commodity` map is a
-    /// `HashMap`, and the protobuf spec does not guarantee map field ordering.
-    /// If you need stable, deterministic output (for display, cache keys, or
-    /// text round-trips) sort before consuming:
-    ///
-    /// ```rust,ignore
-    /// let mut pairs: Vec<_> = amount.iter().collect();
-    /// pairs.sort_by_key(|(c, _)| *c);
-    /// ```
+    /// Pairs are yielded in commodity-symbol order: the underlying
+    /// `by_commodity` field is a `BTreeMap` (configured via prost's
+    /// `btree_map` build option in `build.rs`), so iteration is
+    /// deterministic and sorted. Note that this guarantee is specific to
+    /// doppio's Rust binding — bindings in other languages may iterate
+    /// protobuf maps in unspecified order per the protobuf spec.
     pub fn iter(&self) -> impl Iterator<Item = (&str, rust_decimal::Decimal)> + '_ {
         self.by_commodity
             .iter()
@@ -75,9 +72,9 @@ impl elaboration::Posting {
     /// Iterate `(commodity, decimal)` pairs across this posting's amount.
     ///
     /// Yields nothing if `self.amount` is `None` or the amount's
-    /// `by_commodity` map is empty. Order is unspecified — see
-    /// [`elaboration::Amount::iter`] for the canonical sort pattern when stable
-    /// output is needed.
+    /// `by_commodity` map is empty. Pairs are yielded in commodity-symbol
+    /// order — see [`elaboration::Amount::iter`] for the iteration-order
+    /// guarantee.
     pub fn amounts(&self) -> impl Iterator<Item = (&str, rust_decimal::Decimal)> + '_ {
         self.amount.iter().flat_map(|a| {
             a.by_commodity
