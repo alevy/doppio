@@ -89,7 +89,7 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/doppio.rs"));
 }
 
-mod proto_fmt;
+mod proto_ext;
 
 pub use elaboration::Journal;
 pub use frontend::Frontend;
