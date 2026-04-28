@@ -17,6 +17,7 @@ fn main() {
     let proto_dir = std::path::Path::new("..").join("..").join("proto");
     println!("cargo:rerun-if-changed={}", proto.display());
     prost_build::Config::new()
+        .btree_map(["."])
         .compile_protos(&[&proto], &[&proto_dir])
         .expect("compile protos");
 }

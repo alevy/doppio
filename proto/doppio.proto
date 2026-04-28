@@ -92,21 +92,25 @@ enum TransactionState {
 // A multi-commodity balance: commodity symbol -> Decimal value.
 //
 // Iteration-order note: `by_commodity` is a protobuf `map<string, Decimal>`.
-// The protobuf specification explicitly does not guarantee map field ordering,
-// and prost generates a `HashMap<String, Decimal>` on the Rust side. Consumers
-// iterating this field will receive entries in an unspecified, non-deterministic
-// order. This applies to any language binding, not just Rust.
+// The protobuf specification explicitly does not guarantee map field
+// ordering — bindings in language X may iterate this map in any order. The
+// same applies to `Posting.metadata`, `Transaction.metadata`,
+// `Journal.accounts`, and `Journal.commodities`.
 //
-// If you need deterministic ordering — for display, cache keys, or text
-// round-trips — sort by commodity symbol before consuming:
+// doppio's Rust binding is an exception: it configures prost to generate
+// `BTreeMap<String, _>` for every map field (see `crates/doppio/build.rs`'s
+// `btree_map([\".\"])` setting), so iteration is deterministic and sorted by
+// key. Rust consumers can rely on that. Bindings in other languages should
+// sort by key explicitly when stable output is required:
 //
-//   // Rust example
-//   let mut pairs: Vec<_> = amount.by_commodity.iter().collect();
-//   pairs.sort_by_key(|(c, _)| c.as_str());
+//   // Python example (sorted-by-key iteration):
+//   for commodity, decimal in sorted(amount.by_commodity.items()):
+//       ...
 //
-// The same applies to `Posting.metadata`, `Transaction.metadata`,
-// `Journal.accounts`, and `Journal.commodities` — all are protobuf maps with
-// undefined iteration order.
+//   // TypeScript example:
+//   for (const commodity of Object.keys(amount.by_commodity).sort()) {
+//       ...
+//   }
 message Amount {
   map<string, Decimal> by_commodity = 1;
 }

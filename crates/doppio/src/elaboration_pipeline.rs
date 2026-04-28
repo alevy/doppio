@@ -1,7 +1,7 @@
 //! Elaboration stage: evaluate expressions, balance transactions, and
 //! produce the final serialisable [`Journal`].
 //!
-//! This stage converts a [`resolution::HIR`] into an [`elaboration::Journal`]
+//! This stage converts a [`resolution::HIR`] into an [`elaboration_pipeline::Journal`]
 //! by performing the following work:
 //!
 //! - **Expression evaluation** — [`ast::ValueExpr`] trees are evaluated to
@@ -36,7 +36,7 @@ use crate::{
 
 /// The fully elaborated journal: the final output of the compilation pipeline.
 ///
-/// Convert to [`crate::proto::Journal`] via `From<&Journal>` for serialisation
+/// Convert to [`crate::elaboration::Journal`] via `From<&Journal>` for serialisation
 /// to the `.dop` binary format (Protocol Buffers + optional deflate).
 #[derive(Debug)]
 pub struct Journal {

@@ -41,15 +41,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Accumulate per-account, per-commodity balances by walking every posting
     // in every transaction.  Running state is no longer stored on individual
     // transactions, so we compute it here from scratch.
-    let mut balances: BTreeMap<&String, BTreeMap<&String, Decimal>> = BTreeMap::new();
+    let mut balances: BTreeMap<&String, BTreeMap<String, Decimal>> = BTreeMap::new();
     for txn in journal.transactions.iter() {
         for posting in txn.postings.iter() {
-            for (commodity, amount) in posting.amount.0.iter() {
+            for (commodity, amount) in posting.amounts() {
                 *(balances
                     .entry(&posting.account)
                     .or_default()
-                    .entry(commodity)
-                    .or_default()) += *amount;
+                    .entry(commodity.to_string())
+                    .or_default()) += amount;
             }
         }
     }

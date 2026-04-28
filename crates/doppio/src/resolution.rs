@@ -29,7 +29,8 @@ use crate::ast;
 ///
 /// The HIR holds all resolved entries (transactions, balance assertions, price
 /// directives) together with the evaluation contexts needed to elaborate them.
-/// It is the input to [`crate::elaboration::Journal`] via `TryFrom`.
+/// It is the input to [`crate::elaborate`], which produces a fully-balanced
+/// [`crate::elaboration::Journal`].
 ///
 /// Library callers should obtain an `HIR` via [`crate::compile`] rather than
 /// constructing one directly.
