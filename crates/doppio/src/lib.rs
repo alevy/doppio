@@ -27,7 +27,7 @@
 //! source text
 //!   → [parser]      ast::Journal        (PEG grammar + Pratt expressions)
 //!   → [resolution]  resolution::HIR     (dates, aliases, metadata)
-//!   → [elaboration] elaboration_pipeline::Journal (evaluation, balancing)
+//!   → [elaboration] elaboration::Journal (evaluation, balancing)
 //!   → serialisation                     (protobuf + optional deflate → .dop)
 //! ```
 //!
@@ -44,9 +44,9 @@
 //! - [`parser`] — re-exported ledger parser types for backwards compatibility.
 //! - [`resolution`] — alias resolution, date normalisation, metadata
 //!   extraction.
-//! - [`elaboration`] — expression evaluation, transaction balancing, and the
-//!   final serialisable [`Journal`] type.
-//! - [`proto`] — prost-generated Protocol Buffers types (canonical wire shape).
+//! - [`elaboration`] — prost-generated Protocol Buffers types
+//!   (`Journal`, `Transaction`, `Posting`, `Amount`, `Decimal`); this is the
+//!   canonical read-side public surface and the wire shape of `.dop` bodies.
 //!
 //! # Serialising transactions as Ledger text
 //!
@@ -171,10 +171,9 @@ fn decimal_to_proto(d: rust_decimal::Decimal) -> elaboration::Decimal {
 
 /// Reconstruct a `rust_decimal::Decimal` from its [`elaboration::Decimal`] encoding.
 ///
-/// This is the inverse of the private `decimal_to_proto` helper. It is exposed
-/// publicly so that callers working directly with `elaboration::Journal` (e.g. via
-/// [`read_dop_proto`]) can materialise `Decimal` values on demand without
-/// going through the full `elaboration_pipeline::Journal` conversion.
+/// This is the inverse of the private `decimal_to_proto` helper. Most consumers
+/// should prefer the inherent method [`elaboration::Decimal::to_decimal`]
+/// instead of calling this free function directly.
 pub fn decimal_from_proto(p: &elaboration::Decimal) -> rust_decimal::Decimal {
     let mantissa = ((p.mantissa_high as i128) << 64) | (p.mantissa_low as i128);
     rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
@@ -592,7 +591,7 @@ pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> 
 ///
 /// 1. [`parser::Parser::parse`] — tokenise `input` into an [`ast::Journal`].
 /// 2. [`resolution::HIR::try_from`] — resolve dates, aliases, and metadata.
-/// 3. [`elaboration_pipeline::Journal::try_from`] — evaluate amounts and balance
+/// 3. [`elaborate`] — evaluate amounts and balance
 ///    transactions.
 ///
 /// The `parser` argument supplies the file-opener for `include` directives and

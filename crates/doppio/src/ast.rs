@@ -162,7 +162,7 @@ pub enum AccountItem {
     Note(String),
     /// A fatal assertion that every posting to this account must satisfy.
     ///
-    /// Elaboration halts with [`crate::elaboration::ElaborationError::AccountAssertionFailed`]
+    /// Elaboration halts with [`crate::ElaborationError::AccountAssertionFailed`]
     /// if the expression evaluates to `false` for any posting.
     Assert(BoolExpr),
     /// A non-fatal check that every posting to this account should satisfy.
@@ -561,7 +561,7 @@ pub enum ValueExpr {
     /// A prefix unary operator applied to a sub-expression.
     ///
     /// Only `+` and `-` are meaningful on amounts; `*` and `/` produce an
-    /// [`EvaluationError`](crate::elaboration::EvaluationError).
+    /// [`EvaluationError`](crate::EvaluationError).
     Unary { op: Op, expr: Box<ValueExpr> },
 
     /// An infix binary operator applied to two sub-expressions.
