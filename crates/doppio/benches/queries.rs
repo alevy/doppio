@@ -22,12 +22,12 @@ fn bench_balance(c: &mut Criterion) {
                 let mut balances: BTreeMap<&str, BTreeMap<&str, Decimal>> = BTreeMap::new();
                 for txn in journal.transactions.iter() {
                     for posting in txn.postings.iter() {
-                        for (commodity, amount) in posting.amount.0.iter() {
+                        for (commodity, amount) in posting.amounts() {
                             *balances
                                 .entry(posting.account.as_str())
                                 .or_default()
-                                .entry(commodity.as_str())
-                                .or_default() += *amount;
+                                .entry(commodity)
+                                .or_default() += amount;
                         }
                     }
                 }

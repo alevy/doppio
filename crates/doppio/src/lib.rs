@@ -73,8 +73,8 @@ pub mod ast;
 // know about the internal pipeline types. Eventually this module's job will
 // be folded directly into `elaboration::*` (the proto-shaped types) but for
 // now it stays as a transitional intermediate.
-pub(crate) mod elaboration_pipeline;
-pub use elaboration_pipeline::{ElaborationError, EvaluationError};
+pub(crate) mod elaborator;
+pub use elaborator::{ElaborationError, EvaluationError};
 pub mod frontend;
 pub mod grammars;
 pub mod resolution;
@@ -179,209 +179,12 @@ pub fn decimal_from_proto(p: &elaboration::Decimal) -> rust_decimal::Decimal {
     rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
 }
 
-/// Convert an [`elaboration_pipeline::TransactionState`] to its proto enum value (i32).
-fn state_to_proto(s: &elaboration_pipeline::TransactionState) -> i32 {
+/// Convert an [`elaborator::TransactionState`] to its proto enum value (i32).
+fn state_to_proto(s: &elaborator::TransactionState) -> i32 {
     match s {
-        elaboration_pipeline::TransactionState::Uncleared => {
-            elaboration::TransactionState::Uncleared as i32
-        }
-        elaboration_pipeline::TransactionState::Pending => {
-            elaboration::TransactionState::Pending as i32
-        }
-        elaboration_pipeline::TransactionState::Cleared => {
-            elaboration::TransactionState::Cleared as i32
-        }
-    }
-}
-
-/// Convert a proto enum i32 to [`elaboration_pipeline::TransactionState`].
-///
-/// `Unspecified` (0) and unknown values both map to `Uncleared`.
-fn state_from_proto(v: i32) -> elaboration_pipeline::TransactionState {
-    match elaboration::TransactionState::try_from(v) {
-        Ok(elaboration::TransactionState::Cleared) => {
-            elaboration_pipeline::TransactionState::Cleared
-        }
-        Ok(elaboration::TransactionState::Pending) => {
-            elaboration_pipeline::TransactionState::Pending
-        }
-        _ => elaboration_pipeline::TransactionState::Uncleared,
-    }
-}
-
-impl From<&elaboration_pipeline::Journal> for elaboration::Journal {
-    fn from(j: &elaboration_pipeline::Journal) -> Self {
-        elaboration::Journal {
-            transactions: j
-                .transactions
-                .iter()
-                .map(|t| elaboration::Transaction {
-                    date: t.date,
-                    secondary_date: t.secondary_date,
-                    state: state_to_proto(&t.state),
-                    code: t.code.clone(),
-                    description: t.description.clone(),
-                    tags: t.tags.clone(),
-                    metadata: t
-                        .metadata
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                    postings: t
-                        .postings
-                        .iter()
-                        .map(|p| elaboration::Posting {
-                            account: p.account.clone(),
-                            payee: p.payee.clone(),
-                            amount: Some(elaboration::Amount {
-                                by_commodity: p
-                                    .amount
-                                    .0
-                                    .iter()
-                                    .map(|(k, v)| (k.clone(), decimal_to_proto(*v)))
-                                    .collect(),
-                            }),
-                            state: state_to_proto(&p.state),
-                            tags: p.tags.clone(),
-                            metadata: p
-                                .metadata
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect(),
-                        })
-                        .collect(),
-                })
-                .collect(),
-            accounts: j
-                .accounts
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        elaboration::AccountProperties {
-                            note: v.note.clone(),
-                        },
-                    )
-                })
-                .collect(),
-            commodities: j
-                .commodities
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        elaboration::CommodityProperties {
-                            format: v.format.clone(),
-                            no_market: v.no_market,
-                            note: v.note.clone(),
-                        },
-                    )
-                })
-                .collect(),
-            prices: j
-                .prices
-                .iter()
-                .map(|hp| elaboration::HistoricalPrice {
-                    date: hp.date,
-                    time: hp.time.clone(),
-                    commodity: hp.commodity.clone(),
-                    price: Some(decimal_to_proto(hp.price)),
-                    price_commodity: hp.price_commodity.clone(),
-                })
-                .collect(),
-        }
-    }
-}
-
-impl From<elaboration_pipeline::Journal> for elaboration::Journal {
-    fn from(j: elaboration_pipeline::Journal) -> Self {
-        (&j).into()
-    }
-}
-
-impl From<elaboration::Journal> for elaboration_pipeline::Journal {
-    fn from(p: elaboration::Journal) -> Self {
-        use std::collections::BTreeMap;
-
-        let transactions = p
-            .transactions
-            .into_iter()
-            .map(|t| elaboration_pipeline::ResolvedTransaction {
-                date: t.date,
-                secondary_date: t.secondary_date,
-                state: state_from_proto(t.state),
-                code: t.code,
-                description: t.description,
-                tags: t.tags,
-                metadata: t.metadata.into_iter().collect(),
-                postings: t
-                    .postings
-                    .into_iter()
-                    .map(|posting| elaboration_pipeline::ResolvedPosting {
-                        account: posting.account,
-                        payee: posting.payee,
-                        amount: elaboration_pipeline::Amount(
-                            posting
-                                .amount
-                                .map(|a| {
-                                    a.by_commodity
-                                        .into_iter()
-                                        .map(|(k, v)| (k, decimal_from_proto(&v)))
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                        ),
-                        state: state_from_proto(posting.state),
-                        tags: posting.tags,
-                        metadata: posting.metadata.into_iter().collect(),
-                    })
-                    .collect(),
-            })
-            .collect();
-
-        let accounts: BTreeMap<_, _> = p
-            .accounts
-            .into_iter()
-            .map(|(k, v)| (k, elaboration_pipeline::AccountProperties { note: v.note }))
-            .collect();
-
-        let commodities: BTreeMap<_, _> = p
-            .commodities
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    elaboration_pipeline::CommodityProperties {
-                        format: v.format,
-                        no_market: v.no_market,
-                        note: v.note,
-                    },
-                )
-            })
-            .collect();
-
-        let prices = p
-            .prices
-            .into_iter()
-            .map(|hp| elaboration_pipeline::HistoricalPrice {
-                date: hp.date,
-                time: hp.time,
-                commodity: hp.commodity,
-                price: hp
-                    .price
-                    .as_ref()
-                    .map(decimal_from_proto)
-                    .unwrap_or_default(),
-                price_commodity: hp.price_commodity,
-            })
-            .collect();
-
-        elaboration_pipeline::Journal {
-            transactions,
-            accounts,
-            commodities,
-            prices,
-        }
+        elaborator::TransactionState::Uncleared => elaboration::TransactionState::Uncleared as i32,
+        elaborator::TransactionState::Pending => elaboration::TransactionState::Pending as i32,
+        elaborator::TransactionState::Cleared => elaboration::TransactionState::Cleared as i32,
     }
 }
 
@@ -621,9 +424,8 @@ where
 /// elaboration without reaching for the crate-private intermediate type.
 pub fn elaborate(
     hir: resolution::HIR,
-) -> Result<elaboration::Journal, elaboration_pipeline::ElaborationError> {
-    let pipeline_journal: elaboration_pipeline::Journal = hir.try_into()?;
-    Ok((&pipeline_journal).into())
+) -> Result<elaboration::Journal, elaborator::ElaborationError> {
+    elaboration::Journal::try_from(hir)
 }
 
 /// Evaluate a single [`resolution::Transaction`] through the elaboration stage.
@@ -642,7 +444,7 @@ pub fn elaborate(
 ///
 /// # Errors
 ///
-/// Returns an [`elaboration_pipeline::ElaborationError`] if the transaction cannot be
+/// Returns an [`elaborator::ElaborationError`] if the transaction cannot be
 /// elaborated (e.g. unbalanced postings, expression evaluation failure, or
 /// too many null postings).
 ///
@@ -669,7 +471,7 @@ pub fn elaborate(
 pub fn eval_transaction(
     txn: resolution::Transaction,
     context: &resolution::Context,
-) -> Result<elaboration_pipeline::ResolvedTransaction, elaboration_pipeline::ElaborationError> {
+) -> Result<elaboration::Transaction, elaborator::ElaborationError> {
     let hir = resolution::HIR {
         entries: vec![resolution::ResolutionEntry {
             context_id: 0,
@@ -678,7 +480,7 @@ pub fn eval_transaction(
         contexts: vec![context.clone()],
         ..Default::default()
     };
-    let journal = elaboration_pipeline::Journal::try_from(hir)?;
+    let journal = elaboration::Journal::try_from(hir)?;
     // The HIR contained exactly one transaction, so the journal has exactly one.
     Ok(journal
         .transactions
@@ -1000,14 +802,14 @@ mod eval_transaction_tests {
             .iter()
             .find(|p| p.account == "Expenses:Food")
             .unwrap();
-        assert_eq!(food.amount.0.get("$").copied(), Some(dec!(50)));
+        assert_eq!(food.amount_in("$"), Some(dec!(50)));
 
         let checking = resolved
             .postings
             .iter()
             .find(|p| p.account == "Assets:Checking")
             .unwrap();
-        assert_eq!(checking.amount.0.get("$").copied(), Some(dec!(-50)));
+        assert_eq!(checking.amount_in("$"), Some(dec!(-50)));
     }
 
     #[test]
@@ -1027,7 +829,7 @@ mod eval_transaction_tests {
             .find(|p| p.account == "Assets:Checking")
             .unwrap();
         assert_eq!(
-            checking.amount.0.get("$").copied(),
+            checking.amount_in("$"),
             Some(dec!(-1200)),
             "null posting should be inferred as -$1200"
         );
@@ -1067,7 +869,7 @@ mod eval_transaction_tests {
         );
         assert!(matches!(
             result.unwrap_err(),
-            elaboration_pipeline::ElaborationError::TransactionDoesNotBalance(_)
+            elaborator::ElaborationError::TransactionDoesNotBalance(_)
         ));
     }
 
@@ -1092,7 +894,7 @@ mod eval_transaction_tests {
             .iter()
             .find(|p| p.account == "Assets:Checking:Mercury:7920")
             .expect("alias should resolve to canonical account name");
-        assert_eq!(checking.amount.0.get("$").copied(), Some(dec!(-5000)));
+        assert_eq!(checking.amount_in("$"), Some(dec!(-5000)));
     }
 
     #[test]
@@ -1116,7 +918,7 @@ mod eval_transaction_tests {
             .find(|p| p.account == "Expenses:Food")
             .unwrap();
         assert_eq!(
-            food.amount.0.get("USD").copied(),
+            food.amount_in("USD"),
             Some(dec!(25)),
             "bare amount should use default commodity from context"
         );
@@ -1139,10 +941,10 @@ mod eval_transaction_tests {
         let resolved = eval_transaction(txn, &resolution::Context::default()).unwrap();
 
         assert_eq!(resolved.description, "Independence Day");
-        assert!(matches!(
+        assert_eq!(
             resolved.state,
-            elaboration_pipeline::TransactionState::Cleared
-        ));
+            elaboration::TransactionState::Cleared as i32
+        );
         assert_eq!(resolved.code.as_deref(), Some("IND-04"));
         assert!(resolved.secondary_date.is_some());
         assert!(resolved.tags.contains(&"holiday".to_string()));
@@ -1162,53 +964,13 @@ mod eval_transaction_tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            elaboration_pipeline::ElaborationError::TooManyNullPostings
+            elaborator::ElaborationError::TooManyNullPostings
         ));
     }
 }
 
-#[cfg(test)]
-mod proto_from_journal_tests {
-    use super::*;
-
-    const SOURCE: &str = "\
-2024-03-01 Coffee Shop
-    Expenses:Food  5 $
-    Assets:Cash
-";
-
-    fn make_journal() -> elaboration_pipeline::Journal {
-        let mut p = parser::Parser {
-            opener: |_: &str| Ok(String::new()),
-            base_path: std::path::PathBuf::new(),
-        };
-        let ast = p.parse(&SOURCE.to_string()).expect("parse");
-        let hir: resolution::HIR = ast.try_into().expect("resolution");
-        hir.try_into().expect("elaboration")
-    }
-
-    /// Owned `From` produces the same result as the borrowed form.
-    #[test]
-    fn owned_and_borrowed_forms_agree() {
-        let from_borrow: elaboration::Journal = (&make_journal()).into();
-        let from_owned: elaboration::Journal = make_journal().into();
-
-        assert_eq!(
-            from_owned.transactions.len(),
-            from_borrow.transactions.len()
-        );
-        assert_eq!(
-            from_owned.transactions[0].description,
-            from_borrow.transactions[0].description
-        );
-    }
-
-    /// The owned form produces a non-trivial result with the expected description.
-    #[test]
-    fn owned_form_converts_description() {
-        let p: elaboration::Journal = make_journal().into();
-
-        assert_eq!(p.transactions.len(), 1);
-        assert_eq!(p.transactions[0].description, "Coffee Shop");
-    }
-}
+// (proto_from_journal_tests module removed: it tested the
+// `From<&pipeline::Journal> for elaboration::Journal` impls that are being
+// deleted in this PR. Equivalent end-to-end coverage is provided by the
+// CLI's dop_format integration tests, which exercise the same compile →
+// write → read round-trip on the new direct path.)
