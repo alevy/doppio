@@ -73,8 +73,8 @@ pub mod ast;
 // know about the internal pipeline types. Eventually this module's job will
 // be folded directly into `elaboration::*` (the proto-shaped types) but for
 // now it stays as a transitional intermediate.
-pub(crate) mod elaboration_pipeline;
-pub use elaboration_pipeline::{ElaborationError, EvaluationError};
+pub(crate) mod elaborator;
+pub use elaborator::{ElaborationError, EvaluationError};
 pub mod frontend;
 pub mod grammars;
 pub mod resolution;
@@ -179,18 +179,12 @@ pub fn decimal_from_proto(p: &elaboration::Decimal) -> rust_decimal::Decimal {
     rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
 }
 
-/// Convert an [`elaboration_pipeline::TransactionState`] to its proto enum value (i32).
-fn state_to_proto(s: &elaboration_pipeline::TransactionState) -> i32 {
+/// Convert an [`elaborator::TransactionState`] to its proto enum value (i32).
+fn state_to_proto(s: &elaborator::TransactionState) -> i32 {
     match s {
-        elaboration_pipeline::TransactionState::Uncleared => {
-            elaboration::TransactionState::Uncleared as i32
-        }
-        elaboration_pipeline::TransactionState::Pending => {
-            elaboration::TransactionState::Pending as i32
-        }
-        elaboration_pipeline::TransactionState::Cleared => {
-            elaboration::TransactionState::Cleared as i32
-        }
+        elaborator::TransactionState::Uncleared => elaboration::TransactionState::Uncleared as i32,
+        elaborator::TransactionState::Pending => elaboration::TransactionState::Pending as i32,
+        elaborator::TransactionState::Cleared => elaboration::TransactionState::Cleared as i32,
     }
 }
 
@@ -430,7 +424,7 @@ where
 /// elaboration without reaching for the crate-private intermediate type.
 pub fn elaborate(
     hir: resolution::HIR,
-) -> Result<elaboration::Journal, elaboration_pipeline::ElaborationError> {
+) -> Result<elaboration::Journal, elaborator::ElaborationError> {
     elaboration::Journal::try_from(hir)
 }
 
@@ -450,7 +444,7 @@ pub fn elaborate(
 ///
 /// # Errors
 ///
-/// Returns an [`elaboration_pipeline::ElaborationError`] if the transaction cannot be
+/// Returns an [`elaborator::ElaborationError`] if the transaction cannot be
 /// elaborated (e.g. unbalanced postings, expression evaluation failure, or
 /// too many null postings).
 ///
@@ -477,7 +471,7 @@ pub fn elaborate(
 pub fn eval_transaction(
     txn: resolution::Transaction,
     context: &resolution::Context,
-) -> Result<elaboration::Transaction, elaboration_pipeline::ElaborationError> {
+) -> Result<elaboration::Transaction, elaborator::ElaborationError> {
     let hir = resolution::HIR {
         entries: vec![resolution::ResolutionEntry {
             context_id: 0,
@@ -875,7 +869,7 @@ mod eval_transaction_tests {
         );
         assert!(matches!(
             result.unwrap_err(),
-            elaboration_pipeline::ElaborationError::TransactionDoesNotBalance(_)
+            elaborator::ElaborationError::TransactionDoesNotBalance(_)
         ));
     }
 
@@ -970,7 +964,7 @@ mod eval_transaction_tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            elaboration_pipeline::ElaborationError::TooManyNullPostings
+            elaborator::ElaborationError::TooManyNullPostings
         ));
     }
 }
