@@ -29,6 +29,13 @@ impl proto::Amount {
     ///
     /// Order is unspecified — the underlying `by_commodity` map is a
     /// `HashMap`, and the protobuf spec does not guarantee map field ordering.
+    /// If you need stable, deterministic output (for display, cache keys, or
+    /// text round-trips) sort before consuming:
+    ///
+    /// ```rust,ignore
+    /// let mut pairs: Vec<_> = amount.iter().collect();
+    /// pairs.sort_by_key(|(c, _)| *c);
+    /// ```
     pub fn iter(&self) -> impl Iterator<Item = (&str, rust_decimal::Decimal)> + '_ {
         self.by_commodity
             .iter()
@@ -47,7 +54,9 @@ impl proto::Posting {
     /// Iterate `(commodity, decimal)` pairs across this posting's amount.
     ///
     /// Yields nothing if `self.amount` is `None` or the amount's
-    /// `by_commodity` map is empty.
+    /// `by_commodity` map is empty. Order is unspecified — see
+    /// [`proto::Amount::iter`] for the canonical sort pattern when stable
+    /// output is needed.
     pub fn amounts(&self) -> impl Iterator<Item = (&str, rust_decimal::Decimal)> + '_ {
         self.amount.iter().flat_map(|a| {
             a.by_commodity
