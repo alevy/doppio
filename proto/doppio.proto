@@ -39,6 +39,23 @@ enum TransactionState {
 }
 
 // A multi-commodity balance: commodity symbol -> Decimal value.
+//
+// Iteration-order note: `by_commodity` is a protobuf `map<string, Decimal>`.
+// The protobuf specification explicitly does not guarantee map field ordering,
+// and prost generates a `HashMap<String, Decimal>` on the Rust side. Consumers
+// iterating this field will receive entries in an unspecified, non-deterministic
+// order. This applies to any language binding, not just Rust.
+//
+// If you need deterministic ordering — for display, cache keys, or text
+// round-trips — sort by commodity symbol before consuming:
+//
+//   // Rust example
+//   let mut pairs: Vec<_> = amount.by_commodity.iter().collect();
+//   pairs.sort_by_key(|(c, _)| c.as_str());
+//
+// The same applies to `Posting.metadata`, `Transaction.metadata`,
+// `Journal.accounts`, and `Journal.commodities` — all are protobuf maps with
+// undefined iteration order.
 message Amount {
   map<string, Decimal> by_commodity = 1;
 }
