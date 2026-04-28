@@ -27,7 +27,7 @@
 //! source text
 //!   → [parser]      ast::Journal        (PEG grammar + Pratt expressions)
 //!   → [resolution]  resolution::HIR     (dates, aliases, metadata)
-//!   → [elaboration] elaboration::Journal (evaluation, balancing)
+//!   → [elaboration] elaboration_pipeline::Journal (evaluation, balancing)
 //!   → serialisation                     (protobuf + optional deflate → .dop)
 //! ```
 //!
@@ -68,7 +68,7 @@
 //! ```
 
 pub mod ast;
-pub mod elaboration;
+pub mod elaboration_pipeline;
 pub mod frontend;
 pub mod grammars;
 pub mod resolution;
@@ -91,7 +91,7 @@ pub mod proto {
 
 mod proto_ext;
 
-pub use elaboration::Journal;
+pub use elaboration_pipeline::Journal;
 pub use frontend::Frontend;
 pub use grammars::hledger::HledgerFrontend;
 pub use grammars::ledger::LedgerFrontend;
@@ -168,34 +168,34 @@ fn decimal_to_proto(d: rust_decimal::Decimal) -> proto::Decimal {
 /// This is the inverse of the private `decimal_to_proto` helper. It is exposed
 /// publicly so that callers working directly with `proto::Journal` (e.g. via
 /// [`read_dop_proto`]) can materialise `Decimal` values on demand without
-/// going through the full `elaboration::Journal` conversion.
+/// going through the full `elaboration_pipeline::Journal` conversion.
 pub fn decimal_from_proto(p: &proto::Decimal) -> rust_decimal::Decimal {
     let mantissa = ((p.mantissa_high as i128) << 64) | (p.mantissa_low as i128);
     rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
 }
 
-/// Convert an [`elaboration::TransactionState`] to its proto enum value (i32).
-fn state_to_proto(s: &elaboration::TransactionState) -> i32 {
+/// Convert an [`elaboration_pipeline::TransactionState`] to its proto enum value (i32).
+fn state_to_proto(s: &elaboration_pipeline::TransactionState) -> i32 {
     match s {
-        elaboration::TransactionState::Uncleared => proto::TransactionState::Uncleared as i32,
-        elaboration::TransactionState::Pending => proto::TransactionState::Pending as i32,
-        elaboration::TransactionState::Cleared => proto::TransactionState::Cleared as i32,
+        elaboration_pipeline::TransactionState::Uncleared => proto::TransactionState::Uncleared as i32,
+        elaboration_pipeline::TransactionState::Pending => proto::TransactionState::Pending as i32,
+        elaboration_pipeline::TransactionState::Cleared => proto::TransactionState::Cleared as i32,
     }
 }
 
-/// Convert a proto enum i32 to [`elaboration::TransactionState`].
+/// Convert a proto enum i32 to [`elaboration_pipeline::TransactionState`].
 ///
 /// `Unspecified` (0) and unknown values both map to `Uncleared`.
-fn state_from_proto(v: i32) -> elaboration::TransactionState {
+fn state_from_proto(v: i32) -> elaboration_pipeline::TransactionState {
     match proto::TransactionState::try_from(v) {
-        Ok(proto::TransactionState::Cleared) => elaboration::TransactionState::Cleared,
-        Ok(proto::TransactionState::Pending) => elaboration::TransactionState::Pending,
-        _ => elaboration::TransactionState::Uncleared,
+        Ok(proto::TransactionState::Cleared) => elaboration_pipeline::TransactionState::Cleared,
+        Ok(proto::TransactionState::Pending) => elaboration_pipeline::TransactionState::Pending,
+        _ => elaboration_pipeline::TransactionState::Uncleared,
     }
 }
 
-impl From<&elaboration::Journal> for proto::Journal {
-    fn from(j: &elaboration::Journal) -> Self {
+impl From<&elaboration_pipeline::Journal> for proto::Journal {
+    fn from(j: &elaboration_pipeline::Journal) -> Self {
         proto::Journal {
             transactions: j
                 .transactions
@@ -278,20 +278,20 @@ impl From<&elaboration::Journal> for proto::Journal {
     }
 }
 
-impl From<elaboration::Journal> for proto::Journal {
-    fn from(j: elaboration::Journal) -> Self {
+impl From<elaboration_pipeline::Journal> for proto::Journal {
+    fn from(j: elaboration_pipeline::Journal) -> Self {
         (&j).into()
     }
 }
 
-impl From<proto::Journal> for elaboration::Journal {
+impl From<proto::Journal> for elaboration_pipeline::Journal {
     fn from(p: proto::Journal) -> Self {
         use std::collections::BTreeMap;
 
         let transactions = p
             .transactions
             .into_iter()
-            .map(|t| elaboration::ResolvedTransaction {
+            .map(|t| elaboration_pipeline::ResolvedTransaction {
                 date: t.date,
                 secondary_date: t.secondary_date,
                 state: state_from_proto(t.state),
@@ -302,10 +302,10 @@ impl From<proto::Journal> for elaboration::Journal {
                 postings: t
                     .postings
                     .into_iter()
-                    .map(|posting| elaboration::ResolvedPosting {
+                    .map(|posting| elaboration_pipeline::ResolvedPosting {
                         account: posting.account,
                         payee: posting.payee,
-                        amount: elaboration::Amount(
+                        amount: elaboration_pipeline::Amount(
                             posting
                                 .amount
                                 .map(|a| {
@@ -327,7 +327,7 @@ impl From<proto::Journal> for elaboration::Journal {
         let accounts: BTreeMap<_, _> = p
             .accounts
             .into_iter()
-            .map(|(k, v)| (k, elaboration::AccountProperties { note: v.note }))
+            .map(|(k, v)| (k, elaboration_pipeline::AccountProperties { note: v.note }))
             .collect();
 
         let commodities: BTreeMap<_, _> = p
@@ -336,7 +336,7 @@ impl From<proto::Journal> for elaboration::Journal {
             .map(|(k, v)| {
                 (
                     k,
-                    elaboration::CommodityProperties {
+                    elaboration_pipeline::CommodityProperties {
                         format: v.format,
                         no_market: v.no_market,
                         note: v.note,
@@ -348,7 +348,7 @@ impl From<proto::Journal> for elaboration::Journal {
         let prices = p
             .prices
             .into_iter()
-            .map(|hp| elaboration::HistoricalPrice {
+            .map(|hp| elaboration_pipeline::HistoricalPrice {
                 date: hp.date,
                 time: hp.time,
                 commodity: hp.commodity,
@@ -361,7 +361,7 @@ impl From<proto::Journal> for elaboration::Journal {
             })
             .collect();
 
-        elaboration::Journal {
+        elaboration_pipeline::Journal {
             transactions,
             accounts,
             commodities,
@@ -407,7 +407,7 @@ impl Compression {
 ///
 /// Propagates any [`std::io::Error`] from `writer`.
 pub fn write_dop<W: std::io::Write>(
-    journal: &elaboration::Journal,
+    journal: &elaboration_pipeline::Journal,
     writer: &mut W,
     compression: Compression,
 ) -> std::io::Result<()> {
@@ -437,7 +437,7 @@ pub fn write_dop<W: std::io::Write>(
 pub fn read_dop<R: std::io::Read>(
     reader: &mut R,
     path: &std::path::Path,
-) -> Result<elaboration::Journal, Box<dyn std::error::Error>> {
+) -> Result<elaboration_pipeline::Journal, Box<dyn std::error::Error>> {
     use prost::Message as _;
 
     let compression = dop_read_header(reader, path)?;
@@ -454,16 +454,16 @@ pub fn read_dop<R: std::io::Read>(
     let wire = proto::Journal::decode(proto_bytes.as_slice())
         .map_err(|e| format!("{}: protobuf decode failed: {e}", path.display()))?;
 
-    Ok(elaboration::Journal::from(wire))
+    Ok(elaboration_pipeline::Journal::from(wire))
 }
 
 /// Deserialise a `.dop` file from `reader` into a raw [`proto::Journal`],
-/// skipping the conversion to [`elaboration::Journal`].
+/// skipping the conversion to [`elaboration_pipeline::Journal`].
 ///
 /// This is the fast path for CLI read-only commands: it performs the header
 /// check, optional decompression, and prost decode, but does **not** allocate
 /// the `BTreeMap`s, `String` clones, and `Amount` wrappers that
-/// `elaboration::Journal` requires. Callers iterate `proto::Journal::transactions`
+/// `elaboration_pipeline::Journal` requires. Callers iterate `proto::Journal::transactions`
 /// directly.
 ///
 /// `path` is used only in error messages.
@@ -616,7 +616,7 @@ pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> 
 ///
 /// 1. [`parser::Parser::parse`] — tokenise `input` into an [`ast::Journal`].
 /// 2. [`resolution::HIR::try_from`] — resolve dates, aliases, and metadata.
-/// 3. [`elaboration::Journal::try_from`] — evaluate amounts and balance
+/// 3. [`elaboration_pipeline::Journal::try_from`] — evaluate amounts and balance
 ///    transactions.
 ///
 /// The `parser` argument supplies the file-opener for `include` directives and
@@ -630,7 +630,7 @@ pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> 
 pub fn compile<F>(
     input: &str,
     mut parser: parser::Parser<F>,
-) -> Result<elaboration::Journal, Box<dyn std::error::Error>>
+) -> Result<elaboration_pipeline::Journal, Box<dyn std::error::Error>>
 where
     F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>,
 {
@@ -655,7 +655,7 @@ where
 ///
 /// # Errors
 ///
-/// Returns an [`elaboration::ElaborationError`] if the transaction cannot be
+/// Returns an [`elaboration_pipeline::ElaborationError`] if the transaction cannot be
 /// elaborated (e.g. unbalanced postings, expression evaluation failure, or
 /// too many null postings).
 ///
@@ -682,7 +682,7 @@ where
 pub fn eval_transaction(
     txn: resolution::Transaction,
     context: &resolution::Context,
-) -> Result<elaboration::ResolvedTransaction, elaboration::ElaborationError> {
+) -> Result<elaboration_pipeline::ResolvedTransaction, elaboration_pipeline::ElaborationError> {
     let hir = resolution::HIR {
         entries: vec![resolution::ResolutionEntry {
             context_id: 0,
@@ -691,7 +691,7 @@ pub fn eval_transaction(
         contexts: vec![context.clone()],
         ..Default::default()
     };
-    let journal = elaboration::Journal::try_from(hir)?;
+    let journal = elaboration_pipeline::Journal::try_from(hir)?;
     // The HIR contained exactly one transaction, so the journal has exactly one.
     Ok(journal
         .transactions
@@ -1080,7 +1080,7 @@ mod eval_transaction_tests {
         );
         assert!(matches!(
             result.unwrap_err(),
-            elaboration::ElaborationError::TransactionDoesNotBalance(_)
+            elaboration_pipeline::ElaborationError::TransactionDoesNotBalance(_)
         ));
     }
 
@@ -1154,7 +1154,7 @@ mod eval_transaction_tests {
         assert_eq!(resolved.description, "Independence Day");
         assert!(matches!(
             resolved.state,
-            elaboration::TransactionState::Cleared
+            elaboration_pipeline::TransactionState::Cleared
         ));
         assert_eq!(resolved.code.as_deref(), Some("IND-04"));
         assert!(resolved.secondary_date.is_some());
@@ -1175,7 +1175,7 @@ mod eval_transaction_tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            elaboration::ElaborationError::TooManyNullPostings
+            elaboration_pipeline::ElaborationError::TooManyNullPostings
         ));
     }
 }
@@ -1190,7 +1190,7 @@ mod proto_from_journal_tests {
     Assets:Cash
 ";
 
-    fn make_journal() -> elaboration::Journal {
+    fn make_journal() -> elaboration_pipeline::Journal {
         let mut p = parser::Parser {
             opener: |_: &str| Ok(String::new()),
             base_path: std::path::PathBuf::new(),

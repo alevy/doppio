@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- elaboration ---
     // Expression evaluation, transaction balancing, account registration.
     let t3 = Instant::now();
-    let journal: doppio::elaboration::Journal = hir.try_into()?;
+    let journal: doppio::elaboration_pipeline::Journal = hir.try_into()?;
     eprintln!("elaboration: {:>8.3}s", t3.elapsed().as_secs_f64());
 
     // --- serialize ---

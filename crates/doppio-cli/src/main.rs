@@ -176,7 +176,7 @@ fn load_proto_journal(
         File::open(path)?.read_to_string(&mut file)?;
         let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
         let hir: doppio::resolution::HIR = ast_journal.try_into()?;
-        let journal: doppio::elaboration::Journal = hir.try_into()?;
+        let journal: doppio::elaboration_pipeline::Journal = hir.try_into()?;
         Ok(doppio::proto::Journal::from(&journal))
     }
 }
@@ -337,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             File::open(&source)?.read_to_string(&mut file)?;
             let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
             let hir: doppio::resolution::HIR = ast_journal.try_into()?;
-            let journal: doppio::elaboration::Journal = hir.try_into()?;
+            let journal: doppio::elaboration_pipeline::Journal = hir.try_into()?;
             let compression = if no_compression {
                 doppio::Compression::None
             } else {

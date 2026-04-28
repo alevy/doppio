@@ -1,7 +1,7 @@
 //! Elaboration stage: evaluate expressions, balance transactions, and
 //! produce the final serialisable [`Journal`].
 //!
-//! This stage converts a [`resolution::HIR`] into an [`elaboration::Journal`]
+//! This stage converts a [`resolution::HIR`] into an [`elaboration_pipeline::Journal`]
 //! by performing the following work:
 //!
 //! - **Expression evaluation** — [`ast::ValueExpr`] trees are evaluated to
