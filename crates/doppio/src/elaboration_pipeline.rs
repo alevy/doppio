@@ -34,59 +34,6 @@ use crate::{
     resolution,
 };
 
-/// The fully elaborated journal: the final output of the compilation pipeline.
-///
-/// Convert to [`crate::elaboration::Journal`] via `From<&Journal>` for serialisation
-/// to the `.dop` binary format (Protocol Buffers + optional deflate).
-#[derive(Debug)]
-pub struct Journal {
-    /// All transactions in source order, with amounts fully evaluated.
-    pub transactions: Vec<ResolvedTransaction>,
-    /// All accounts referenced by any posting, with their declared properties.
-    pub accounts: BTreeMap<String, AccountProperties>,
-    /// Display and market-data properties declared in `commodity` directives.
-    pub commodities: BTreeMap<String, CommodityProperties>,
-    /// Market price quotes from `P` directives, in source order, with the
-    /// price expression fully evaluated to a concrete `(Decimal, commodity)`.
-    pub prices: Vec<HistoricalPrice>,
-}
-
-/// Display and market-data properties of a commodity, persisted in the journal.
-#[derive(Debug, Default)]
-pub struct CommodityProperties {
-    /// A display format string from a `format` sub-directive (e.g. `"$1,000.00"`).
-    pub format: Option<String>,
-    /// `true` if the commodity was declared with `nomarket`.
-    pub no_market: bool,
-    /// A free-form note describing the commodity.
-    pub note: Option<String>,
-}
-
-/// A fully evaluated historical price entry produced from a `P` directive.
-#[derive(Debug)]
-pub struct HistoricalPrice {
-    /// Days since the Unix epoch on which this price was recorded.
-    pub date: i32,
-    /// Optional wall-clock time of the price quote (`"HH:MM"` or `"HH:MM:SS"`).
-    pub time: Option<String>,
-    /// The commodity whose price is being recorded (e.g. `"AAPL"`, `"BTC"`).
-    pub commodity: String,
-    /// The evaluated price of one unit of `commodity`.
-    pub price: Decimal,
-    /// The commodity the price is expressed in (e.g. `"$"`, `"USD"`).
-    pub price_commodity: Commodity,
-}
-
-/// Properties of an account declared with an `account` directive.
-#[derive(Debug, Default)]
-pub struct AccountProperties {
-    /// A free-form note describing the account.
-    pub note: Option<String>,
-    // Note: assert/check expressions are evaluated during elaboration and are
-    // not persisted to the serialised journal — they are a compile-time check,
-    // not runtime data.
-}
-
 /// Per-account running balance, used during elaboration to evaluate balance
 /// assertions and the `account()` expression function.
 #[derive(Default, Clone, Debug)]
@@ -103,53 +50,6 @@ struct AccountBalances {
 #[derive(Default, Clone, Debug)]
 struct RunningState {
     account_balances: BTreeMap<String, AccountBalances>,
-}
-
-/// A fully evaluated and balanced transaction, ready for serialisation.
-///
-/// Note: this type does not implement [`std::fmt::Display`]. To serialise
-/// transactions back to Ledger source text, use [`crate::resolution::Transaction`]
-/// with [`crate::write_ledger`].
-#[derive(Debug)]
-pub struct ResolvedTransaction {
-    /// Days since the Unix epoch (1970-01-01 = 0).
-    ///
-    /// Stored as `i32` rather than a `NaiveDate` because it is trivially
-    /// sortable and avoids embedding chrono's internal representation in the
-    /// on-disk format.
-    pub date: i32,
-    /// Optional secondary date in the same epoch-days format.
-    pub secondary_date: Option<i32>,
-    /// Cleared / pending / uncleared state.
-    pub state: TransactionState,
-    /// Optional reference code from the transaction header.
-    pub code: Option<String>,
-    /// The payee / description.
-    pub description: String,
-    /// Tags extracted from header notes.
-    pub tags: Vec<String>,
-    /// Key-value metadata extracted from header notes.
-    pub metadata: BTreeMap<String, String>,
-    /// The resolved postings (all amounts concrete, null posting filled in).
-    pub postings: Vec<ResolvedPosting>,
-}
-
-/// A posting with a fully evaluated, concrete amount.
-#[derive(Debug)]
-pub struct ResolvedPosting {
-    /// The canonical account name (after alias resolution).
-    pub account: String,
-    /// The payee for this posting — taken from posting-level `payee:` metadata
-    /// if present, otherwise inherited from the transaction description.
-    pub payee: String,
-    /// The posting amount, keyed by commodity.
-    pub amount: Amount,
-    /// Per-posting state.
-    pub state: TransactionState,
-    /// Tags extracted from posting notes.
-    pub tags: Vec<String>,
-    /// Key-value metadata from posting notes.
-    pub metadata: BTreeMap<String, String>,
 }
 
 /// A commodity name (e.g. `"USD"`, `"BTC"`, `"$"`).
