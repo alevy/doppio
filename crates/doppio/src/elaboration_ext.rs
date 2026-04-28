@@ -63,12 +63,12 @@ impl elaboration::Posting {
     /// wire payload with `amount = None` produces an empty `Amount` rather
     /// than a panic.
     pub fn amount(&self) -> &elaboration::Amount {
-        static EMPTY: std::sync::OnceLock<elaboration::Amount> = std::sync::OnceLock::new();
+        static EMPTY_AMOUNT: elaboration::Amount = elaboration::Amount {
+            by_commodity: std::collections::BTreeMap::new(),
+        };
         match self.amount.as_ref() {
             Some(a) => a,
-            None => EMPTY.get_or_init(|| elaboration::Amount {
-                by_commodity: Default::default(),
-            }),
+            None => &EMPTY_AMOUNT,
         }
     }
 

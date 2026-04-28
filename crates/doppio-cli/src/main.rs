@@ -315,7 +315,7 @@ impl JournalFilter {
 /// Returns `None` if the commodity has no declared format.
 fn commodity_format<'a>(
     commodity: &str,
-    commodities: &'a std::collections::HashMap<String, doppio::elaboration::CommodityProperties>,
+    commodities: &'a std::collections::BTreeMap<String, doppio::elaboration::CommodityProperties>,
 ) -> Option<&'a str> {
     commodities.get(commodity).and_then(|p| p.format.as_deref())
 }
