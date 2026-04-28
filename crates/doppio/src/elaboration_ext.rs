@@ -90,6 +90,41 @@ impl elaboration::Posting {
     }
 }
 
+impl elaboration::Transaction {
+    /// Convert the epoch-days `date` field to a [`chrono::NaiveDate`].
+    ///
+    /// The wire format stores transaction dates as `i32` epoch days
+    /// (1970-01-01 = 0, negative for pre-epoch). This method returns the
+    /// corresponding `NaiveDate`.
+    pub fn date_naive(&self) -> chrono::NaiveDate {
+        epoch_days_to_naive_date(self.date)
+    }
+
+    /// Convert the optional `secondary_date` field to a [`chrono::NaiveDate`].
+    ///
+    /// Returns `None` if the secondary date was not set.
+    pub fn secondary_date_naive(&self) -> Option<chrono::NaiveDate> {
+        self.secondary_date.map(epoch_days_to_naive_date)
+    }
+}
+
+impl elaboration::HistoricalPrice {
+    /// Convert the epoch-days `date` field to a [`chrono::NaiveDate`].
+    ///
+    /// The wire format stores historical-price dates as `i32` epoch days
+    /// (1970-01-01 = 0, negative for pre-epoch).
+    pub fn date_naive(&self) -> chrono::NaiveDate {
+        epoch_days_to_naive_date(self.date)
+    }
+}
+
+/// Convert epoch days (1970-01-01 = 0, negative for pre-epoch) to a
+/// `chrono::NaiveDate`. Internal helper for the `date_naive()` accessors.
+fn epoch_days_to_naive_date(days: i32) -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("1970-01-01 is a valid date")
+        + chrono::TimeDelta::days(days as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{decimal_from_proto, elaboration};
@@ -363,5 +398,89 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(posting.amount_in("USD"), Some(Decimal::new(758, 2)));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Transaction::date_naive / secondary_date_naive
+    // HistoricalPrice::date_naive
+    // ──────────────────────────────────────────────────────────────────────
+
+    use chrono::NaiveDate;
+
+    fn epoch_days(year: i32, month: u32, day: u32) -> i32 {
+        let date = NaiveDate::from_ymd_opt(year, month, day).unwrap();
+        let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+        (date - epoch).num_days() as i32
+    }
+
+    #[test]
+    fn transaction_date_naive_epoch() {
+        let txn = elaboration::Transaction {
+            date: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            txn.date_naive(),
+            NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn transaction_date_naive_positive() {
+        let txn = elaboration::Transaction {
+            date: epoch_days(2024, 1, 15),
+            ..Default::default()
+        };
+        assert_eq!(
+            txn.date_naive(),
+            NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()
+        );
+    }
+
+    #[test]
+    fn transaction_date_naive_pre_epoch() {
+        let txn = elaboration::Transaction {
+            date: epoch_days(1969, 6, 30),
+            ..Default::default()
+        };
+        assert_eq!(
+            txn.date_naive(),
+            NaiveDate::from_ymd_opt(1969, 6, 30).unwrap()
+        );
+    }
+
+    #[test]
+    fn transaction_secondary_date_naive_some() {
+        let txn = elaboration::Transaction {
+            date: epoch_days(2024, 1, 15),
+            secondary_date: Some(epoch_days(2024, 2, 1)),
+            ..Default::default()
+        };
+        assert_eq!(
+            txn.secondary_date_naive(),
+            Some(NaiveDate::from_ymd_opt(2024, 2, 1).unwrap())
+        );
+    }
+
+    #[test]
+    fn transaction_secondary_date_naive_none() {
+        let txn = elaboration::Transaction {
+            date: epoch_days(2024, 1, 15),
+            secondary_date: None,
+            ..Default::default()
+        };
+        assert_eq!(txn.secondary_date_naive(), None);
+    }
+
+    #[test]
+    fn historical_price_date_naive() {
+        let hp = elaboration::HistoricalPrice {
+            date: epoch_days(2024, 3, 4),
+            ..Default::default()
+        };
+        assert_eq!(
+            hp.date_naive(),
+            NaiveDate::from_ymd_opt(2024, 3, 4).unwrap()
+        );
     }
 }
