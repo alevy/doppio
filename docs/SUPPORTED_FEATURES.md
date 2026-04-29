@@ -75,7 +75,7 @@ Status legend:
 | `define name = expr` (zero-arg alias) | ✅ | |
 | `define name(p1, p2, ...) = expr` (parameterised) | ✅ | v0.2.0 (PR #87). Supports both value-typed and bool-typed bodies. Cyclic definitions are caught with `RecursionLimitExceeded` |
 | `alias short = long` | ✅ | Account-name aliases |
-| `P <date> <commodity> <price>` (historical price) | ✅ | Parsed and stored. Rendering / FX conversion not yet applied |
+| `P <date> <commodity> <price>` (historical price) | ✅ | Stored on `journal.prices`; consumed by `Journal::exchange_rate_at()` and `dop balance/register --exchange COMMODITY` |
 | Standalone balance-assertion directive `<date> = account amount` | ✅ | Enforced during elaboration |
 | `D $1000.00` (default commodity) | ✅ | Both the bare-`D` form and the `commodity ... default` form are supported; bare `D` is lowered at parse time to the same `Directive::Commodity` representation |
 | `~` budget directive | 🚫 | Parsed but intentionally not elaborated. No effect on balances or reports |
@@ -116,6 +116,7 @@ Status legend:
 | `dop balance --format text\|json\|csv` | ✅ | |
 | `dop register` | ✅ | Per-posting register with running totals per commodity |
 | `dop register --begin/--end/--cleared/--tag/--format` | ✅ | Same filters as `balance` |
+| `dop balance/register --exchange COMMODITY` (or `-X`) | ✅ | Converts non-target commodity balances via `P`-directive price chain; warns to stderr for unconvertible commodities. Conversion uses the report's `--end` date as the as-of cutoff, or the latest available quote if `--end` is not specified. ledger-cli converts per-posting using the transaction's own date by default; this implementation uses a single uniform as-of for all postings, which is simpler but means historical reports without `--end` will use anachronistically recent rates. |
 | `dop print SRC` | ✅ | Re-emits source. Format strings not applied (intentional) |
 | `dop stats` | ✅ | Transaction/account/commodity counts and date range |
 | `dop accounts` | ✅ | Lists unique account names |

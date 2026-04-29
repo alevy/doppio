@@ -595,13 +595,8 @@ fn virtual_posting_balanced() {
 }
 
 #[test]
-#[ignore = "tracks #141 — FX conversion via P directive not yet wired into reports"]
 fn fx_conversion_p_directive() {
     // The fixture declares `P 2024-01-01 EUR $1.10` and a posting in EUR.
-    // Storage of the P directive works today (covered by
-    // `historical_price_directive`); what's missing is the helper that
-    // consults the price chain to convert other-commodity balances when
-    // a target commodity is requested.
     let j = compile("fx_conversion_p_directive.ledger");
 
     // Prerequisite: the price was parsed and stored.
@@ -617,11 +612,15 @@ fn fx_conversion_p_directive() {
         .expect("travel posting present");
     assert_eq!(travel.amount_in("EUR"), Some(dec!(100)));
 
-    // TODO(#141): once a price-lookup / FX helper ships on
-    // `elaboration::Journal`, assert end-to-end conversion. Sketch:
-    //   let usd = j.balance_in("Expenses:Travel", "$", as_of)
-    //       .expect("FX conversion succeeds");
-    //   assert_eq!(usd, dec!(110)); // 100 EUR * $1.10/EUR
+    // `Journal::exchange_rate_at` resolves the EUR→$ conversion from the P directive.
+    let rate = j
+        .exchange_rate_at("EUR", "$", None)
+        .expect("EUR→$ quote is present in the journal");
+    assert_eq!(rate, dec!(1.10));
+
+    // Applying the rate: 100 EUR * 1.10 = $110.
+    let eur_balance = travel.amount_in("EUR").unwrap();
+    assert_eq!(eur_balance * rate, dec!(110));
 }
 
 #[test]
