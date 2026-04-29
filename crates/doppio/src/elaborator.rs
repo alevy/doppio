@@ -3563,4 +3563,76 @@ account Assets:Savings
             .expect("virtual posting present");
         assert_eq!(virt.amount_in("$"), Some(dec!(-25)));
     }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Lot annotation elaborator tests
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_lot_cost_only_drives_cash_balance() {
+        // 10 AAPL {$150} (no @ price) → cash side -$1500.
+        let input = "\
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL {$150}
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        let t = &journal.transactions[0];
+        assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+        // No @/@@, cost annotation drives the cash balance: 10 * $150 = $1500.
+        assert_eq!(
+            t.postings[1].amount_in("$"),
+            Some(dec!(-1500)),
+            "cash side should be -$1500 when lot cost drives balance"
+        );
+        // Lot cost preserved on the proto posting.
+        assert_eq!(t.postings[0].lot_cost_in("$"), Some(dec!(150)));
+    }
+
+    #[test]
+    fn test_lot_cost_and_price_price_wins_cash_cost_preserved() {
+        // 10 AAPL {$150} @ $155 → cash -$1550 (price drives balance),
+        // but lot.cost = $150 is still stored.
+        let input = "\
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL {$150} @ $155
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        let t = &journal.transactions[0];
+        assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+        // Price wins over lot cost for cash balance: 10 * $155 = $1550.
+        assert_eq!(
+            t.postings[1].amount_in("$"),
+            Some(dec!(-1550)),
+            "cash side should be -$1550 when @ price is present"
+        );
+        // Lot cost annotation is preserved even though it didn't drive balance.
+        assert_eq!(
+            t.postings[0].lot_cost_in("$"),
+            Some(dec!(150)),
+            "lot cost should be $150, not the price $155"
+        );
+    }
+
+    #[test]
+    fn test_lot_no_cost_no_price_value_in_own_commodity() {
+        // 10 AAPL (no annotation, no price) → the null posting balances in
+        // AAPL (today's fallback: the commodity contributes itself).
+        let input = "\
+2024-03-01 Transfer
+    Assets:Brokerage   10 AAPL
+    Assets:OtherBrokerage
+";
+        let journal = elaborate(input);
+        let t = &journal.transactions[0];
+        assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+        // Null posting inferred as -10 AAPL.
+        assert_eq!(
+            t.postings[1].amount_in("AAPL"),
+            Some(dec!(-10)),
+            "null posting should balance as -10 AAPL when no price is given"
+        );
+        assert!(!t.postings[0].has_lot(), "no lot annotation should be set");
+    }
 }

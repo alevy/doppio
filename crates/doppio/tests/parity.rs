@@ -571,6 +571,42 @@ fn lot_persistence_cost_vs_price() {
 }
 
 #[test]
+fn lot_persistence_date_only() {
+    // Fixture: 10 AAPL [2024-01-15] — date annotation only, no cost.
+    // Exercises the cost-fallback path: no {cost} or @ price means the
+    // null posting balances in the posted commodity (AAPL contributes
+    // itself as -10 AAPL). The lot's date field is still preserved.
+    let j = compile("lot_persistence_date_only.ledger");
+    let t = &j.transactions[0];
+    assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+    // Cost-fallback: AAPL contributes itself, null posting = -10 AAPL.
+    assert_eq!(t.postings[1].amount_in("AAPL"), Some(dec!(-10)));
+    assert!(t.postings[0].has_lot(), "lot annotation should be present");
+    assert_eq!(
+        t.postings[0].lot_date_naive(),
+        Some(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()),
+    );
+    assert_eq!(t.postings[0].lot_cost_in("$"), None, "no cost annotation");
+    assert_eq!(t.postings[0].lot_note(), None, "no note annotation");
+}
+
+#[test]
+fn lot_persistence_note_only() {
+    // Fixture: 10 AAPL ((BUY-2024-01)) — note annotation only, no cost.
+    // Exercises the cost-fallback path: no {cost} or @ price means the
+    // null posting balances in AAPL. The lot's note field is preserved.
+    let j = compile("lot_persistence_note_only.ledger");
+    let t = &j.transactions[0];
+    assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+    // Cost-fallback: null posting = -10 AAPL.
+    assert_eq!(t.postings[1].amount_in("AAPL"), Some(dec!(-10)));
+    assert!(t.postings[0].has_lot(), "lot annotation should be present");
+    assert_eq!(t.postings[0].lot_note(), Some("BUY-2024-01"));
+    assert_eq!(t.postings[0].lot_date_naive(), None, "no date annotation");
+    assert_eq!(t.postings[0].lot_cost_in("$"), None, "no cost annotation");
+}
+
+#[test]
 fn virtual_posting_unbalanced() {
     // Fixture has 3 postings: Assets:Checking $100, Equity:Opening -$100,
     // (Equity:Reservations) -$25. The parens mark the third as a virtual

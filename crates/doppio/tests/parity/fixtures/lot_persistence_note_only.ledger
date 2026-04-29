@@ -1,0 +1,6 @@
+; Lot persistence: `((note))` alone — no `{cost}`. Exercises the cost-fallback
+; path where ((note)) is recorded on the lot but the cash side balances in the
+; posted commodity (AAPL contributes itself). Tracks #139.
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL ((BUY-2024-01))
+    Assets:OtherBrokerage
