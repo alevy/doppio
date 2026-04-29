@@ -48,7 +48,7 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
         for pair in pairs.into_iter().next().unwrap().into_inner() {
             match pair.as_rule() {
                 Rule::transaction => {
-                    entries.push(Entry::Transaction(parse_transaction(pair)));
+                    entries.push(Entry::Transaction(parse_transaction(pair)?));
                 }
                 Rule::comment_line => {
                     entries.push(Entry::Comment(pair.as_str().to_string()));
@@ -118,7 +118,7 @@ fn parse_state(s: &str) -> TransactionState {
     }
 }
 
-fn parse_transaction(pair: Pair<Rule>) -> Transaction {
+fn parse_transaction(pair: Pair<Rule>) -> Result<Transaction, Box<dyn std::error::Error>> {
     let mut inner = pair.into_inner();
     let header_pair = inner.next().unwrap();
     let mut postings = Vec::new();
@@ -132,7 +132,7 @@ fn parse_transaction(pair: Pair<Rule>) -> Transaction {
                 }
             }
             Rule::posting => {
-                postings.push(parse_posting(p));
+                postings.push(parse_posting(p)?);
             }
             _ => {}
         }
@@ -164,7 +164,7 @@ fn parse_transaction(pair: Pair<Rule>) -> Transaction {
         }
     }
 
-    Transaction {
+    Ok(Transaction {
         date,
         secondary_date: None,
         state,
@@ -172,10 +172,10 @@ fn parse_transaction(pair: Pair<Rule>) -> Transaction {
         description,
         notes,
         postings,
-    }
+    })
 }
 
-fn parse_posting(pair: Pair<Rule>) -> Posting {
+fn parse_posting(pair: Pair<Rule>) -> Result<Posting, Box<dyn std::error::Error>> {
     let inner = pair.into_inner();
     let mut state = TransactionState::Uncleared;
     let mut account = String::new();
@@ -218,7 +218,7 @@ fn parse_posting(pair: Pair<Rule>) -> Posting {
                     _ => {}
                 }
             }
-            Rule::amount_logic => amount = Some(parse_amount_logic(p)),
+            Rule::amount_logic => amount = Some(parse_amount_logic(p)?),
             Rule::note => notes.push(p.into_inner().as_str().trim().to_string()),
             Rule::posting_note => {
                 if let Some(note_pair) = p.into_inner().next() {
@@ -229,21 +229,23 @@ fn parse_posting(pair: Pair<Rule>) -> Posting {
         }
     }
 
-    Posting {
+    Ok(Posting {
         account,
         amount,
         state,
         notes,
         kind,
-    }
+    })
 }
 
-fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
+fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::error::Error>> {
     let p = pair.into_inner().next().unwrap();
     match p.as_rule() {
         Rule::value_logic => {
             let inner = p.into_inner();
             let mut value = None;
+            let mut lot_annotation: LotAnnotation = LotAnnotation::default();
+            let mut has_lot_annotation = false;
             let mut lot_pricing = None;
             let mut balance_assertion = None;
 
@@ -252,13 +254,23 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
                     Rule::value_expr => {
                         value = Some(parse_expr(p));
                     }
-                    Rule::lot_price => {
-                        let s = p.as_str();
-                        let inner_val = parse_expr(p.into_inner().next().unwrap());
-                        if s.starts_with("@@") {
-                            lot_pricing = Some(LotPricing::Total(inner_val));
-                        } else {
-                            lot_pricing = Some(LotPricing::Unit(inner_val));
+                    Rule::lot_annotation_or_price => {
+                        let child = p.into_inner().next().unwrap();
+                        match child.as_rule() {
+                            Rule::lot_price => {
+                                let s = child.as_str();
+                                let inner_val = parse_expr(child.into_inner().next().unwrap());
+                                if s.starts_with("@@") {
+                                    lot_pricing = Some(LotPricing::Total(inner_val));
+                                } else {
+                                    lot_pricing = Some(LotPricing::Unit(inner_val));
+                                }
+                            }
+                            Rule::lot_annotation => {
+                                has_lot_annotation = true;
+                                parse_lot_annotation_into(child, &mut lot_annotation)?;
+                            }
+                            _ => unreachable!(),
                         }
                     }
                     Rule::assertion => {
@@ -274,11 +286,12 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
                     _ => unreachable!(),
                 }
             }
-            AmountDetails::Amount {
+            Ok(AmountDetails::Amount {
                 value: value.unwrap(),
+                lot_annotation: has_lot_annotation.then_some(lot_annotation),
                 lot_pricing,
                 balance_assertion,
-            }
+            })
         }
         Rule::assertion => {
             // The assertion rule: assertion_op ~ ws* ~ value_expr.
@@ -287,10 +300,59 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
                 .into_inner()
                 .find(|p| p.as_rule() == Rule::value_expr)
                 .expect("assertion must have a value_expr");
-            AmountDetails::BalanceAssignment(parse_expr(inner_expr_pair))
+            Ok(AmountDetails::BalanceAssignment(parse_expr(
+                inner_expr_pair,
+            )))
         }
         _ => unreachable!("unexpected rule in amount_logic: {:?}", p.as_rule()),
     }
+}
+
+/// Merge a single `lot_annotation` grammar node into an accumulating
+/// [`LotAnnotation`] struct.  Duplicate annotations of the same kind take the
+/// last value (matching ledger-cli behaviour).
+///
+/// # Errors
+///
+/// Returns an error if a `{{total}}` double-brace lot cost is encountered.
+/// The double-brace form is syntactically accepted by the grammar but its
+/// per-lot total-cost semantics are not yet implemented.  Treating it silently
+/// as a per-unit cost would produce wrong balances (e.g. `10 AAPL {{$1500}}`
+/// would yield a cash contribution of $15 000 instead of $1 500).  Use
+/// `{cost}` for per-unit cost or `@@ total` for transient total cost instead.
+fn parse_lot_annotation_into(
+    pair: Pair<Rule>,
+    acc: &mut LotAnnotation,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let child = pair.into_inner().next().unwrap();
+    match child.as_rule() {
+        Rule::lot_cost => {
+            // Reject the `{{expr}}` double-brace form. The grammar matches it
+            // before `{expr}` so the raw token text starts with "{{".
+            if child.as_str().starts_with("{{") {
+                return Err(
+                    "double-brace `{{total}}` lot syntax is not yet implemented; \
+                     use `{cost}` for per-unit cost or `@@ total` for transient total cost"
+                        .into(),
+                );
+            }
+            let expr_pair = child.into_inner().next().unwrap();
+            acc.cost = Some(parse_expr(expr_pair));
+        }
+        Rule::lot_date => {
+            let date_pair = child.into_inner().next().unwrap();
+            let d = parse_date(date_pair);
+            if let (Some(year), month, day) = (d.year, d.month, d.date) {
+                acc.date = chrono::NaiveDate::from_ymd_opt(year, month, day);
+            }
+        }
+        Rule::lot_note => {
+            let note_str = child.into_inner().next().unwrap().as_str().to_string();
+            acc.note = Some(note_str);
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
 }
 
 fn parse_historical_price(pair: Pair<Rule>) -> HistoricalPrice {
@@ -1110,5 +1172,102 @@ P 2024-02-15 AAPL $182.50
     assets:bank:checking        $-1825.00
 ";
         parse_hledger(input).expect("sample journal should parse without error");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Lot annotation grammar tests
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_lot_annotation_cost_only() {
+        let input = "2024-03-01 Buy\n    assets:brokerage   10 AAPL {$150}\n    assets:cash\n";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction")
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        let AmountDetails::Amount { lot_annotation, .. } = details else {
+            panic!("expected Amount details")
+        };
+        let ann = lot_annotation.as_ref().expect("lot annotation present");
+        assert!(ann.cost.is_some(), "cost should be set");
+        assert!(ann.date.is_none(), "date should be absent");
+        assert!(ann.note.is_none(), "note should be absent");
+    }
+
+    #[test]
+    fn test_lot_annotation_date_only() {
+        let input =
+            "2024-03-01 Buy\n    assets:brokerage   10 AAPL [2024-01-15]\n    assets:cash\n";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction")
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        let AmountDetails::Amount { lot_annotation, .. } = details else {
+            panic!("expected Amount details")
+        };
+        let ann = lot_annotation.as_ref().expect("lot annotation present");
+        assert!(ann.cost.is_none(), "cost should be absent");
+        assert_eq!(
+            ann.date,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 15),
+            "date should be 2024-01-15"
+        );
+        assert!(ann.note.is_none(), "note should be absent");
+    }
+
+    #[test]
+    fn test_lot_annotation_note_only() {
+        let input =
+            "2024-03-01 Buy\n    assets:brokerage   10 AAPL ((BUY-2024-01))\n    assets:cash\n";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction")
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        let AmountDetails::Amount { lot_annotation, .. } = details else {
+            panic!("expected Amount details")
+        };
+        let ann = lot_annotation.as_ref().expect("lot annotation present");
+        assert!(ann.cost.is_none(), "cost should be absent");
+        assert!(ann.date.is_none(), "date should be absent");
+        assert_eq!(ann.note.as_deref(), Some("BUY-2024-01"));
+    }
+
+    #[test]
+    fn test_lot_annotation_combined() {
+        let input = "2024-03-01 Buy\n    assets:brokerage   10 AAPL {$150} [2024-03-01] ((BUY-2024-01))\n    assets:cash\n";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction")
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        let AmountDetails::Amount { lot_annotation, .. } = details else {
+            panic!("expected Amount details")
+        };
+        let ann = lot_annotation.as_ref().expect("lot annotation present");
+        assert!(ann.cost.is_some(), "cost should be set");
+        assert_eq!(
+            ann.date,
+            chrono::NaiveDate::from_ymd_opt(2024, 3, 1),
+            "date should be 2024-03-01"
+        );
+        assert_eq!(ann.note.as_deref(), Some("BUY-2024-01"));
+    }
+
+    #[test]
+    fn test_lot_annotation_double_brace_rejected() {
+        let input = "2024-03-01 Buy\n    assets:brokerage   10 AAPL {{$1500}}\n    assets:cash\n";
+        let result = parse_hledger(input);
+        assert!(
+            result.is_err(),
+            "double-brace `{{total}}` should be rejected at parse time"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("double-brace"),
+            "error message should mention double-brace, got: {msg}"
+        );
     }
 }

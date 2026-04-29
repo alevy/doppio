@@ -115,6 +115,35 @@ impl elaboration::Posting {
     pub fn amount_in(&self, commodity: &str) -> Option<rust_decimal::Decimal> {
         self.amount.as_ref()?.get(commodity)
     }
+
+    /// Returns `true` iff this posting carries any lot annotation (cost, date,
+    /// or note).  Returns `false` when `self.lot` is absent or all three fields
+    /// are unset.
+    pub fn has_lot(&self) -> bool {
+        self.lot
+            .as_ref()
+            .map(|l| l.cost.is_some() || l.date.is_some() || l.note.is_some())
+            .unwrap_or(false)
+    }
+
+    /// The lot's per-unit cost for `commodity`, or `None` if this posting has
+    /// no cost annotation or `commodity` is not present in the cost amount.
+    pub fn lot_cost_in(&self, commodity: &str) -> Option<rust_decimal::Decimal> {
+        self.lot.as_ref()?.cost.as_ref()?.get(commodity)
+    }
+
+    /// The lot's acquisition date as a [`chrono::NaiveDate`], or `None` if no
+    /// `[date]` annotation was present.
+    pub fn lot_date_naive(&self) -> Option<chrono::NaiveDate> {
+        let days = self.lot.as_ref()?.date?;
+        Some(epoch_days_to_naive_date(days))
+    }
+
+    /// The lot's free-form note, or `None` if no `((note))` annotation was
+    /// present.
+    pub fn lot_note(&self) -> Option<&str> {
+        self.lot.as_ref()?.note.as_deref()
+    }
 }
 
 impl elaboration::Transaction {
@@ -691,6 +720,143 @@ mod tests {
         );
     }
 
+    #[test]
+    fn posting_kind_three_returns_virtual_balanced() {
+        let p = elaboration::Posting {
+            kind: 3,
+            ..Default::default()
+        };
+        assert_eq!(p.posting_kind(), elaboration::PostingKind::VirtualBalanced);
+    }
+
+    #[test]
+    fn posting_kind_unknown_wire_value_falls_back_to_real() {
+        // An unknown wire value (e.g. from a future format version) should fall
+        // back to Real rather than panicking.
+        let p = elaboration::Posting {
+            kind: 99,
+            ..Default::default()
+        };
+        assert_eq!(p.posting_kind(), elaboration::PostingKind::Real);
+        assert!(p.is_real(), "unknown wire values must be treated as real");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Lot accessor unit tests
+    // ──────────────────────────────────────────────────────────────────────
+
+    fn posting_with_lot(lot: elaboration::Lot) -> elaboration::Posting {
+        elaboration::Posting {
+            account: "Assets:Brokerage".to_string(),
+            amount: Some(elaboration::Amount {
+                by_commodity: [("AAPL".to_string(), make_decimal(0, 10, 0))].into(),
+            }),
+            lot: Some(lot),
+            ..Default::default()
+        }
+    }
+
+    fn posting_no_lot() -> elaboration::Posting {
+        elaboration::Posting {
+            account: "Assets:Cash".to_string(),
+            amount: Some(elaboration::Amount {
+                by_commodity: [("USD".to_string(), make_decimal(0, 100, 0))].into(),
+            }),
+            lot: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn has_lot_returns_false_when_no_annotation() {
+        let posting = posting_no_lot();
+        assert!(!posting.has_lot());
+    }
+
+    #[test]
+    fn has_lot_returns_false_when_lot_all_none() {
+        // A lot proto message present but all fields unset.
+        let posting = posting_with_lot(elaboration::Lot {
+            cost: None,
+            date: None,
+            note: None,
+        });
+        assert!(!posting.has_lot());
+    }
+
+    #[test]
+    fn has_lot_returns_true_when_cost_set() {
+        let cost = elaboration::Amount {
+            by_commodity: [("$".to_string(), make_decimal(0, 150, 0))].into(),
+        };
+        let posting = posting_with_lot(elaboration::Lot {
+            cost: Some(cost),
+            date: None,
+            note: None,
+        });
+        assert!(posting.has_lot());
+    }
+
+    #[test]
+    fn has_lot_returns_true_when_only_date_set() {
+        let posting = posting_with_lot(elaboration::Lot {
+            cost: None,
+            date: Some(epoch_days(2024, 3, 1)),
+            note: None,
+        });
+        assert!(posting.has_lot());
+    }
+
+    #[test]
+    fn lot_cost_in_returns_decimal_when_present() {
+        let cost = elaboration::Amount {
+            by_commodity: [("$".to_string(), make_decimal(0, 150, 0))].into(),
+        };
+        let posting = posting_with_lot(elaboration::Lot {
+            cost: Some(cost),
+            date: None,
+            note: None,
+        });
+        assert_eq!(posting.lot_cost_in("$"), Some(Decimal::from(150u32)));
+    }
+
+    #[test]
+    fn lot_cost_in_returns_none_when_commodity_absent() {
+        let cost = elaboration::Amount {
+            by_commodity: [("$".to_string(), make_decimal(0, 150, 0))].into(),
+        };
+        let posting = posting_with_lot(elaboration::Lot {
+            cost: Some(cost),
+            date: None,
+            note: None,
+        });
+        // "EUR" is not in the cost amount.
+        assert_eq!(posting.lot_cost_in("EUR"), None);
+    }
+
+    #[test]
+    fn lot_date_naive_round_trips_through_epoch() {
+        let date = NaiveDate::from_ymd_opt(2024, 3, 15).unwrap();
+        let days = epoch_days(2024, 3, 15);
+        let posting = posting_with_lot(elaboration::Lot {
+            cost: None,
+            date: Some(days),
+            note: None,
+        });
+        assert_eq!(posting.lot_date_naive(), Some(date));
+    }
+
+    #[test]
+    fn lot_note_returns_str_when_present() {
+        let posting = posting_with_lot(elaboration::Lot {
+            cost: None,
+            date: None,
+            note: Some("BUY-2024-01".to_string()),
+        });
+        assert_eq!(posting.lot_note(), Some("BUY-2024-01"));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
     // Journal::exchange_rate_at
     // ──────────────────────────────────────────────────────────────────────
 
@@ -815,27 +981,6 @@ mod tests {
             None,
             "future quote must be invisible to past as_of"
         );
-    }
-
-    #[test]
-    fn posting_kind_three_returns_virtual_balanced() {
-        let p = elaboration::Posting {
-            kind: 3,
-            ..Default::default()
-        };
-        assert_eq!(p.posting_kind(), elaboration::PostingKind::VirtualBalanced);
-    }
-
-    #[test]
-    fn posting_kind_unknown_wire_value_falls_back_to_real() {
-        // An unknown wire value (e.g. from a future format version) should fall
-        // back to Real rather than panicking.
-        let p = elaboration::Posting {
-            kind: 99,
-            ..Default::default()
-        };
-        assert_eq!(p.posting_kind(), elaboration::PostingKind::Real);
-        assert!(p.is_real(), "unknown wire values must be treated as real");
     }
 
     #[test]

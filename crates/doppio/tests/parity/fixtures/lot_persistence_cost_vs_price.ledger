@@ -1,0 +1,5 @@
+; Lot persistence: {cost} vs @ price interaction. Tracks #139.
+; Price ($155) drives cash balance; cost ($150) is the lot cost basis.
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL {$150} @ $155
+    Assets:Cash

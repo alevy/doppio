@@ -1,0 +1,6 @@
+; Lot persistence: `[date]` alone — no `{cost}`. Exercises the cost-fallback
+; path where [date] is recorded on the lot but the cash side balances in the
+; posted commodity (AAPL contributes itself). Tracks #139.
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL [2024-01-15]
+    Assets:OtherBrokerage

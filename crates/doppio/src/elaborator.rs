@@ -407,9 +407,13 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                 .cloned()
                                 .unwrap_or(posting.account);
                             let account_balance = state.account_balances.get(&account_name);
-                            let (value, commodity, lot_pricing) = match amount {
+                            // `lot_cash` — the (total, commodity) pair to use for
+                            // transaction balancing, along with the elaborated
+                            // lot annotation for the proto output.
+                            let (value, commodity, lot_cash, proto_lot) = match amount {
                                 AmountDetails::Amount {
                                     value,
+                                    lot_annotation,
                                     lot_pricing,
                                     balance_assertion,
                                 } => {
@@ -418,7 +422,55 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                         entry_context,
                                         &state,
                                     )?;
-                                    let lot_pricing = match lot_pricing {
+
+                                    // Evaluate the optional lot annotation (cost/date/note).
+                                    // Preserved on the proto Posting regardless of which
+                                    // path drives the cash balance.
+                                    //
+                                    // `cost_for_balance`: the evaluated (per_unit_cost,
+                                    // cost_commodity) pair, kept separate so the
+                                    // cash-balance fallback path can use it without
+                                    // re-parsing the proto Amount.
+                                    let (proto_lot, cost_for_balance) =
+                                        if let Some(ann) = lot_annotation {
+                                            let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+                                                .expect("epoch is valid");
+                                            let proto_date =
+                                                ann.date.map(|d| (d - epoch).num_days() as i32);
+                                            let (proto_cost, cost_pair) =
+                                                if let Some(cost_expr) = ann.cost {
+                                                    let (cv, cc) =
+                                                        evaluator::eval_and_normalize_amount(
+                                                            cost_expr,
+                                                            entry_context,
+                                                            &state,
+                                                        )?;
+                                                    let proto_amount = crate::elaboration::Amount {
+                                                        by_commodity: BTreeMap::from([(
+                                                            cc.clone(),
+                                                            crate::decimal_to_proto(cv),
+                                                        )]),
+                                                    };
+                                                    (Some(proto_amount), Some((cv, cc)))
+                                                } else {
+                                                    (None, None)
+                                                };
+                                            let lot = crate::elaboration::Lot {
+                                                cost: proto_cost,
+                                                date: proto_date,
+                                                note: ann.note,
+                                            };
+                                            (Some(lot), cost_pair)
+                                        } else {
+                                            (None, None)
+                                        };
+
+                                    // Cash-contribution priority:
+                                    // 1. lot_pricing (@/@@) present  → price drives cash (unchanged)
+                                    // 2. lot_annotation.cost present → quantity * cost_per_unit
+                                    // 3. otherwise                   → value contributes in its own
+                                    //                                  commodity (today's fallback)
+                                    let lot_cash = match lot_pricing {
                                         Some(ast::LotPricing::Total(expr)) => {
                                             let (mut v, c) = evaluator::eval_and_normalize_amount(
                                                 expr,
@@ -441,8 +493,13 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                             )?;
                                             Some((v * value, c))
                                         }
-                                        None => None,
+                                        None => {
+                                            // No @/@@. If cost annotation is present, it drives
+                                            // the cash balance: total = quantity * cost_per_unit.
+                                            cost_for_balance.map(|(cv, cc)| (value * cv, cc))
+                                        }
                                     };
+
                                     if let Some(balance_assertion) = balance_assertion {
                                         let (baval, bacommodity) =
                                             evaluator::eval_and_normalize_amount(
@@ -464,7 +521,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                             Err(ElaborationError::PostingBalanceAssertionFailed)?;
                                         }
                                     }
-                                    (value, commodity, lot_pricing)
+                                    (value, commodity, lot_cash, proto_lot)
                                 }
                                 AmountDetails::BalanceAssignment(assignment) => {
                                     // "= target_balance" — compute the delta needed to reach the
@@ -507,7 +564,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                         - account_balance
                                             .and_then(|ab| ab.commodity.get(&commodity))
                                             .unwrap_or(&Decimal::ZERO);
-                                    (value, commodity, None)
+                                    (value, commodity, None, None)
                                 }
                             };
                             let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
@@ -517,7 +574,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             // For lot-priced postings, add the *cash* total (in the lot's
                             // commodity) to transaction_state rather than the commodity units.
                             if posting_kind != ast::PostingKind::VirtualUnbalanced {
-                                if let Some((lot_total, lot_commodity)) = lot_pricing {
+                                if let Some((lot_total, lot_commodity)) = lot_cash {
                                     let dec = transaction_state.0.entry(lot_commodity).or_default();
                                     *dec += lot_total;
                                 } else {
@@ -537,6 +594,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                 tags: posting.tags,
                                 metadata: posting.metadata,
                                 kind: crate::posting_kind_to_proto(posting_kind),
+                                lot: proto_lot,
                             });
                         } else {
                             // Defer processing and save for next step.
@@ -577,6 +635,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             tags: posting.tags,
                             metadata: posting.metadata,
                             kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
+                            lot: None,
                         });
                     } else {
                         // Check that transaction state is all zeros to balance the transaction.
@@ -3503,5 +3562,77 @@ account Assets:Savings
             .find(|p| p.account == "Equity:Reservations")
             .expect("virtual posting present");
         assert_eq!(virt.amount_in("$"), Some(dec!(-25)));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Lot annotation elaborator tests
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_lot_cost_only_drives_cash_balance() {
+        // 10 AAPL {$150} (no @ price) → cash side -$1500.
+        let input = "\
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL {$150}
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        let t = &journal.transactions[0];
+        assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+        // No @/@@, cost annotation drives the cash balance: 10 * $150 = $1500.
+        assert_eq!(
+            t.postings[1].amount_in("$"),
+            Some(dec!(-1500)),
+            "cash side should be -$1500 when lot cost drives balance"
+        );
+        // Lot cost preserved on the proto posting.
+        assert_eq!(t.postings[0].lot_cost_in("$"), Some(dec!(150)));
+    }
+
+    #[test]
+    fn test_lot_cost_and_price_price_wins_cash_cost_preserved() {
+        // 10 AAPL {$150} @ $155 → cash -$1550 (price drives balance),
+        // but lot.cost = $150 is still stored.
+        let input = "\
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL {$150} @ $155
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        let t = &journal.transactions[0];
+        assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+        // Price wins over lot cost for cash balance: 10 * $155 = $1550.
+        assert_eq!(
+            t.postings[1].amount_in("$"),
+            Some(dec!(-1550)),
+            "cash side should be -$1550 when @ price is present"
+        );
+        // Lot cost annotation is preserved even though it didn't drive balance.
+        assert_eq!(
+            t.postings[0].lot_cost_in("$"),
+            Some(dec!(150)),
+            "lot cost should be $150, not the price $155"
+        );
+    }
+
+    #[test]
+    fn test_lot_no_cost_no_price_value_in_own_commodity() {
+        // 10 AAPL (no annotation, no price) → the null posting balances in
+        // AAPL (today's fallback: the commodity contributes itself).
+        let input = "\
+2024-03-01 Transfer
+    Assets:Brokerage   10 AAPL
+    Assets:OtherBrokerage
+";
+        let journal = elaborate(input);
+        let t = &journal.transactions[0];
+        assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+        // Null posting inferred as -10 AAPL.
+        assert_eq!(
+            t.postings[1].amount_in("AAPL"),
+            Some(dec!(-10)),
+            "null posting should balance as -10 AAPL when no price is given"
+        );
+        assert!(!t.postings[0].has_lot(), "no lot annotation should be set");
     }
 }

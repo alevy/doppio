@@ -37,6 +37,10 @@ Status legend:
 | Lot pricing `@@ total` | ✅ | |
 | Virtual posting `(Account)` | ✅ | Unbalanced — excluded from balance check; stored with `PostingKind::VirtualUnbalanced` |
 | Virtual posting `[Account]` | ✅ | Balanced — included in balance check; stored with `PostingKind::VirtualBalanced` |
+| Lot cost annotation `{cost}` | ✅ | v0.4.0 (PR #139). Per-unit cost basis pinned on the lot; drives cash balance when no `@`/`@@` price present |
+| Lot date annotation `[date]` | ✅ | v0.4.0 (PR #139). Acquisition date stored on `proto::Lot.date` as epoch days |
+| Lot note annotation `((note))` | ✅ | v0.4.0 (PR #139). Free-form note stored on `proto::Lot.note` |
+| Cost-vs-price priority | ✅ | v0.4.0 (PR #139). When `{cost}` and `@ price` both present, `@` price drives the cash balance and `{cost}` is the lot basis only |
 | Null posting (auto-inferred amount) | ✅ | Exactly one per transaction; multiple null postings is an error |
 | Posting balance assertion `= amount` | ✅ | Enforced during elaboration |
 | Strict balance assertion `== amount` | ✅ | Enforced during elaboration |

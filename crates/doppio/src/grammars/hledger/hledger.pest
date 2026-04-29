@@ -131,7 +131,19 @@ amount_logic = ${
     )
 }
 
-value_logic = ${ value_expr ~ (ws* ~ lot_price)? ~ (ws* ~ assertion)? }
+// A value expression, optionally followed by lot annotations and/or lot pricing
+// and/or a balance assertion check. Mirrors the ledger-cli grammar.
+value_logic = ${ value_expr ~ (ws* ~ lot_annotation_or_price)* ~ (ws* ~ assertion)? }
+lot_annotation_or_price = ${ lot_annotation | lot_price }
+lot_annotation = ${ lot_cost | lot_date | lot_note }
+// Double-brace `{{expr}}` means total cost; single-brace `{expr}` means per-unit
+// cost. Try `{{` before `{` so the longer token wins.
+lot_cost = ${ ("{{" ~ ws* ~ value_expr ~ ws* ~ "}}") | ("{" ~ ws* ~ value_expr ~ ws* ~ "}") }
+// `[date]` — lot acquisition date.
+lot_date = ${ "[" ~ date ~ "]" }
+// `((note))` — free-form lot note.
+lot_note = ${ "((" ~ lot_note_inner ~ "))" }
+lot_note_inner = @{ (!"))" ~ ANY)* }
 
 // hledger uses `==` for "all-commodity" (strict) balance assertions and `=`
 // for single-commodity assertions.  The longer token must be tried first.
