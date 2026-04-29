@@ -1,0 +1,9 @@
+; account block with an `alias` sub-directive. Should let `Checking` resolve
+; to `Assets:Checking` everywhere a posting references it, the same way
+; the top-level `alias Checking = Assets:Checking` does. Tracks #143.
+account Assets:Checking
+    alias Checking
+
+2024-01-15 Deposit
+    Checking      $1000
+    Equity:Opening

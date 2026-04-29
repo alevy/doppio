@@ -1,0 +1,4 @@
+; Total lot pricing: total cost = literal total (does not depend on quantity).
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL @@ $1500
+    Assets:Cash

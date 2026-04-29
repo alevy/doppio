@@ -1,0 +1,5 @@
+; Per-unit lot pricing: total cost = quantity * unit_price.
+; The cash side null posting is filled in as -$1500 by the elaborator.
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL @ $150
+    Assets:Cash

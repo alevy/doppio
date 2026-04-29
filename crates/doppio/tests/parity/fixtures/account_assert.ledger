@@ -1,0 +1,9 @@
+; account block with an `assert` sub-directive. Every posting to the named
+; account is checked against the expression. Here: every Assets:Checking
+; posting must be in $.
+account Assets:Checking
+    assert commodity == "$"
+
+2024-01-01 Deposit
+    Assets:Checking  $500.00
+    Income:Salary

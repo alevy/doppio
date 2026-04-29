@@ -1,10 +1,17 @@
 # doppio: Supported Ledger features
 
-**Last updated**: 2026-04-26 (doppio v0.3.0)
+**Last updated**: 2026-04-29 (doppio v0.4.0-rc.1)
 
 This document is a feature-by-feature comparison of doppio's syntax surface
 against [ledger-cli](https://ledger-cli.org/) and [hledger](https://hledger.org/).
 The authoritative behaviour is the test suite — this matrix is a navigation aid.
+
+The companion **parity test corpus** at
+[`crates/doppio/tests/parity/`](../crates/doppio/tests/parity/) carries one
+minimal `.ledger` fixture per feature plus a Rust harness asserting on the
+elaborated `Journal`. Tests for not-yet-implemented features are
+`#[ignore]`'d with a tracking-issue reference, so the ignored count stays a
+visible signal of the remaining parity work toward 1.0 (Phase D).
 
 Status legend:
 

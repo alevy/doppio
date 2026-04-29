@@ -1,0 +1,4 @@
+; Lot persistence: `((note))` pins a free-form note to the lot. Tracks #139.
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL {$150} ((BUY-2024-01))
+    Assets:Cash
