@@ -677,6 +677,10 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                     }
 
                     // Update running account balances and register new accounts.
+                    // Virtual unbalanced postings DO update the running per-account
+                    // balance (matching ledger-cli) so subsequent balance assertions
+                    // on the same account see the virtual contribution. They are
+                    // excluded only from the transaction-balance check.
                     for posting in resolved_postings.iter() {
                         if !accounts.contains_key(&posting.account) {
                             accounts.insert(posting.account.clone(), Default::default());
@@ -3469,5 +3473,35 @@ account Assets:Savings
         for p in &t.postings {
             assert_eq!(p.kind, PostingKind::VirtualUnbalanced as i32);
         }
+    }
+
+    /// A virtual-unbalanced posting must update the running per-account balance
+    /// so that a subsequent standalone balance assertion on the same account
+    /// reflects the virtual amount — matching ledger-cli behaviour.
+    #[test]
+    fn virtual_unbalanced_posting_updates_account_balance_for_assertions() {
+        // The virtual posting credits $-25 to Equity:Reservations.
+        // A subsequent balance assertion checks that the account balance is $-25,
+        // which should succeed because virtual-unbalanced postings contribute to
+        // account_balances even though they're excluded from the transaction check.
+        let input = "\
+2024-01-15 Setup
+    Assets:Checking           $100
+    (Equity:Reservations)     $-25
+    Equity:Opening
+
+2024-01-15 = Equity:Reservations  $-25
+";
+        // Should elaborate without error — the balance assertion sees the virtual
+        // posting's contribution.
+        let j = elaborate(input);
+        assert_eq!(j.transactions.len(), 1);
+
+        let virt = j.transactions[0]
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Reservations")
+            .expect("virtual posting present");
+        assert_eq!(virt.amount_in("$"), Some(dec!(-25)));
     }
 }

@@ -921,6 +921,60 @@ mod tests {
         assert_eq!(txns.len(), 1);
     }
 
+    // ── virtual postings ──────────────────────────────────────────────────────
+
+    #[test]
+    fn virtual_unbalanced_posting_parses_to_correct_kind() {
+        // `(Equity:Reservations)` — parentheses denote a virtual-unbalanced
+        // posting. The account name must have the parens stripped and the kind
+        // must be `PostingKind::VirtualUnbalanced`.
+        let input = "\
+2024-01-15 Setup
+    Assets:Checking         $100
+    Equity:Opening         $-100
+    (Equity:Reservations)   $-25
+";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let virt = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Reservations")
+            .expect("virtual posting should be present with parens stripped");
+        assert_eq!(
+            virt.kind,
+            PostingKind::VirtualUnbalanced,
+            "posting kind should be VirtualUnbalanced"
+        );
+    }
+
+    #[test]
+    fn virtual_balanced_posting_parses_to_correct_kind() {
+        // `[Equity:Reservations]` — square brackets denote a virtual-balanced posting.
+        let input = "\
+2024-01-15 Setup
+    Assets:Checking          $100
+    [Equity:Reservations]    $25
+    Equity:Opening          $-125
+";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let virt = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Reservations")
+            .expect("virtual posting should be present with brackets stripped");
+        assert_eq!(
+            virt.kind,
+            PostingKind::VirtualBalanced,
+            "posting kind should be VirtualBalanced"
+        );
+    }
+
     // ── full sample-journal smoke test ────────────────────────────────────────
 
     #[test]

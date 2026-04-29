@@ -51,9 +51,12 @@ impl elaboration::Posting {
     /// Returns the posting kind, mapping the prost-generated `i32` to the
     /// [`elaboration::PostingKind`] enum.
     ///
-    /// `POSTING_KIND_UNSPECIFIED` (field absent in older `.dop` files) is
-    /// mapped to `POSTING_KIND_REAL`, preserving backward compatibility:
-    /// pre-#140 archives that don't carry this field are treated as all-real.
+    /// Unknown wire values (i.e. values that do not map to any `PostingKind`
+    /// variant) are mapped to `Real` via the `unwrap_or` fallback, preserving
+    /// forward-compatibility. `UNSPECIFIED` (wire value 0, field absent in
+    /// older `.dop` files) passes through as `PostingKind::Unspecified` and is
+    /// treated as real by [`Self::is_real`] — so pre-#140 archives that don't
+    /// carry this field are read as all-real without a format version bump.
     pub fn posting_kind(&self) -> elaboration::PostingKind {
         elaboration::PostingKind::try_from(self.kind).unwrap_or(elaboration::PostingKind::Real)
     }
@@ -505,5 +508,96 @@ mod tests {
             hp.date_naive(),
             NaiveDate::from_ymd_opt(2024, 3, 4).unwrap()
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Posting::is_real / Posting::posting_kind
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_real_kind_zero_unspecified_treated_as_real() {
+        let p = elaboration::Posting {
+            kind: 0,
+            ..Default::default()
+        };
+        assert!(p.is_real(), "UNSPECIFIED (0) must be treated as real");
+    }
+
+    #[test]
+    fn is_real_kind_one_real_is_real() {
+        let p = elaboration::Posting {
+            kind: 1,
+            ..Default::default()
+        };
+        assert!(p.is_real());
+    }
+
+    #[test]
+    fn is_real_kind_two_virtual_unbalanced_is_not_real() {
+        let p = elaboration::Posting {
+            kind: 2,
+            ..Default::default()
+        };
+        assert!(!p.is_real());
+    }
+
+    #[test]
+    fn is_real_kind_three_virtual_balanced_is_not_real() {
+        let p = elaboration::Posting {
+            kind: 3,
+            ..Default::default()
+        };
+        assert!(!p.is_real());
+    }
+
+    #[test]
+    fn posting_kind_zero_returns_unspecified() {
+        let p = elaboration::Posting {
+            kind: 0,
+            ..Default::default()
+        };
+        assert_eq!(p.posting_kind(), elaboration::PostingKind::Unspecified);
+    }
+
+    #[test]
+    fn posting_kind_one_returns_real() {
+        let p = elaboration::Posting {
+            kind: 1,
+            ..Default::default()
+        };
+        assert_eq!(p.posting_kind(), elaboration::PostingKind::Real);
+    }
+
+    #[test]
+    fn posting_kind_two_returns_virtual_unbalanced() {
+        let p = elaboration::Posting {
+            kind: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            p.posting_kind(),
+            elaboration::PostingKind::VirtualUnbalanced
+        );
+    }
+
+    #[test]
+    fn posting_kind_three_returns_virtual_balanced() {
+        let p = elaboration::Posting {
+            kind: 3,
+            ..Default::default()
+        };
+        assert_eq!(p.posting_kind(), elaboration::PostingKind::VirtualBalanced);
+    }
+
+    #[test]
+    fn posting_kind_unknown_wire_value_falls_back_to_real() {
+        // An unknown wire value (e.g. from a future format version) should fall
+        // back to Real rather than panicking.
+        let p = elaboration::Posting {
+            kind: 99,
+            ..Default::default()
+        };
+        assert_eq!(p.posting_kind(), elaboration::PostingKind::Real);
+        assert!(p.is_real(), "unknown wire values must be treated as real");
     }
 }
