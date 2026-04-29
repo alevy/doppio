@@ -38,6 +38,7 @@ entry = _{
     | historical_price
     | account_directive
     | commodity_directive
+    | default_directive
     | include_directive
     | comment_line
 }
@@ -212,6 +213,15 @@ commodity_item = ${
 }
 commodity_key = @{ "alias" | "format" | "nomarket" | "default" | "note" | identifier }
 commodity_val = @{ (!NEWLINE ~ ANY)* }
+
+// --- Default commodity directive ---
+//
+// hledger supports the same `D <amount>` form as ledger-cli:
+//   D $1,000.00
+// This declares the default commodity and its display format simultaneously.
+// It is lowered to the same `Directive::Commodity` representation as a
+// full `commodity` block with `default` and `format` sub-directives.
+default_directive = ${ "D" ~ ws+ ~ value_expr ~ (NEWLINE | EOI) }
 
 // --- Include directive ---
 

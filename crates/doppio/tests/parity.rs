@@ -618,13 +618,8 @@ fn virtual_posting_balanced() {
 }
 
 #[test]
-#[ignore = "tracks #141 — FX conversion via P directive not yet wired into reports"]
 fn fx_conversion_p_directive() {
     // The fixture declares `P 2024-01-01 EUR $1.10` and a posting in EUR.
-    // Storage of the P directive works today (covered by
-    // `historical_price_directive`); what's missing is the helper that
-    // consults the price chain to convert other-commodity balances when
-    // a target commodity is requested.
     let j = compile("fx_conversion_p_directive.ledger");
 
     // Prerequisite: the price was parsed and stored.
@@ -640,19 +635,22 @@ fn fx_conversion_p_directive() {
         .expect("travel posting present");
     assert_eq!(travel.amount_in("EUR"), Some(dec!(100)));
 
-    // TODO(#141): once a price-lookup / FX helper ships on
-    // `elaboration::Journal`, assert end-to-end conversion. Sketch:
-    //   let usd = j.balance_in("Expenses:Travel", "$", as_of)
-    //       .expect("FX conversion succeeds");
-    //   assert_eq!(usd, dec!(110)); // 100 EUR * $1.10/EUR
+    // `Journal::exchange_rate_at` resolves the EUR→$ conversion from the P directive.
+    let rate = j
+        .exchange_rate_at("EUR", "$", None)
+        .expect("EUR→$ quote is present in the journal");
+    assert_eq!(rate, dec!(1.10));
+
+    // Applying the rate: 100 EUR * 1.10 = $110.
+    let eur_balance = travel.amount_in("EUR").unwrap();
+    assert_eq!(eur_balance * rate, dec!(110));
 }
 
 #[test]
-#[ignore = "tracks #142 — bare D directive not yet supported"]
 fn bare_d_directive() {
-    // Fixture declares `D $1000.00` (default commodity + format) then a
+    // Fixture declares `D $1,000.00` (default commodity + format) then a
     // posting using a bare amount `50` — which should pick up `$` as
-    // its commodity. Today the parser rejects the bare `D` form.
+    // its commodity via the default-commodity inference.
     let j = compile("bare_d_directive.ledger");
     let t = &j.transactions[0];
 
@@ -666,6 +664,26 @@ fn bare_d_directive() {
     // commodity declaration just like `commodity $ ; format ...` would.
     let dollar = j.commodities.get("$").expect("D directive declares $");
     assert_eq!(dollar.format.as_deref(), Some("$1,000.00"));
+}
+
+#[test]
+fn bare_d_directive_postfix() {
+    // Fixture declares `D 1,000.00 USD` (number-first / postfix form) then a
+    // posting using a bare amount `50` — which should pick up `USD` as its
+    // commodity via the default-commodity inference.
+    let j = compile("bare_d_directive_postfix.ledger");
+    let t = &j.transactions[0];
+
+    // Bare `50` should infer `USD` from the D directive's default commodity.
+    assert_eq!(t.postings[0].account, "Expenses:Food");
+    assert_eq!(t.postings[0].amount_in("USD"), Some(dec!(50)));
+    assert_eq!(t.postings[1].account, "Assets:Checking");
+    assert_eq!(t.postings[1].amount_in("USD"), Some(dec!(-50)));
+
+    // The format string from the D directive should be stored on the
+    // commodity entry — same as a `commodity 1,000.00 USD` block would yield.
+    let usd = j.commodities.get("USD").expect("D directive declares USD");
+    assert_eq!(usd.format.as_deref(), Some("1,000.00 USD"));
 }
 
 #[test]

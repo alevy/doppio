@@ -432,3 +432,53 @@ fn register_tag_no_match_returns_empty() {
         "untagged txn should be excluded: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --exchange FX conversion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn register_exchange_converts_eur_to_usd_and_accumulates_running_total() {
+    // A price directive `P 2024-01-01 EUR $ 1.10` declares that 1 EUR = $1.10.
+    // Two postings of 100 EUR each should appear as $ 110 per posting, with a
+    // running total of $ 220 after the second posting, when --exchange $ is
+    // passed.  This exercises both the conversion dispatch and the running-
+    // total accumulation under the converted commodity.
+    let content = "P 2024-01-01 EUR $ 1.10
+
+2024-01-15 First foreign purchase
+    Expenses:Travel  100 EUR
+    Assets:Checking
+
+2024-02-15 Second foreign purchase
+    Expenses:Travel  100 EUR
+    Assets:Checking
+";
+    let f = tmp_journal_file(content);
+    // Filter to Expenses only so the running total accumulates across both
+    // travel postings (110 + 110 = 220) rather than resetting per account.
+    let out = run(&[
+        "register",
+        f.path().to_str().unwrap(),
+        "Expenses",
+        "--exchange",
+        "$",
+    ]);
+    // Each posting converts to 110 $; running total after two postings is 220.
+    assert!(
+        out.contains("110"),
+        "converted posting amount 110 should appear in register output: {out}"
+    );
+    assert!(
+        out.contains("220"),
+        "accumulated running total 220 should appear in register output: {out}"
+    );
+    assert!(
+        out.contains('$'),
+        "target commodity '$' should appear in register output: {out}"
+    );
+    assert!(
+        !out.contains("EUR"),
+        "source commodity 'EUR' should be absent after conversion: {out}"
+    );
+}

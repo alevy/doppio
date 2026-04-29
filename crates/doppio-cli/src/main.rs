@@ -75,6 +75,12 @@ enum Commands {
         /// show only real postings.
         #[arg(short = 'R', long, default_value_t = false)]
         real: bool,
+        /// Convert all commodity balances to this target commodity using `P`
+        /// price directives. Equivalent to ledger-cli's `-X`/`--exchange`.
+        /// If no FX path exists for a commodity, the original amount is kept
+        /// and a warning is printed to stderr.
+        #[arg(long, short = 'X')]
+        exchange: Option<String>,
     },
 
     /// List individual postings, optionally filtered by account name.
@@ -104,6 +110,12 @@ enum Commands {
         /// show only real postings.
         #[arg(short = 'R', long, default_value_t = false)]
         real: bool,
+        /// Convert all commodity amounts to this target commodity using `P`
+        /// price directives. Equivalent to ledger-cli's `-X`/`--exchange`.
+        /// If no FX path exists for a commodity, the original amount is kept
+        /// and a warning is printed to stderr.
+        #[arg(long, short = 'X')]
+        exchange: Option<String>,
     },
 
     /// Re-emit the journal as canonical Ledger source text.
@@ -328,6 +340,34 @@ fn commodity_format<'a>(
     commodities.get(commodity).and_then(|p| p.format.as_deref())
 }
 
+/// Apply FX conversion to a `(commodity, amount)` pair using `journal.exchange_rate_at`.
+///
+/// If `exchange` is `None` or `commodity == target`, returns the original pair
+/// unchanged. Otherwise calls `exchange_rate_at` and scales the amount; if no path
+/// exists, warns to stderr and returns the original pair unchanged.
+fn maybe_convert_amount(
+    commodity: &str,
+    amount: rust_decimal::Decimal,
+    exchange: Option<&str>,
+    journal: &doppio::elaboration::Journal,
+    as_of: Option<chrono::NaiveDate>,
+) -> (String, rust_decimal::Decimal) {
+    let target = match exchange {
+        Some(t) if t != commodity => t,
+        _ => return (commodity.to_owned(), amount),
+    };
+    match journal.exchange_rate_at(commodity, target, as_of) {
+        Some(rate) => (target.to_owned(), amount * rate),
+        None => {
+            eprintln!(
+                "warning: no FX path from {commodity} to {target}; \
+                 leaving {amount} {commodity} unconverted"
+            );
+            (commodity.to_owned(), amount)
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -362,11 +402,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tag,
             format,
             real,
+            exchange,
         } => {
             let format = OutputFormat::parse(&format)?;
             let filter =
                 JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
             let journal = load_proto_journal(&source)?;
+            // as_of for FX lookup: use --end if provided, else None (latest quote).
+            let fx_as_of = filter.end_date;
 
             // Per-commodity running total across all matching postings.
             let mut running: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
@@ -394,7 +437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             // Sort commodity keys for deterministic output (proto uses HashMap),
-                            // then accumulate the running total before printing.
+                            // then apply FX conversion and accumulate the running total.
                             let mut sorted_commodities: Vec<_> = posting
                                 .amount
                                 .as_ref()
@@ -402,24 +445,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or_default();
                             sorted_commodities.sort_by_key(|(k, _)| k.as_str());
 
-                            // Accumulate every commodity into the running total.
-                            for (commodity, proto_amount) in &sorted_commodities {
-                                let amount = doppio::decimal_from_proto(proto_amount);
-                                *running.entry(commodity.to_string()).or_default() += amount;
+                            // Convert each commodity amount, then group by the resulting
+                            // commodity (in case multiple source commodities map to the same
+                            // target after conversion).
+                            let converted: Vec<(String, rust_decimal::Decimal)> =
+                                sorted_commodities
+                                    .into_iter()
+                                    .map(|(commodity, proto_amount)| {
+                                        let amount = doppio::decimal_from_proto(proto_amount);
+                                        maybe_convert_amount(
+                                            commodity,
+                                            amount,
+                                            exchange.as_deref(),
+                                            &journal,
+                                            fx_as_of,
+                                        )
+                                    })
+                                    .collect();
+
+                            // Accumulate every (possibly converted) commodity.
+                            for (commodity, amount) in &converted {
+                                *running.entry(commodity.clone()).or_default() += amount;
                             }
 
-                            let mut commodities_iter = sorted_commodities.into_iter();
-                            if let Some((commodity, proto_amount)) = commodities_iter.next() {
-                                let amount = doppio::decimal_from_proto(proto_amount);
+                            let mut converted_iter = converted.into_iter();
+                            if let Some((commodity, amount)) = converted_iter.next() {
                                 let amount_str = display_amount(
-                                    commodity,
+                                    &commodity,
                                     amount,
-                                    commodity_format(commodity, &journal.commodities),
+                                    commodity_format(&commodity, &journal.commodities),
                                 );
                                 let running_str = display_amount(
-                                    commodity,
+                                    &commodity,
                                     running.get(commodity.as_str()).copied().unwrap_or_default(),
-                                    commodity_format(commodity, &journal.commodities),
+                                    commodity_format(&commodity, &journal.commodities),
                                 );
                                 println!(
                                     "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
@@ -430,17 +489,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     running_str,
                                 );
                             }
-                            for (commodity, proto_amount) in commodities_iter {
-                                let amount = doppio::decimal_from_proto(proto_amount);
+                            for (commodity, amount) in converted_iter {
                                 let amount_str = display_amount(
-                                    commodity,
+                                    &commodity,
                                     amount,
-                                    commodity_format(commodity, &journal.commodities),
+                                    commodity_format(&commodity, &journal.commodities),
                                 );
                                 let running_str = display_amount(
-                                    commodity,
+                                    &commodity,
                                     running.get(commodity.as_str()).copied().unwrap_or_default(),
-                                    commodity_format(commodity, &journal.commodities),
+                                    commodity_format(&commodity, &journal.commodities),
                                 );
                                 println!(
                                     "{:<10}  {:<20}  {:<30}  {:>15}  {:>15}",
@@ -469,7 +527,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or_default();
                             sorted_commodities.sort_by_key(|(k, _)| k.as_str());
                             for (commodity, proto_amount) in sorted_commodities {
-                                let amount = doppio::decimal_from_proto(proto_amount);
+                                let raw_amount = doppio::decimal_from_proto(proto_amount);
+                                let (commodity, amount) = maybe_convert_amount(
+                                    commodity,
+                                    raw_amount,
+                                    exchange.as_deref(),
+                                    &journal,
+                                    fx_as_of,
+                                );
                                 *running.entry(commodity.clone()).or_default() += amount;
                                 let running_total =
                                     running.get(commodity.as_str()).copied().unwrap_or_default();
@@ -505,7 +570,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or_default();
                             sorted_commodities.sort_by_key(|(k, _)| k.as_str());
                             for (commodity, proto_amount) in sorted_commodities {
-                                let amount = doppio::decimal_from_proto(proto_amount);
+                                let raw_amount = doppio::decimal_from_proto(proto_amount);
+                                let (commodity, amount) = maybe_convert_amount(
+                                    commodity,
+                                    raw_amount,
+                                    exchange.as_deref(),
+                                    &journal,
+                                    fx_as_of,
+                                );
                                 *running.entry(commodity.clone()).or_default() += amount;
                                 let running_total =
                                     running.get(commodity.as_str()).copied().unwrap_or_default();
@@ -514,7 +586,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     csv_field(&date),
                                     csv_field(&txn.description),
                                     csv_field(&posting.account),
-                                    csv_field(commodity),
+                                    csv_field(&commodity),
                                     amount,
                                     running_total,
                                 );
@@ -630,11 +702,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             flat,
             format,
             real,
+            exchange,
         } => {
             let format = OutputFormat::parse(&format)?;
             let filter =
                 JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
             let journal = load_proto_journal(&source)?;
+            // as_of for FX lookup: use --end if provided, else None (latest quote).
+            let fx_as_of = filter.end_date;
 
             // Balances keyed by owned account name so depth-truncation can
             // produce new strings that aren't borrowed from the journal.
@@ -659,11 +734,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     if let Some(amount) = &posting.amount {
                         for (commodity, proto_amount) in &amount.by_commodity {
+                            let raw = doppio::decimal_from_proto(proto_amount);
+                            let (converted_commodity, converted_amount) = maybe_convert_amount(
+                                commodity,
+                                raw,
+                                exchange.as_deref(),
+                                &journal,
+                                fx_as_of,
+                            );
                             *(balances
                                 .entry(account.clone())
                                 .or_default()
-                                .entry(commodity.clone())
-                                .or_default()) += doppio::decimal_from_proto(proto_amount);
+                                .entry(converted_commodity)
+                                .or_default()) += converted_amount;
                         }
                     }
                 }

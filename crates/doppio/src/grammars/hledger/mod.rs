@@ -62,6 +62,9 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                 Rule::commodity_directive => {
                     entries.push(Entry::Directive(parse_commodity_directive(pair)));
                 }
+                Rule::default_directive => {
+                    entries.push(Entry::Directive(parse_default_directive(pair)?));
+                }
                 Rule::include_directive => {
                     let include_path = self.base_path.join(pair.into_inner().as_str());
                     let new_input = (self.opener)(include_path.as_os_str().to_str().unwrap())?;
@@ -347,6 +350,49 @@ fn parse_account_item(pair: Pair<Rule>) -> AccountItem {
         "note" => AccountItem::Note(val.unwrap_or_default()),
         _ => AccountItem::Unknown(key, val),
     }
+}
+
+/// Parse a bare `D <amount>` directive into a [`Directive::Commodity`] AST node.
+///
+/// hledger supports the same compact form as ledger-cli: `D $1,000.00` declares
+/// the default commodity and its display format simultaneously. It is lowered to
+/// the same internal representation as:
+///
+/// ```hledger
+/// commodity $1,000.00
+///     default
+/// ```
+///
+/// Both symbol-first (`D $1,000.00`) and number-first (`D 1,000.00 USD`) forms
+/// are accepted. If the expression carries no commodity (e.g. `D 1000.00` — a
+/// bare number), an error is returned because there is no symbol to register.
+fn parse_default_directive(pair: Pair<Rule>) -> Result<Directive, Box<dyn std::error::Error>> {
+    let value_expr_pair = pair
+        .into_inner()
+        .next()
+        .expect("default_directive must contain a value_expr");
+
+    let format_str = value_expr_pair.as_str().trim().to_string();
+    let parsed = parse_expr(value_expr_pair);
+
+    let commodity = match &parsed {
+        ValueExpr::Amount {
+            commodity: Some(c), ..
+        } => c.clone(),
+        _ => {
+            return Err(format!(
+                "bare `D` directive requires an amount with an explicit commodity symbol \
+                 (e.g. `D $1,000.00`); got `{format_str}` which carries no commodity"
+            )
+            .into());
+        }
+    };
+
+    Ok(Directive::Commodity {
+        name: commodity,
+        notes: vec![],
+        items: vec![CommodityItem::Default, CommodityItem::Format(format_str)],
+    })
 }
 
 fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
@@ -895,6 +941,47 @@ mod tests {
         assert!(
             matches!(value, ValueExpr::Typed { .. }),
             "expected Typed wrapping an arithmetic expr, got {value:?}"
+        );
+    }
+
+    // ── D default-commodity directive ─────────────────────────────────────────
+
+    #[test]
+    fn d_directive_prefix_symbol() {
+        let input = "D $1,000.00\n";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Directive(Directive::Commodity { name, items, .. }) = &journal.entries[0] else {
+            panic!("expected Commodity directive");
+        };
+        assert_eq!(name, "$");
+        assert!(
+            items.iter().any(|i| matches!(i, CommodityItem::Default)),
+            "should have Default item"
+        );
+        assert!(
+            items.iter().any(|i| matches!(i, CommodityItem::Format(_))),
+            "should have Format item"
+        );
+    }
+
+    #[test]
+    fn d_directive_suffix_symbol() {
+        let input = "D 1,000.00 USD\n";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Directive(Directive::Commodity { name, .. }) = &journal.entries[0] else {
+            panic!("expected Commodity directive");
+        };
+        assert_eq!(name, "USD");
+    }
+
+    #[test]
+    fn d_directive_rejects_bare_number() {
+        // `D 1000.00` carries no commodity — the parser must reject it with a
+        // message that mentions "commodity" so the user knows what is missing.
+        let err = parse_hledger("D 1000.00\n").unwrap_err();
+        assert!(
+            err.to_string().contains("commodity"),
+            "error should mention 'commodity', got: {err}"
         );
     }
 

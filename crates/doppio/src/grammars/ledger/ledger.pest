@@ -193,7 +193,13 @@ assertion_op = @{ "==" | "=" }
 
 // The optional leading "!" is allowed by some Ledger implementations.
 // define and tag directives are parsed but not yet elaborated.
-directive = _{ "!"? ~ (commodity_directive | account_directive | alias_directive | include_directive | define_directive | tag_directive ) }
+directive = _{ "!"? ~ (commodity_directive | account_directive | alias_directive | include_directive | define_directive | tag_directive | default_directive) }
+
+// A bare `D` directive: declares the default commodity AND its display format
+// in a single line. `D $1000.00` is equivalent to a `commodity $` block with
+// `default` and `format $1,000.00` sub-directives. The amount text supplies
+// both the commodity symbol and the format string.
+default_directive = ${ "D" ~ ws+ ~ value_expr ~ (NEWLINE | EOI) }
 
 tag_directive = ${
     "tag" ~ ws+ ~ identifier ~ (ws* ~ note)? ~ NEWLINE ~

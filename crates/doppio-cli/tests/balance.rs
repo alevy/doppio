@@ -231,3 +231,41 @@ fn commodity_format_single_separator_three_digits_is_thousands() {
         "amount 1000 with format '$1.000' should render as '$1.000': {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --exchange FX conversion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn balance_exchange_converts_eur_to_usd() {
+    // A price directive `P 2024-01-01 EUR $ 1.10` declares that 1 EUR = $1.10.
+    // A posting of 100 EUR should appear as $ 110 in the balance when
+    // --exchange $ is passed.
+    let content = "P 2024-01-01 EUR $ 1.10
+
+2024-01-15 Foreign purchase
+    Expenses:Travel  100 EUR
+    Assets:Checking
+";
+    let f = tmp_journal_file(content);
+    let out = run(&[
+        "balance",
+        f.path().to_str().unwrap(),
+        "--flat",
+        "--exchange",
+        "$",
+    ]);
+    // After conversion: 100 EUR × 1.10 = 110 $
+    assert!(
+        out.contains("110"),
+        "converted amount 110 should appear in balance output: {out}"
+    );
+    assert!(
+        out.contains('$'),
+        "target commodity '$' should appear in balance output: {out}"
+    );
+    assert!(
+        !out.contains("EUR"),
+        "source commodity 'EUR' should be absent after conversion: {out}"
+    );
+}
