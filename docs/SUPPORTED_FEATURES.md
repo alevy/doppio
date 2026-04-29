@@ -75,7 +75,7 @@ Status legend:
 | `define name = expr` (zero-arg alias) | ✅ | |
 | `define name(p1, p2, ...) = expr` (parameterised) | ✅ | v0.2.0 (PR #87). Supports both value-typed and bool-typed bodies. Cyclic definitions are caught with `RecursionLimitExceeded` |
 | `alias short = long` | ✅ | Account-name aliases |
-| `P <date> <commodity> <price>` (historical price) | ✅ | Stored on `journal.prices`; consumed by `Journal::price_at()` and `dop balance/register --exchange COMMODITY` |
+| `P <date> <commodity> <price>` (historical price) | ✅ | Stored on `journal.prices`; consumed by `Journal::exchange_rate_at()` and `dop balance/register --exchange COMMODITY` |
 | Standalone balance-assertion directive `<date> = account amount` | ✅ | Enforced during elaboration |
 | `D $1000.00` (default commodity) | 🔧 | The `commodity ... default` form is supported; the bare-`D` form may not be |
 | `~` budget directive | 🚫 | Parsed but intentionally not elaborated. No effect on balances or reports |

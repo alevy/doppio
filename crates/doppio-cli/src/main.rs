@@ -332,10 +332,10 @@ fn commodity_format<'a>(
     commodities.get(commodity).and_then(|p| p.format.as_deref())
 }
 
-/// Apply FX conversion to a `(commodity, amount)` pair using `journal.price_at`.
+/// Apply FX conversion to a `(commodity, amount)` pair using `journal.exchange_rate_at`.
 ///
 /// If `exchange` is `None` or `commodity == target`, returns the original pair
-/// unchanged. Otherwise calls `price_at` and scales the amount; if no path
+/// unchanged. Otherwise calls `exchange_rate_at` and scales the amount; if no path
 /// exists, warns to stderr and returns the original pair unchanged.
 fn maybe_convert_amount(
     commodity: &str,
@@ -348,7 +348,7 @@ fn maybe_convert_amount(
         Some(t) if t != commodity => t,
         _ => return (commodity.to_owned(), amount),
     };
-    match journal.price_at(commodity, target, as_of) {
+    match journal.exchange_rate_at(commodity, target, as_of) {
         Some(rate) => (target.to_owned(), amount * rate),
         None => {
             eprintln!(

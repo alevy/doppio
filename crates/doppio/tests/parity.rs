@@ -612,9 +612,9 @@ fn fx_conversion_p_directive() {
         .expect("travel posting present");
     assert_eq!(travel.amount_in("EUR"), Some(dec!(100)));
 
-    // `Journal::price_at` resolves the EUR→$ conversion from the P directive.
+    // `Journal::exchange_rate_at` resolves the EUR→$ conversion from the P directive.
     let rate = j
-        .price_at("EUR", "$", None)
+        .exchange_rate_at("EUR", "$", None)
         .expect("EUR→$ quote is present in the journal");
     assert_eq!(rate, dec!(1.10));
 
