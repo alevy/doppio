@@ -124,7 +124,7 @@ Status legend:
 | `dop register` | ✅ | Per-posting register with running totals per commodity |
 | `dop register --begin/--end/--cleared/--tag/--format` | ✅ | Same filters as `balance` |
 | `dop register --real` / `-R` | ✅ | Excludes virtual postings from register output |
-| `dop balance/register --exchange COMMODITY` (or `-X`) | ✅ | Converts non-target commodity balances via `P`-directive price chain; warns to stderr for unconvertible commodities. Conversion uses the report's `--end` date as the as-of cutoff, or the latest available quote if `--end` is not specified. ledger-cli converts per-posting using the transaction's own date by default; this implementation uses a single uniform as-of for all postings, which is simpler but means historical reports without `--end` will use anachronistically recent rates. |
+| `dop balance/register --exchange COMMODITY` (or `-X`) | ✅ | Converts non-target commodity balances via direct or inverse `P`-directive quotes; warns to stderr for unconvertible commodities. **No chaining through intermediates** — see [`docs/exchange-rates.md`](exchange-rates.md) for the algorithm and rationale (deliberate, aligns with Beancount). Uses `--end` as the as-of cutoff, or latest available if `--end` is unset. |
 | `dop print SRC` | ✅ | Re-emits source. Format strings not applied (intentional) |
 | `dop stats` | ✅ | Transaction/account/commodity counts and date range |
 | `dop accounts` | ✅ | Lists unique account names |

@@ -66,6 +66,105 @@
 // — it carries the lower bits of the two's-complement representation, not a
 // magnitude. This is why the language recipes mask `mantissaLow` defensively
 // rather than treating it as signed.
+//
+// =============================================================================
+// Exchange rate lookup
+// =============================================================================
+//
+// Exchange rates are stored verbatim in `Journal.prices` as `HistoricalPrice`
+// entries. Consumers compute a rate from `from_commodity` to `to_commodity`
+// as of a given date with the algorithm below — direct + inverse only, no
+// chaining through intermediate commodities. This is doppio's normative
+// contract; consumers in any language MUST implement it identically when
+// returning a "default" rate for cross-language parity. (Consumers MAY
+// implement chaining or other strategies on top, opt-in.)
+//
+// Algorithm:
+//
+//   exchange_rate_at(prices, from, to, as_of) -> Optional<rate>:
+//     if from == to: return 1
+//     best = None
+//     for hp in prices:
+//       direct  = (hp.commodity == from and hp.price_commodity == to)
+//       inverse = (hp.commodity == to   and hp.price_commodity == from)
+//       if not (direct or inverse): continue
+//       if as_of is not None and hp.date_naive() > as_of: continue
+//       if hp.price is None or hp.price.to_decimal() == 0: continue
+//       rate = hp.price.to_decimal() if direct else 1 / hp.price.to_decimal()
+//       if best is None or hp.date_naive() > best.date:
+//         best = (hp.date_naive(), rate)
+//     return best.rate if best is not None else None
+//
+// The "most-recent quote in either direction wins" rule is uniform: there
+// is no preference between an explicit forward quote and the inverse of a
+// reverse quote. The data point closest to `as_of` is the answer regardless
+// of how it was declared.
+//
+// Rationale and comparison with hledger / Beancount / ledger-cli are in
+// the doppio repo's `docs/exchange-rates.md`.
+//
+// Recipes for common languages:
+//
+//   TypeScript:
+//     function exchangeRateAt(
+//       prices: HistoricalPrice[],
+//       from: string,
+//       to: string,
+//       asOf: Date | null,
+//     ): Decimal | null {
+//       if (from === to) return new Decimal(1);
+//       let best: { date: Date; rate: Decimal } | null = null;
+//       for (const p of prices) {
+//         const direct = p.commodity === from && p.priceCommodity === to;
+//         const inverse = p.commodity === to && p.priceCommodity === from;
+//         if (!direct && !inverse) continue;
+//         const date = epochDaysToDate(p.date);
+//         if (asOf && date > asOf) continue;
+//         const raw = decimalFromProto(p.price);
+//         if (raw.isZero()) continue;
+//         const rate = direct ? raw : new Decimal(1).div(raw);
+//         if (!best || date > best.date) best = { date, rate };
+//       }
+//       return best?.rate ?? null;
+//     }
+//
+//   Python (using stdlib `decimal.Decimal` and `datetime.date`):
+//     from decimal import Decimal
+//     def exchange_rate_at(prices, from_, to, as_of):
+//         if from_ == to: return Decimal(1)
+//         best = None
+//         for hp in prices:
+//             direct = hp.commodity == from_ and hp.price_commodity == to
+//             inverse = hp.commodity == to and hp.price_commodity == from_
+//             if not (direct or inverse): continue
+//             date = epoch_days_to_date(hp.date)
+//             if as_of is not None and date > as_of: continue
+//             raw = decimal_from_proto(hp.price)
+//             if raw == 0: continue
+//             rate = raw if direct else Decimal(1) / raw
+//             if best is None or date > best[0]: best = (date, rate)
+//         return best[1] if best else None
+//
+//   Go (sketch; uses the project's preferred decimal lib at the boundary):
+//     func ExchangeRateAt(prices []HistoricalPrice, from, to string, asOf *time.Time) *Rate {
+//       if from == to { return One() }
+//       var best *struct{ date time.Time; rate Rate }
+//       for _, p := range prices {
+//         direct := p.Commodity == from && p.PriceCommodity == to
+//         inverse := p.Commodity == to && p.PriceCommodity == from
+//         if !direct && !inverse { continue }
+//         date := EpochDaysToTime(p.Date)
+//         if asOf != nil && date.After(*asOf) { continue }
+//         raw := DecimalFromProto(p.Price)
+//         if raw.IsZero() { continue }
+//         rate := raw; if !direct { rate = OneDiv(raw) }
+//         if best == nil || date.After(best.date) {
+//           best = &struct{ date time.Time; rate Rate }{date, rate}
+//         }
+//       }
+//       if best == nil { return nil }
+//       return &best.rate
+//     }
 
 syntax = "proto3";
 
