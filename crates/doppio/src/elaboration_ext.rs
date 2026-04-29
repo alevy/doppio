@@ -212,30 +212,24 @@ impl elaboration::Journal {
             return Some(Decimal::ONE);
         }
 
-        // For each price entry that relates the pair (in either direction), is
-        // within `as_of`, and carries a non-zero price, yield (date, rate).
-        // Take the latest by date. Ties break in favour of the entry that
-        // appears later in source order — `max_by_key` returns the last equal
-        // element, matching "more-recently-declared wins".
         self.prices
             .iter()
+            // Pair must relate, in either direction.
             .filter_map(|hp| {
                 let direct = hp.commodity == from_commodity && hp.price_commodity == to_commodity;
                 let inverse = hp.commodity == to_commodity && hp.price_commodity == from_commodity;
-                if !direct && !inverse {
-                    return None;
-                }
-                let date = hp.date_naive();
-                if as_of.is_some_and(|cutoff| date > cutoff) {
-                    return None;
-                }
-                let raw = hp.price.as_ref()?.to_decimal();
-                if raw.is_zero() {
-                    return None;
-                }
-                let rate = if direct { raw } else { Decimal::ONE / raw };
-                Some((date, rate))
+                (direct || inverse).then(|| (hp, direct, hp.date_naive()))
             })
+            // Date must be at or before as_of (or as_of is None).
+            .filter(|(_, _, date)| as_of.is_none_or(|cutoff| *date <= cutoff))
+            // Price field must be present.
+            .filter_map(|(hp, direct, date)| Some((date, direct, hp.price.as_ref()?.to_decimal())))
+            // Price must be non-zero (avoids degenerate inversions).
+            .filter(|(_, _, raw)| !raw.is_zero())
+            // Apply inversion when the entry was matched in reverse direction.
+            .map(|(date, direct, raw)| (date, if direct { raw } else { Decimal::ONE / raw }))
+            // Latest by date wins. Ties resolve in source order — `max_by_key`
+            // returns the last equal element, matching "more-recently-declared".
             .max_by_key(|(date, _)| *date)
             .map(|(_, rate)| rate)
     }
