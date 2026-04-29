@@ -1,0 +1,20 @@
+[package]
+name = "doppio-categorize"
+description = "Counter-account prediction for the doppio ledger compiler — given a partial transaction, suggest the most likely counter-account from journal history."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license-file = "../../LICENSE"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+doppio = { path = "../doppio" }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+
+[dev-dependencies]
+rand = "0.9"
+regex = { workspace = true }
+rust_decimal_macros = "1.40.0"
