@@ -44,6 +44,7 @@ fn posting(account: &str, payee: &str, amt: Decimal) -> Posting {
         state: TransactionState::Uncleared as i32,
         tags: Vec::new(),
         metadata: BTreeMap::new(),
+        kind: 0, // POSTING_KIND_UNSPECIFIED (treated as REAL)
     }
 }
 
@@ -523,6 +524,7 @@ fn posting_with_no_amount_is_skipped() {
                 state: TransactionState::Uncleared as i32,
                 tags: Vec::new(),
                 metadata: BTreeMap::new(),
+                kind: 0, // POSTING_KIND_UNSPECIFIED (treated as REAL)
             },
             posting("Expenses:Unknown", "Mystery", dec!(10.00)),
         ],

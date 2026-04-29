@@ -188,6 +188,17 @@ fn state_to_proto(s: &elaborator::TransactionState) -> i32 {
     }
 }
 
+/// Convert an [`ast::PostingKind`] to its proto enum value (i32).
+pub(crate) fn posting_kind_to_proto(kind: ast::PostingKind) -> i32 {
+    match kind {
+        // Emit REAL (1) rather than UNSPECIFIED (0) for clarity, even though
+        // consumers treat both identically per is_real().
+        ast::PostingKind::Real => elaboration::PostingKind::Real as i32,
+        ast::PostingKind::VirtualUnbalanced => elaboration::PostingKind::VirtualUnbalanced as i32,
+        ast::PostingKind::VirtualBalanced => elaboration::PostingKind::VirtualBalanced as i32,
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Public write/read API
 // ──────────────────────────────────────────────────────────────────────────────

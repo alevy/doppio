@@ -330,6 +330,10 @@ impl std::fmt::Display for Transaction {
 #[derive(Default, Debug)]
 pub struct Posting {
     /// The account name as written in the source (not yet alias-resolved).
+    ///
+    /// For virtual postings the surrounding markers are stripped by the parser;
+    /// only the bare account name is stored here. The marker semantics live in
+    /// [`Self::kind`].
     pub account: String,
     /// The unevaluated amount, or `None` for a null posting.
     pub amount: Option<ast::AmountDetails>,
@@ -341,6 +345,8 @@ pub struct Posting {
     pub metadata: BTreeMap<String, String>,
     /// Plain note lines that are neither tags nor key-value metadata.
     pub comments: Vec<String>,
+    /// Virtual-posting kind (real, unbalanced, or balanced).
+    pub kind: ast::PostingKind,
 }
 
 impl Posting {
@@ -658,6 +664,7 @@ impl TryFrom<ast::Journal> for HIR {
                                 tags,
                                 metadata,
                                 comments,
+                                kind: p.kind,
                             }
                         })
                         .collect();

@@ -96,13 +96,29 @@ rule_query = @{ (!(NEWLINE | ";") ~ ANY)+ }
 posting = ${
     indent+ ~ !NEWLINE ~
     (status ~ ws+)? ~
-    account ~
+    posting_account ~
     (amount_logic)? ~
     (ws* ~ note)? ~
     (NEWLINE | EOI) ~
     posting_note*
 }
 posting_note = ${ indent+ ~ note ~ (NEWLINE | EOI) }
+
+// The account portion of a posting: bare name or a virtual-posting marker.
+posting_account = ${
+    virtual_unbalanced_account
+    | virtual_balanced_account
+    | account
+}
+
+// `(Account)` — virtual unbalanced posting.
+virtual_unbalanced_account = ${ "(" ~ virtual_account_inner ~ ")" }
+
+// `[Account]` — virtual balanced posting.
+virtual_balanced_account = ${ "[" ~ virtual_account_inner ~ "]" }
+
+// Bare account name inside a virtual posting marker (parens/brackets stripped).
+virtual_account_inner = @{ (!("  " | ";" | "\t" | "=" | NEWLINE | ")" | "]") ~ ANY)+ }
 
 // The amount field of a posting.
 // Two or more spaces (or a tab) separate the account from the amount —

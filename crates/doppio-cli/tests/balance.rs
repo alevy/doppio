@@ -157,6 +157,60 @@ fn commodity_format_suffix_symbol_applied_to_register() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// --real / -R flag: filter out virtual postings
+// ---------------------------------------------------------------------------
+
+fn virtual_journal() -> &'static str {
+    "2024-01-15 Setup
+    Assets:Checking         $100
+    Equity:Opening         $-100
+    (Equity:Reservations)   $-25
+"
+}
+
+#[test]
+fn balance_real_flag_excludes_virtual_unbalanced() {
+    let f = tmp_journal_file(virtual_journal());
+    let out = run(&["balance", f.path().to_str().unwrap(), "--flat", "--real"]);
+    assert!(
+        !out.contains("Equity:Reservations"),
+        "virtual unbalanced posting should be hidden with --real: {out}"
+    );
+    assert!(
+        out.contains("Assets:Checking"),
+        "real posting should still appear: {out}"
+    );
+}
+
+#[test]
+fn balance_without_real_flag_includes_virtual_unbalanced() {
+    let f = tmp_journal_file(virtual_journal());
+    let out = run(&["balance", f.path().to_str().unwrap(), "--flat"]);
+    assert!(
+        out.contains("Equity:Reservations"),
+        "virtual posting should be included by default: {out}"
+    );
+}
+
+fn virtual_balanced_journal() -> &'static str {
+    "2024-01-15 Setup
+    Assets:Checking          $100
+    [Equity:Reservations]    $25
+    Equity:Opening          $-125
+"
+}
+
+#[test]
+fn balance_real_flag_excludes_virtual_balanced() {
+    let f = tmp_journal_file(virtual_balanced_journal());
+    let out = run(&["balance", f.path().to_str().unwrap(), "--flat", "--real"]);
+    assert!(
+        !out.contains("Equity:Reservations"),
+        "virtual balanced posting should be hidden with --real: {out}"
+    );
+}
+
 #[test]
 fn commodity_format_single_separator_three_digits_is_thousands() {
     // `format $1.000` — a single separator followed by exactly 3 digits is a

@@ -179,13 +179,45 @@ fn parse_posting(pair: Pair<Rule>) -> Posting {
     let inner = pair.into_inner();
     let mut state = TransactionState::Uncleared;
     let mut account = String::new();
+    let mut kind = PostingKind::Real;
     let mut amount = None;
     let mut notes = Vec::new();
 
     for p in inner {
         match p.as_rule() {
             Rule::status => state = parse_state(p.as_str()),
-            Rule::account => account = p.as_str().trim().to_string(),
+            Rule::posting_account => {
+                let inner_pair = p
+                    .into_inner()
+                    .next()
+                    .expect("posting_account must have one child");
+                match inner_pair.as_rule() {
+                    Rule::virtual_unbalanced_account => {
+                        kind = PostingKind::VirtualUnbalanced;
+                        account = inner_pair
+                            .into_inner()
+                            .next()
+                            .expect("virtual_unbalanced_account must have virtual_account_inner")
+                            .as_str()
+                            .trim()
+                            .to_string();
+                    }
+                    Rule::virtual_balanced_account => {
+                        kind = PostingKind::VirtualBalanced;
+                        account = inner_pair
+                            .into_inner()
+                            .next()
+                            .expect("virtual_balanced_account must have virtual_account_inner")
+                            .as_str()
+                            .trim()
+                            .to_string();
+                    }
+                    Rule::account => {
+                        account = inner_pair.as_str().trim().to_string();
+                    }
+                    _ => {}
+                }
+            }
             Rule::amount_logic => amount = Some(parse_amount_logic(p)),
             Rule::note => notes.push(p.into_inner().as_str().trim().to_string()),
             Rule::posting_note => {
@@ -202,6 +234,7 @@ fn parse_posting(pair: Pair<Rule>) -> Posting {
         amount,
         state,
         notes,
+        kind,
     }
 }
 
@@ -973,6 +1006,60 @@ mod tests {
             .filter(|e| matches!(e, Entry::Transaction(_)))
             .collect();
         assert_eq!(txns.len(), 1);
+    }
+
+    // ── virtual postings ──────────────────────────────────────────────────────
+
+    #[test]
+    fn virtual_unbalanced_posting_parses_to_correct_kind() {
+        // `(Equity:Reservations)` — parentheses denote a virtual-unbalanced
+        // posting. The account name must have the parens stripped and the kind
+        // must be `PostingKind::VirtualUnbalanced`.
+        let input = "\
+2024-01-15 Setup
+    Assets:Checking         $100
+    Equity:Opening         $-100
+    (Equity:Reservations)   $-25
+";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let virt = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Reservations")
+            .expect("virtual posting should be present with parens stripped");
+        assert_eq!(
+            virt.kind,
+            PostingKind::VirtualUnbalanced,
+            "posting kind should be VirtualUnbalanced"
+        );
+    }
+
+    #[test]
+    fn virtual_balanced_posting_parses_to_correct_kind() {
+        // `[Equity:Reservations]` — square brackets denote a virtual-balanced posting.
+        let input = "\
+2024-01-15 Setup
+    Assets:Checking          $100
+    [Equity:Reservations]    $25
+    Equity:Opening          $-125
+";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let virt = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Reservations")
+            .expect("virtual posting should be present with brackets stripped");
+        assert_eq!(
+            virt.kind,
+            PostingKind::VirtualBalanced,
+            "posting kind should be VirtualBalanced"
+        );
     }
 
     // ── full sample-journal smoke test ────────────────────────────────────────

@@ -362,6 +362,30 @@ impl Display for Transaction {
     }
 }
 
+/// Virtual-posting semantics for an [`ast::Posting`].
+///
+/// Ledger-cli permits two virtual-posting markers that change balance-rule
+/// semantics:
+///
+/// - `Real` — ordinary posting; participates in the transaction balance check.
+/// - `VirtualUnbalanced` — written as `(Account)`; the posting is excluded from
+///   the transaction's balance check. The two "real" postings must balance among
+///   themselves; the virtual posting is stored but contributes no balancing
+///   obligation.
+/// - `VirtualBalanced` — written as `[Account]`; the posting is included in the
+///   balance check (like a real posting) but is flagged so reports can show or
+///   hide it via `--real`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PostingKind {
+    /// Ordinary posting — participates in the transaction balance check.
+    #[default]
+    Real,
+    /// `(Account)` — excluded from the balance check.
+    VirtualUnbalanced,
+    /// `[Account]` — included in the balance check, but flagged as virtual.
+    VirtualBalanced,
+}
+
 /// A single posting (debit or credit line) within a transaction.
 ///
 /// This is the raw parse-tree representation. For programmatic posting
@@ -369,6 +393,10 @@ impl Display for Transaction {
 #[derive(Clone, Default, Debug)]
 pub struct Posting {
     /// The account name, e.g. `"Expenses:Food"`.
+    ///
+    /// For virtual postings the surrounding markers (`(` `)` or `[` `]`) are
+    /// stripped by the parser — only the bare account name is stored here.
+    /// The marker semantics live in [`Self::kind`].
     pub account: String,
     /// The amount, or `None` if this is a "null posting" whose value should
     /// be inferred by the elaboration stage as the negation of all others.
@@ -377,16 +405,19 @@ pub struct Posting {
     pub state: TransactionState,
     /// Lines starting with `;` indented beneath the posting line.
     pub notes: Vec<String>,
+    /// Whether this is a real, virtual-unbalanced, or virtual-balanced posting.
+    pub kind: PostingKind,
 }
 
 impl Posting {
-    /// Creates a new posting for `account` with no amount and no notes.
+    /// Creates a new real posting for `account` with no amount and no notes.
     pub fn new<S: Into<String>>(account: S) -> Self {
         Self {
             account: account.into(),
             amount: None,
             state: TransactionState::Uncleared,
             notes: vec![],
+            kind: PostingKind::Real,
         }
     }
 

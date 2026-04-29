@@ -663,13 +663,47 @@ fn parse_posting(pair: Pair<Rule>) -> Posting {
     let inner = pair.into_inner();
     let mut state = TransactionState::Uncleared;
     let mut account = String::new();
+    let mut kind = PostingKind::Real;
     let mut amount = None;
     let mut notes = Vec::new();
 
     for p in inner {
         match p.as_rule() {
             Rule::state => state = parse_state(p.as_str()),
-            Rule::account => account = p.as_str().trim().to_string(),
+            Rule::posting_account => {
+                // posting_account = virtual_unbalanced_account | virtual_balanced_account | account
+                let inner_pair = p
+                    .into_inner()
+                    .next()
+                    .expect("posting_account must have one child");
+                match inner_pair.as_rule() {
+                    Rule::virtual_unbalanced_account => {
+                        kind = PostingKind::VirtualUnbalanced;
+                        // Inner child is virtual_account_inner — the bare account name.
+                        account = inner_pair
+                            .into_inner()
+                            .next()
+                            .expect("virtual_unbalanced_account must have virtual_account_inner")
+                            .as_str()
+                            .trim()
+                            .to_string();
+                    }
+                    Rule::virtual_balanced_account => {
+                        kind = PostingKind::VirtualBalanced;
+                        account = inner_pair
+                            .into_inner()
+                            .next()
+                            .expect("virtual_balanced_account must have virtual_account_inner")
+                            .as_str()
+                            .trim()
+                            .to_string();
+                    }
+                    Rule::account => {
+                        account = inner_pair.as_str().trim().to_string();
+                    }
+                    _ => {}
+                }
+            }
             Rule::amount_logic => amount = Some(parse_amount_logic(p)),
             Rule::note => notes.push(p.as_str().trim().to_string()),
             Rule::posting_note => {
@@ -686,6 +720,7 @@ fn parse_posting(pair: Pair<Rule>) -> Posting {
         amount,
         state,
         notes,
+        kind,
     }
 }
 

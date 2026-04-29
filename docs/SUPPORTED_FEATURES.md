@@ -35,6 +35,8 @@ Status legend:
 | Negative amounts | ✅ | Both `-$100` and `$-100` |
 | Lot pricing `@ unit` | ✅ | |
 | Lot pricing `@@ total` | ✅ | |
+| Virtual posting `(Account)` | ✅ | Unbalanced — excluded from balance check; stored with `PostingKind::VirtualUnbalanced` |
+| Virtual posting `[Account]` | ✅ | Balanced — included in balance check; stored with `PostingKind::VirtualBalanced` |
 | Null posting (auto-inferred amount) | ✅ | Exactly one per transaction; multiple null postings is an error |
 | Posting balance assertion `= amount` | ✅ | Enforced during elaboration |
 | Strict balance assertion `== amount` | ✅ | Enforced during elaboration |
@@ -114,8 +116,10 @@ Status legend:
 | `dop balance --tag KEY` | ✅ | v0.2.0 (PR #72) |
 | `dop balance --pattern REGEX` | ✅ | Account-name regex |
 | `dop balance --format text\|json\|csv` | ✅ | |
+| `dop balance --real` / `-R` | ✅ | Excludes virtual postings (`(Account)` and `[Account]`) from output |
 | `dop register` | ✅ | Per-posting register with running totals per commodity |
 | `dop register --begin/--end/--cleared/--tag/--format` | ✅ | Same filters as `balance` |
+| `dop register --real` / `-R` | ✅ | Excludes virtual postings from register output |
 | `dop balance/register --exchange COMMODITY` (or `-X`) | ✅ | Converts non-target commodity balances via `P`-directive price chain; warns to stderr for unconvertible commodities. Conversion uses the report's `--end` date as the as-of cutoff, or the latest available quote if `--end` is not specified. ledger-cli converts per-posting using the transaction's own date by default; this implementation uses a single uniform as-of for all postings, which is simpler but means historical reports without `--end` will use anachronistically recent rates. |
 | `dop print SRC` | ✅ | Re-emits source. Format strings not applied (intentional) |
 | `dop stats` | ✅ | Transaction/account/commodity counts and date range |
@@ -132,6 +136,7 @@ Status legend:
 | `write_ledger(txns, writer)` | ✅ | Canonical Ledger source-text output |
 | `dop_write_header` / `dop_read_header` | ✅ | Portable `.dop` header I/O with version-mismatch errors |
 | `resolution::Transaction` / `Posting` builder API | ✅ | Fluent construction with `with_*` helpers |
+| `elaboration::PostingKind` enum (`Real`, `VirtualUnbalanced`, `VirtualBalanced`) | ✅ | Carried on `elaboration::Posting::kind`; UNSPECIFIED=0 decodes as Real for backward compat |
 | `parser::Parser<F>::opener` returning `Result` | ✅ | v0.2.0 breaking change. Custom openers can surface I/O errors |
 | `.dop` binary format v2 (`elaboration::Journal` with `commodities`) | ✅ | v0.2.0 breaking change. v1 files are rejected with a clear "recompile" message |
 | Append / framed `.dop` (range-scan, partial decode) | 🚫 | Phase 4 / issues #17, #39–41 |
@@ -164,6 +169,8 @@ file extensions; selected automatically by `dop` and by
 | `commodity` directive with indented sub-directives | ✅ | `alias`, `format`, `nomarket`, `default`, `note` |
 | `D <amount>` (bare default-commodity directive) | ✅ | Same shape as ledger-cli's `D`; lowered to `Directive::Commodity { Default, Format }` |
 | `include` directive (literal and glob) | ✅ | Same glob expansion as ledger-cli frontend |
+| Virtual posting `(Account)` | ✅ | Unbalanced virtual; same semantics as ledger-cli frontend |
+| Virtual posting `[Account]` | ✅ | Balanced virtual; same semantics as ledger-cli frontend |
 | Arithmetic in posting amounts | ✅ | Pratt-parsed; same precedence as ledger-cli |
 | Comment lines `;` | ✅ | |
 | Comment lines `#` | ✅ | hledger extension; not accepted by ledger-cli frontend |

@@ -313,6 +313,61 @@ fn register_begin_filter_resets_running_total() {
 }
 
 // ---------------------------------------------------------------------------
+// --real / -R flag: filter out virtual postings
+// ---------------------------------------------------------------------------
+
+fn virtual_register_journal() -> &'static str {
+    "2024-01-15 Setup
+    Assets:Checking         $100
+    Equity:Opening         $-100
+    (Equity:Reservations)   $-25
+"
+}
+
+#[test]
+fn register_without_real_flag_includes_virtual_unbalanced() {
+    let f = tmp_journal_file(virtual_register_journal());
+    let out = run(&["register", f.path().to_str().unwrap()]);
+    assert!(
+        out.contains("Equity:Reservations"),
+        "virtual posting should appear by default: {out}"
+    );
+    assert!(
+        out.contains("Assets:Checking"),
+        "real posting should appear: {out}"
+    );
+}
+
+#[test]
+fn register_real_flag_excludes_virtual_unbalanced() {
+    let f = tmp_journal_file(virtual_register_journal());
+    let out = run(&["register", f.path().to_str().unwrap(), "--real"]);
+    assert!(
+        !out.contains("Equity:Reservations"),
+        "virtual unbalanced posting should be hidden with --real: {out}"
+    );
+    assert!(
+        out.contains("Assets:Checking"),
+        "real posting should still appear: {out}"
+    );
+}
+
+#[test]
+fn register_real_short_flag_excludes_virtual_unbalanced() {
+    // -R is the short form of --real; verify it works identically.
+    let f = tmp_journal_file(virtual_register_journal());
+    let out = run(&["register", f.path().to_str().unwrap(), "-R"]);
+    assert!(
+        !out.contains("Equity:Reservations"),
+        "virtual unbalanced posting should be hidden with -R: {out}"
+    );
+    assert!(
+        out.contains("Assets:Checking"),
+        "real posting should still appear with -R: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // --tag filtering
 // ---------------------------------------------------------------------------
 
