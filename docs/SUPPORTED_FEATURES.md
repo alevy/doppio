@@ -161,6 +161,7 @@ file extensions; selected automatically by `dop` and by
 | `account` directive with indented sub-directives | ✅ | `note`, `alias`, `type`, unknown keys |
 | `commodity` directive (format string) | ✅ | Both `$1,000.00` and `1,000.00 EUR` forms |
 | `commodity` directive with indented sub-directives | ✅ | `alias`, `format`, `nomarket`, `default`, `note` |
+| `D <amount>` (bare default-commodity directive) | ✅ | Same shape as ledger-cli's `D`; lowered to `Directive::Commodity { Default, Format }` |
 | `include` directive (literal and glob) | ✅ | Same glob expansion as ledger-cli frontend |
 | Arithmetic in posting amounts | ✅ | Pratt-parsed; same precedence as ledger-cli |
 | Comment lines `;` | ✅ | |

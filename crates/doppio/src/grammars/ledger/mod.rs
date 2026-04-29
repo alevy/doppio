@@ -1454,6 +1454,17 @@ account Assets:Savings
     }
 
     #[test]
+    fn d_directive_rejects_bare_number() {
+        // `D 1000.00` carries no commodity — the parser must reject it with a
+        // message that mentions "commodity" so the user knows what is missing.
+        let err = parse_ledger("D 1000.00\n").unwrap_err();
+        assert!(
+            err.to_string().contains("commodity"),
+            "error should mention 'commodity', got: {err}"
+        );
+    }
+
+    #[test]
     fn test_issue_89_failing_input() {
         // Regression test for issue #89: the exact failing input from the bug report.
         let input = "define assetChecker(amt) = (amt > -100.00 or (tag(\"TaxImplication\") !~ /^\\s*$/ and tag(\"Entity\") !~ /^\\s*$/))\n";
