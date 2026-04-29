@@ -230,7 +230,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fac4744fb15ae8337dc853fee7fb3f4e48c0fbaa23d0afe49c447b4fab126118"
 dependencies = [
  "num-traits",
- "serde",
 ]
 
 [[package]]
@@ -416,7 +415,6 @@ dependencies = [
  "protoc-bin-vendored",
  "regex",
  "rust_decimal",
- "serde",
 ]
 
 [[package]]
@@ -440,7 +438,6 @@ dependencies = [
  "doppio",
  "regex",
  "rust_decimal",
- "serde",
  "serde_json",
  "tempfile",
 ]

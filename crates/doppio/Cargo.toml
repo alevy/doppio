@@ -18,7 +18,6 @@ pest_derive = { workspace = true }
 prost = { workspace = true }
 regex = { workspace = true }
 rust_decimal = { workspace = true }
-serde = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 glob = { workspace = true }
