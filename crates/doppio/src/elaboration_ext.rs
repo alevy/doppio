@@ -212,30 +212,32 @@ impl elaboration::Journal {
             return Some(Decimal::ONE);
         }
 
-        let mut best: Option<(chrono::NaiveDate, Decimal)> = None;
-        for hp in &self.prices {
-            let direct = hp.commodity == from_commodity && hp.price_commodity == to_commodity;
-            let inverse = hp.commodity == to_commodity && hp.price_commodity == from_commodity;
-            if !direct && !inverse {
-                continue;
-            }
-            let date = hp.date_naive();
-            if as_of.is_some_and(|cutoff| date > cutoff) {
-                continue;
-            }
-            let raw = match hp.price.as_ref() {
-                Some(p) => p.to_decimal(),
-                None => continue,
-            };
-            if raw.is_zero() {
-                continue;
-            }
-            let rate = if direct { raw } else { Decimal::ONE / raw };
-            if best.is_none_or(|(prev_date, _)| date > prev_date) {
-                best = Some((date, rate));
-            }
-        }
-        best.map(|(_, r)| r)
+        // For each price entry that relates the pair (in either direction), is
+        // within `as_of`, and carries a non-zero price, yield (date, rate).
+        // Take the latest by date. Ties break in favour of the entry that
+        // appears later in source order — `max_by_key` returns the last equal
+        // element, matching "more-recently-declared wins".
+        self.prices
+            .iter()
+            .filter_map(|hp| {
+                let direct = hp.commodity == from_commodity && hp.price_commodity == to_commodity;
+                let inverse = hp.commodity == to_commodity && hp.price_commodity == from_commodity;
+                if !direct && !inverse {
+                    return None;
+                }
+                let date = hp.date_naive();
+                if as_of.is_some_and(|cutoff| date > cutoff) {
+                    return None;
+                }
+                let raw = hp.price.as_ref()?.to_decimal();
+                if raw.is_zero() {
+                    return None;
+                }
+                let rate = if direct { raw } else { Decimal::ONE / raw };
+                Some((date, rate))
+            })
+            .max_by_key(|(date, _)| *date)
+            .map(|(_, rate)| rate)
     }
 }
 
