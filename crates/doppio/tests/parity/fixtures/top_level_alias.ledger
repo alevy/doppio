@@ -1,0 +1,7 @@
+; Top-level `alias short = long`. The short form resolves to the long
+; canonical name everywhere a posting references it.
+alias Checking = Assets:Checking
+
+2024-01-15 Deposit via alias
+    Checking        $1000
+    Equity:Opening

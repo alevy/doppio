@@ -1,0 +1,16 @@
+; Multi-transaction running balance accumulation, terminated by a
+; standalone balance assertion that exercises the elaborator's
+; per-account balance bookkeeping across multiple entries.
+2024-01-01 First deposit
+    Assets:Checking   $1000
+    Equity:Opening
+
+2024-01-15 Second deposit
+    Assets:Checking   $500
+    Equity:Opening
+
+2024-01-20 Withdrawal
+    Expenses:Food     $100
+    Assets:Checking
+
+2024-01-31 = Assets:Checking  $1400

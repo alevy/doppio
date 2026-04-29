@@ -1,0 +1,9 @@
+; `P` directive: record the market price of AAPL on a given date. Stored on
+; the elaborated journal's `prices` field. FX conversion using these prices
+; is not yet wired into balance/register reports — that's tracked separately
+; (see #141 / Phase D parity gaps).
+P 2024-06-15 AAPL $182.50
+
+2024-06-15 Mark to market (no-op transaction; price is the directive)
+    Expenses:Trivial   $1
+    Assets:Cash

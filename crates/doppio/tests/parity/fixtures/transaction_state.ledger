@@ -1,0 +1,13 @@
+; Transaction-level state markers `*` (cleared) and `!` (pending). The
+; uncleared default has no marker. Three transactions, one of each.
+2024-01-01 * Cleared
+    Expenses:Food   $10
+    Assets:Cash
+
+2024-01-02 ! Pending
+    Expenses:Food   $20
+    Assets:Cash
+
+2024-01-03 Uncleared
+    Expenses:Food   $30
+    Assets:Cash

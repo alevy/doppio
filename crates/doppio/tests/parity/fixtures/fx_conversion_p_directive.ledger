@@ -1,0 +1,9 @@
+; FX conversion via `P` directive consumption in balance reports. The
+; directive is stored on the journal today (see historical_price_directive.ledger);
+; what's missing is `dop balance --exchange USD` actually consulting the
+; price chain to convert other-commodity balances. Tracks #141.
+P 2024-01-01 EUR $1.10
+
+2024-01-15 Cross-currency expense
+    Expenses:Travel   100 EUR
+    Assets:Checking

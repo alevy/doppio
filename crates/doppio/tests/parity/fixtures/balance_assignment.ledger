@@ -1,0 +1,8 @@
+; Balance assignment: "= $1000" with no preceding amount. The elaborator
+; computes the posting amount as (target - current_balance).
+;
+; Starting balance: 0. After this posting, Assets:Checking must equal $1000,
+; so the inferred amount is $1000.
+2024-01-15 Opening
+    Assets:Checking  = $1000
+    Equity:Opening

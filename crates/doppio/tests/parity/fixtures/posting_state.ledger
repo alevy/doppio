@@ -1,0 +1,6 @@
+; Per-posting state markers — each posting can independently be cleared
+; (`*`) or pending (`!`). Useful when reconciling part of a transaction.
+2024-01-15 Mixed posting states
+    * Expenses:Food    $10
+    ! Expenses:Tax     $1
+    Assets:Cash

@@ -1,0 +1,8 @@
+; Both YYYY-MM-DD and YYYY/MM/DD are accepted by the ledger frontend.
+2024-01-15 First with dashes
+    Expenses:Food   $10
+    Assets:Cash
+
+2024/02/20 Second with slashes
+    Expenses:Food   $20
+    Assets:Cash

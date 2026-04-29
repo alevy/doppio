@@ -1,0 +1,6 @@
+; Posting-level balance assertion. The "= $1000" expects the running balance
+; of Assets:Checking to equal $1000 after this posting; "== $1000" is the
+; strict (all-commodity) form.
+2024-01-15 Opening
+    Assets:Checking   $1000 == $1000
+    Equity:Opening

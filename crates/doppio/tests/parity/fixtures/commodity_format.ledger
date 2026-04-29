@@ -1,0 +1,10 @@
+; commodity block declaring a display format. The format is applied at
+; render time (balance / register output); elaboration just stores the
+; declared format on the journal's `commodities` map.
+commodity $
+    format $1,000.00
+    note US dollar
+
+2024-01-15 Test
+    Expenses:Food   $50
+    Assets:Checking

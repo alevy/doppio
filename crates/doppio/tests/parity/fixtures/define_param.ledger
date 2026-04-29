@@ -1,0 +1,8 @@
+; Parameterised `define`. The function is expanded at expression-evaluation
+; time. Calling `double($50)` returns `$100`; the commodity flows through
+; the multiplication.
+define double(x) = x * 2
+
+2024-01-01 Sale
+    Expenses:Food   double($50)
+    Assets:Cash

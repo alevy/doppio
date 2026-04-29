@@ -1,0 +1,10 @@
+; Top-level full-line comments accept any of: ; # * % |
+; This file mixes all of them; only the transaction below should make it
+; into the elaborated journal.
+# this is also a comment
+* and so is this
+% and this
+| and this
+2024-01-15 Real transaction
+    Expenses:Food   $10
+    Assets:Cash

@@ -1,0 +1,11 @@
+; Notes attach to either the transaction header (indented `;` lines under
+; the header) or to a posting (indented `;` lines under a posting). Both
+; survive elaboration as metadata / comments on the carrier.
+2024-01-15 Groceries
+    ; A header-level note
+    ; Another header-level note
+    ; KeyA: ValueA
+    Expenses:Food   $50
+        ; A posting-level note
+        ; KeyB: ValueB
+    Assets:Checking

@@ -1,0 +1,10 @@
+; tag block with a `check` sub-directive. Non-fatal: prints a warning but
+; lets elaboration continue. The transaction's metadata "Statement: foobar"
+; matches the regex.
+tag Statement
+    check value =~ /^foo/
+
+2024-01-01 Test
+    ; Statement: foobar
+    Expenses:Food  $10.00
+    Assets:Checking

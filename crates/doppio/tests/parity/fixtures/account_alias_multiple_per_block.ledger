@@ -1,0 +1,13 @@
+; An `account` block can carry multiple `alias` sub-directives. All
+; aliases should resolve to the same canonical account name.
+account Assets:Checking
+    alias Checking
+    alias C
+
+2024-01-01 Use the long alias
+    Checking      $100
+    Equity:Opening
+
+2024-01-02 Use the short alias
+    C             $50
+    Equity:Opening

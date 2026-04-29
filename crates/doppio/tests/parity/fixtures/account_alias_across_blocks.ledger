@@ -1,0 +1,12 @@
+; Two `account` blocks each declare their own alias. Both aliases
+; should resolve in postings after BOTH blocks have been declared
+; (ordering interaction).
+account Assets:Checking
+    alias Checking
+
+account Assets:Savings
+    alias Savings
+
+2024-01-01 Transfer
+    Checking      $-100
+    Savings       $100

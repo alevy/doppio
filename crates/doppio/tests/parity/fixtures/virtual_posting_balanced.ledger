@@ -1,0 +1,7 @@
+; Virtual balanced posting: brackets around the account name. The posting
+; DOES participate in the balance check, but is flagged so reports can
+; include or exclude it via `--real`. Tracks #140.
+2024-01-15 Setup
+    Assets:Checking          $100
+    [Equity:Reservations]    $25
+    Equity:Opening          $-125

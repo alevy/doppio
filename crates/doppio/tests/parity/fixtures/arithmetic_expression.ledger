@@ -1,0 +1,6 @@
+; Arithmetic in posting amounts via the Pratt parser. `$30 + $20` should
+; evaluate to $50 in the elaborated journal — the elaborator carries the
+; commodity through the addition since both operands are in `$`.
+2024-01-15 Combined receipt
+    Expenses:Food   $30 + $20
+    Assets:Cash

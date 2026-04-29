@@ -1,0 +1,7 @@
+; Virtual unbalanced posting: parens around the account name. The posting
+; does NOT participate in the transaction's balance check, so the
+; "real" postings must balance among themselves. Tracks #140.
+2024-01-15 Setup
+    Assets:Checking         $100
+    Equity:Opening         $-100
+    (Equity:Reservations)   $-25

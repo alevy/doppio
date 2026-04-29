@@ -1,0 +1,9 @@
+; Standalone balance-assertion directive: `<date> = <account>  <amount>`.
+; Asserts the account's running balance at this point in the journal
+; equals the amount. Reaching elaboration without error means the
+; assertion passed.
+2024-01-15 Opening
+    Assets:Checking  $1000
+    Equity:Opening
+
+2024-01-31 = Assets:Checking  $1000

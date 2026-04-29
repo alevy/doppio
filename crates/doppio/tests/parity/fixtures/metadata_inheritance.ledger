@@ -1,0 +1,10 @@
+; Transaction-header metadata is visible to posting-level `tag()` lookups.
+; Here, the `Statement: foobar` is declared on the transaction header but
+; the tag block validates it via the `tag()` value binding.
+tag Statement
+    assert value =~ /^foo/
+
+2024-01-01 Test
+    ; Statement: foobar
+    Expenses:Food  $10.00
+    Assets:Checking

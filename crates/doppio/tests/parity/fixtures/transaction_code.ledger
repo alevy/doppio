@@ -1,0 +1,6 @@
+; Optional reference code in parentheses immediately after the date /
+; state marker. Stored on the elaborated transaction's `code` field
+; (parens stripped).
+2024-01-15 * (INV-042) Invoice paid
+    Income:Sales       $-200
+    Assets:Checking

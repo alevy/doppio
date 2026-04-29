@@ -1,0 +1,9 @@
+; commodity block with `default` sub-directive declares the default
+; commodity for bare amounts (those without a symbol or unit). After
+; this directive, `100` should be treated as `$100`.
+commodity $
+    default
+
+2024-01-01 Bare amount uses default commodity
+    Expenses:Food   100
+    Assets:Cash

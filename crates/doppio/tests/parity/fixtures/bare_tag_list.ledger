@@ -1,0 +1,6 @@
+; Bare-tag-list note: `; :tag1:tag2:` populates the carrier's `tags` field
+; rather than `metadata`. Each colon-delimited token becomes a tag.
+2024-01-15 Test
+    ; :urgent:reviewed:
+    Expenses:Food   $10
+    Assets:Cash

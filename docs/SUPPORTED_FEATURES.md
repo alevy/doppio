@@ -1,10 +1,17 @@
 # doppio: Supported Ledger features
 
-**Last updated**: 2026-04-26 (doppio v0.3.0)
+**Last updated**: 2026-04-29 (doppio v0.4.0-rc.1)
 
 This document is a feature-by-feature comparison of doppio's syntax surface
 against [ledger-cli](https://ledger-cli.org/) and [hledger](https://hledger.org/).
 The authoritative behaviour is the test suite — this matrix is a navigation aid.
+
+The companion **parity test corpus** at
+[`crates/doppio/tests/parity/`](../crates/doppio/tests/parity/) carries one
+minimal `.ledger` fixture per feature plus a Rust harness asserting on the
+elaborated `Journal`. Tests for not-yet-implemented features are
+`#[ignore]`'d with a tracking-issue reference, so the ignored count stays a
+visible signal of the remaining parity work toward 1.0 (Phase D).
 
 Status legend:
 
@@ -56,7 +63,7 @@ Status legend:
 | `account` + `note` sub-directive | ✅ | |
 | `account` + `assert <expr>` | ✅ | v0.2.0 (PR #76). Fatal: posting whose elaboration fails an account-level assert halts the run with `ElaborationError::AccountAssertionFailed` |
 | `account` + `check <expr>` | ✅ | v0.2.0 (PR #76). Non-fatal: prints a warning to stderr and continues |
-| `account` + `alias` sub-directive | 🔧 | Parsed; alias resolution may be incomplete in some HIR paths |
+| `account` + `alias` sub-directive | ✅ | Resolves through the parse → resolve → elaborate pipeline; covered by `tests/parity/account_alias_*.ledger` (single, multiple-per-block, across-blocks, with-assert, forward-only) |
 | `commodity SYMBOL` block | ✅ | |
 | `commodity` + `format` sub-directive | ✅ | v0.2.0 (PR #84). Drives `balance` and `register` rendering (prefix/suffix, thousands separator, decimal places, sign) |
 | `commodity` + `default` sub-directive | ✅ | v0.2.0. Equivalent to a `D` directive |

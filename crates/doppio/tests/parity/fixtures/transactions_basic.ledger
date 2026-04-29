@@ -1,0 +1,4 @@
+; Smallest possible transaction with a null posting.
+2024-01-15 Groceries
+    Expenses:Food   $50
+    Assets:Checking

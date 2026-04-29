@@ -1,0 +1,5 @@
+; Two postings in different commodities, with an explicit cost annotation
+; making the transaction balance: 10 AAPL on one side, $-1500 on the other.
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL @ $150
+    Assets:Cash       $-1500
