@@ -3,7 +3,6 @@
 //! `OUT_DIR` via the `build.rs` `include!`) doesn't clobber these impls.
 
 use crate::elaboration;
-use std::collections::{BTreeMap, HashSet, VecDeque};
 
 impl elaboration::Decimal {
     /// Reconstruct a [`rust_decimal::Decimal`] from this proto-encoded value.
@@ -178,31 +177,29 @@ impl elaboration::Journal {
     /// Return the conversion rate from `from_commodity` to `to_commodity` as
     /// of `as_of` (or the latest available if `as_of` is `None`).
     ///
-    /// Searches `self.prices` for `P` entries and performs a BFS through the
-    /// commodity price graph to find a conversion path. For each pair of
-    /// commodities the most recent quote whose date is `<= as_of` (or the
-    /// most recent overall when `as_of` is `None`) is used.
+    /// **Direct + inverse only — no chaining through intermediate
+    /// commodities.** Scans `self.prices` for entries that directly relate
+    /// the requested pair, in either direction. The most-recent eligible
+    /// quote (date ≤ `as_of`, in either direction) wins. If the winning
+    /// quote was declared as the inverse pair (`to → from`), the returned
+    /// rate is `1 / quoted`.
     ///
-    /// Multi-hop conversion is supported: if there is no direct EUR→USD quote
-    /// but there are EUR→GBP and GBP→USD quotes, the combined rate is returned.
-    /// Rates are multiplied along the path (BFS finds shortest hops first).
+    /// This is a deliberate design choice; see `docs/exchange-rates.md`
+    /// for rationale and comparison with hledger (chains with a depth
+    /// limit) and Beancount (also refuses to chain). The short version:
+    /// each chain hop accumulates uncertainty — different vendor, different
+    /// time of day, different bid-ask spread — and silently fabricating
+    /// rates from chains hides missing P directives that the user should
+    /// see and fill in.
     ///
-    /// Inverse quotes are also traversed: if only USD→EUR is declared, then
-    /// EUR→USD is available as `1 / (USD→EUR rate)`. Explicit and derived
-    /// (inverse) quotes are merged by the most-recent-date rule.
+    /// Returns `None` if no direct or inverse quote for the pair is
+    /// available within `as_of`.
     ///
-    /// When multiple shortest paths exist, the one whose intermediate
-    /// commodities sort first alphabetically is used (BFS expansion follows
-    /// the BTreeMap-keyed adjacency map's deterministic key order).
-    ///
-    /// Conversion uses the report's `--end` date as the as-of cutoff, or the
-    /// latest available quote if `--end` is not specified. ledger-cli converts
-    /// per-posting using the transaction's own date by default; this
-    /// implementation uses a single uniform as-of for all postings, which is
-    /// simpler but means historical reports without `--end` will use
-    /// anachronistically recent rates.
-    ///
-    /// Returns `None` if no conversion path exists.
+    /// CLI usage: `dop balance --exchange COMMODITY` and `dop register
+    /// --exchange COMMODITY` use `--end` as the as-of cutoff, or `None`
+    /// (latest) if no `--end` is set. Commodities for which this lookup
+    /// returns `None` are left unconverted in the report with a warning
+    /// to stderr.
     pub fn exchange_rate_at(
         &self,
         from_commodity: &str,
@@ -215,72 +212,26 @@ impl elaboration::Journal {
             return Some(Decimal::ONE);
         }
 
-        // Eligible quotes: each `HistoricalPrice` with a non-zero price and a
-        // date at or before `as_of` (or any date if `as_of` is `None`),
-        // flattened to `(from, to, rate, date)` tuples.
-        let eligible_quotes = self.prices.iter().filter_map(|hp| {
-            let price_val = hp.price.as_ref()?.to_decimal();
-            if price_val == Decimal::ZERO {
-                return None;
-            }
-            let date = hp.date_naive();
-            if as_of.is_some_and(|cutoff| date > cutoff) {
-                return None;
-            }
-            Some((
-                hp.commodity.as_str(),
-                hp.price_commodity.as_str(),
-                price_val,
-                date,
-            ))
-        });
-
-        // Build adjacency map: commodity → { neighbour → (date, rate) }.
-        // For each eligible quote, insert both a forward edge `from → to` at
-        // `rate` and an inverse edge `to → from` at `1/rate`. When the same
-        // (from, to) pair appears more than once, keep the most recent quote
-        // by date.
-        let mut adj: BTreeMap<&str, BTreeMap<&str, (chrono::NaiveDate, Decimal)>> = BTreeMap::new();
-        let mut upsert = |from, to, date: chrono::NaiveDate, rate: Decimal| {
-            let entry = adj
-                .entry(from)
-                .or_default()
-                .entry(to)
-                .or_insert((date, rate));
-            if date > entry.0 {
-                *entry = (date, rate);
-            }
-        };
-        for (from, to, rate, date) in eligible_quotes {
-            upsert(from, to, date, rate);
-            upsert(to, from, date, Decimal::ONE / rate);
-        }
-
-        // BFS from `from_commodity` to `to_commodity`.
-        // State: (current_commodity, accumulated_rate).
-        let mut queue: VecDeque<(&str, Decimal)> = VecDeque::new();
-        let mut visited: HashSet<&str> = HashSet::new();
-
-        queue.push_back((from_commodity, Decimal::ONE));
-        visited.insert(from_commodity);
-
-        while let Some((current, rate)) = queue.pop_front() {
-            if let Some(neighbours) = adj.get(current) {
-                for (neighbour, (_date, edge_rate)) in neighbours {
-                    if visited.contains(neighbour) {
-                        continue;
-                    }
-                    let combined = rate * edge_rate;
-                    if *neighbour == to_commodity {
-                        return Some(combined);
-                    }
-                    visited.insert(neighbour);
-                    queue.push_back((neighbour, combined));
-                }
-            }
-        }
-
-        None
+        self.prices
+            .iter()
+            // Pair must relate, in either direction.
+            .filter_map(|hp| {
+                let direct = hp.commodity == from_commodity && hp.price_commodity == to_commodity;
+                let inverse = hp.commodity == to_commodity && hp.price_commodity == from_commodity;
+                (direct || inverse).then(|| (hp, direct, hp.date_naive()))
+            })
+            // Date must be at or before as_of (or as_of is None).
+            .filter(|(_, _, date)| as_of.is_none_or(|cutoff| *date <= cutoff))
+            // Price field must be present.
+            .filter_map(|(hp, direct, date)| Some((date, direct, hp.price.as_ref()?.to_decimal())))
+            // Price must be non-zero (avoids degenerate inversions).
+            .filter(|(_, _, raw)| !raw.is_zero())
+            // Apply inversion when the entry was matched in reverse direction.
+            .map(|(date, direct, raw)| (date, if direct { raw } else { Decimal::ONE / raw }))
+            // Latest by date wins. Ties resolve in source order — `max_by_key`
+            // returns the last equal element, matching "more-recently-declared".
+            .max_by_key(|(date, _)| *date)
+            .map(|(_, rate)| rate)
     }
 }
 
@@ -937,22 +888,25 @@ mod tests {
     }
 
     #[test]
-    fn exchange_rate_at_two_hop_chain() {
-        // EUR→GBP and GBP→USD; no direct EUR→USD.
+    fn exchange_rate_at_chained_path_not_traversed() {
+        // EUR→GBP and GBP→USD declared, but there is no direct or inverse
+        // EUR↔USD quote. Doppio's contract is direct + inverse only — it
+        // refuses to chain through intermediates. See docs/exchange-rates.md
+        // for rationale; aligns with Beancount's "non-transitive" choice.
         let j = journal_with_prices(vec![
             make_price(2024, 1, 1, "EUR", "GBP", "0.85".parse().unwrap()),
             make_price(2024, 1, 1, "GBP", "USD", "1.27".parse().unwrap()),
         ]);
-        let rate = j
-            .exchange_rate_at("EUR", "USD", None)
-            .expect("two-hop path exists");
-        let expected = "0.85".parse::<Decimal>().unwrap() * "1.27".parse::<Decimal>().unwrap();
-        assert_eq!(rate, expected);
+        assert_eq!(
+            j.exchange_rate_at("EUR", "USD", None),
+            None,
+            "chained paths through intermediate commodities must not be traversed"
+        );
     }
 
     #[test]
-    fn exchange_rate_at_no_path_returns_none() {
-        // EUR→GBP exists, but there is no path to USD.
+    fn exchange_rate_at_no_quote_returns_none() {
+        // Only EUR→GBP exists; nothing relates EUR and USD in either direction.
         let j = journal_with_prices(vec![make_price(
             2024,
             1,
