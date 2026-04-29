@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/doppio", "crates/doppio-cli"]
+members = ["crates/doppio", "crates/doppio-categorize", "crates/doppio-cli"]
 resolver = "3"
 
 # Shared metadata that applies to every member crate by default. Crates
