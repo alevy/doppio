@@ -160,49 +160,45 @@ impl elaboration::Journal {
             return Some(Decimal::ONE);
         }
 
-        // Build adjacency map: commodity → { neighbour → (date, rate) }.
-        // For each HistoricalPrice entry, keep only the most recent quote
-        // per (from, to) pair that satisfies the as_of constraint.
-        let mut adj: BTreeMap<&str, BTreeMap<&str, (chrono::NaiveDate, Decimal)>> = BTreeMap::new();
-
-        for hp in &self.prices {
-            let price_val = match &hp.price {
-                Some(p) => p.to_decimal(),
-                None => continue,
-            };
+        // Eligible quotes: each `HistoricalPrice` with a non-zero price and a
+        // date at or before `as_of` (or any date if `as_of` is `None`),
+        // flattened to `(from, to, rate, date)` tuples.
+        let eligible_quotes = self.prices.iter().filter_map(|hp| {
+            let price_val = hp.price.as_ref()?.to_decimal();
             if price_val == Decimal::ZERO {
-                continue;
+                return None;
             }
             let date = hp.date_naive();
-            if let Some(cutoff) = as_of
-                && date > cutoff
-            {
-                continue;
+            if as_of.is_some_and(|cutoff| date > cutoff) {
+                return None;
             }
+            Some((
+                hp.commodity.as_str(),
+                hp.price_commodity.as_str(),
+                price_val,
+                date,
+            ))
+        });
 
-            let from = hp.commodity.as_str();
-            let to = hp.price_commodity.as_str();
-
-            // Forward edge: from → to at rate price_val.
-            let fwd = adj
+        // Build adjacency map: commodity → { neighbour → (date, rate) }.
+        // For each eligible quote, insert both a forward edge `from → to` at
+        // `rate` and an inverse edge `to → from` at `1/rate`. When the same
+        // (from, to) pair appears more than once, keep the most recent quote
+        // by date.
+        let mut adj: BTreeMap<&str, BTreeMap<&str, (chrono::NaiveDate, Decimal)>> = BTreeMap::new();
+        let mut upsert = |from, to, date: chrono::NaiveDate, rate: Decimal| {
+            let entry = adj
                 .entry(from)
                 .or_default()
                 .entry(to)
-                .or_insert((date, price_val));
-            if date > fwd.0 {
-                *fwd = (date, price_val);
+                .or_insert((date, rate));
+            if date > entry.0 {
+                *entry = (date, rate);
             }
-
-            // Inverse edge: to → from at rate 1/price_val.
-            let inv_rate = Decimal::ONE / price_val;
-            let inv = adj
-                .entry(to)
-                .or_default()
-                .entry(from)
-                .or_insert((date, inv_rate));
-            if date > inv.0 {
-                *inv = (date, inv_rate);
-            }
+        };
+        for (from, to, rate, date) in eligible_quotes {
+            upsert(from, to, date, rate);
+            upsert(to, from, date, Decimal::ONE / rate);
         }
 
         // BFS from `from_commodity` to `to_commodity`.
