@@ -244,6 +244,8 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
         Rule::value_logic => {
             let inner = p.into_inner();
             let mut value = None;
+            let mut lot_annotation: LotAnnotation = LotAnnotation::default();
+            let mut has_lot_annotation = false;
             let mut lot_pricing = None;
             let mut balance_assertion = None;
 
@@ -252,13 +254,23 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
                     Rule::value_expr => {
                         value = Some(parse_expr(p));
                     }
-                    Rule::lot_price => {
-                        let s = p.as_str();
-                        let inner_val = parse_expr(p.into_inner().next().unwrap());
-                        if s.starts_with("@@") {
-                            lot_pricing = Some(LotPricing::Total(inner_val));
-                        } else {
-                            lot_pricing = Some(LotPricing::Unit(inner_val));
+                    Rule::lot_annotation_or_price => {
+                        let child = p.into_inner().next().unwrap();
+                        match child.as_rule() {
+                            Rule::lot_price => {
+                                let s = child.as_str();
+                                let inner_val = parse_expr(child.into_inner().next().unwrap());
+                                if s.starts_with("@@") {
+                                    lot_pricing = Some(LotPricing::Total(inner_val));
+                                } else {
+                                    lot_pricing = Some(LotPricing::Unit(inner_val));
+                                }
+                            }
+                            Rule::lot_annotation => {
+                                has_lot_annotation = true;
+                                parse_lot_annotation_into(child, &mut lot_annotation);
+                            }
+                            _ => unreachable!(),
                         }
                     }
                     Rule::assertion => {
@@ -276,6 +288,7 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
             }
             AmountDetails::Amount {
                 value: value.unwrap(),
+                lot_annotation: has_lot_annotation.then_some(lot_annotation),
                 lot_pricing,
                 balance_assertion,
             }
@@ -290,6 +303,31 @@ fn parse_amount_logic(pair: Pair<Rule>) -> AmountDetails {
             AmountDetails::BalanceAssignment(parse_expr(inner_expr_pair))
         }
         _ => unreachable!("unexpected rule in amount_logic: {:?}", p.as_rule()),
+    }
+}
+
+/// Merge a single `lot_annotation` grammar node into an accumulating
+/// [`LotAnnotation`] struct.  Duplicate annotations of the same kind take the
+/// last value (matching ledger-cli behaviour).
+fn parse_lot_annotation_into(pair: Pair<Rule>, acc: &mut LotAnnotation) {
+    let child = pair.into_inner().next().unwrap();
+    match child.as_rule() {
+        Rule::lot_cost => {
+            let expr_pair = child.into_inner().next().unwrap();
+            acc.cost = Some(parse_expr(expr_pair));
+        }
+        Rule::lot_date => {
+            let date_pair = child.into_inner().next().unwrap();
+            let d = parse_date(date_pair);
+            if let (Some(year), month, day) = (d.year, d.month, d.date) {
+                acc.date = chrono::NaiveDate::from_ymd_opt(year, month, day);
+            }
+        }
+        Rule::lot_note => {
+            let note_str = child.into_inner().next().unwrap().as_str().to_string();
+            acc.note = Some(note_str);
+        }
+        _ => unreachable!(),
     }
 }
 

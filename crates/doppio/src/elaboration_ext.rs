@@ -117,6 +117,38 @@ impl elaboration::Posting {
     }
 }
 
+impl elaboration::Posting {
+    /// Returns `true` iff this posting carries any lot annotation (cost, date,
+    /// or note).  Returns `false` when `self.lot` is absent or all three fields
+    /// are unset.
+    pub fn has_lot(&self) -> bool {
+        self.lot
+            .as_ref()
+            .map(|l| l.cost.is_some() || l.date.is_some() || l.note.is_some())
+            .unwrap_or(false)
+    }
+
+    /// The lot's per-unit cost for `commodity`, or `None` if this posting has
+    /// no cost annotation or `commodity` is not present in the cost amount.
+    pub fn lot_cost_in(&self, commodity: &str) -> Option<rust_decimal::Decimal> {
+        self.lot.as_ref()?.cost.as_ref()?.get(commodity)
+    }
+
+    /// The lot's acquisition date as a [`chrono::NaiveDate`], or `None` if no
+    /// `[date]` annotation was present.
+    pub fn lot_date_naive(&self) -> Option<chrono::NaiveDate> {
+        let days = self.lot.as_ref()?.date?;
+        let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch is valid");
+        Some(epoch + chrono::TimeDelta::days(days as i64))
+    }
+
+    /// The lot's free-form note, or `None` if no `((note))` annotation was
+    /// present.
+    pub fn lot_note(&self) -> Option<&str> {
+        self.lot.as_ref()?.note.as_deref()
+    }
+}
+
 impl elaboration::Transaction {
     /// Convert the epoch-days `date` field to a [`chrono::NaiveDate`].
     ///

@@ -18,6 +18,7 @@
 //! See `docs/SUPPORTED_FEATURES.md` for the human-readable matrix and
 //! the Phase D milestone for the in-flight gap-fills.
 
+use chrono::NaiveDate;
 use doppio::elaboration::Journal;
 use rust_decimal::dec;
 use std::path::PathBuf;
@@ -474,59 +475,99 @@ fn running_balance() {
 // developer landing the schema un-comments it as part of their PR.
 // ──────────────────────────────────────────────────────────────────────────
 
+// ──────────────────────────────────────────────────────────────────────────
+// Lot persistence — #139
+// ──────────────────────────────────────────────────────────────────────────
+
 #[test]
-#[ignore = "tracks #139 — lot persistence {cost} not yet supported"]
 fn lot_persistence_cost() {
     // Fixture: 10 AAPL {$150} @ $155.
     //
     // Cost basis ($150/share) is the historical lot annotation; price
     // ($155) is the actual transaction value. The cash side balances
-    // against the price, not the cost — this is the Ledger semantics
-    // that lot persistence makes representable but doesn't change.
+    // against the price, not the cost — the `@` price wins over `{cost}`
+    // when both are present.
     let j = compile("lot_persistence_cost.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings.len(), 2);
     assert_eq!(t.postings[0].account, "Assets:Brokerage");
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-    // Cash side null posting: -(10 * $155) = -$1550.
+    // Cash side null posting: -(10 * $155) = -$1550. Price drives balance.
     assert_eq!(t.postings[1].account, "Assets:Cash");
     assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1550)));
-    // TODO(#139): once the proto::Posting.lot field ships, also assert:
-    //   let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
-    //   assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
+    // Lot annotation preserved on the proto posting.
+    let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
+    assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
 }
 
 #[test]
-#[ignore = "tracks #139 — lot persistence [date] not yet supported"]
 fn lot_persistence_date() {
     // Fixture: 10 AAPL {$150} [2024-03-01]. Cost + lot acquisition date.
     let j = compile("lot_persistence_date.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-    // No `@ price` — cash side null posting balances against the cost
-    // basis ($150/share * 10 = $1500).
+    // No `@ price` — cash side null posting balances against cost ($150 * 10 = $1500).
     assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
-    // TODO(#139): assert lot.cost == $150 AND lot.date == 2024-03-01
-    //   let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
-    //   assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
-    //   assert_eq!(
-    //       lot.date.map(epoch_days_to_date),
-    //       Some(NaiveDate::from_ymd_opt(2024, 3, 1).unwrap()),
-    //   );
+    let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
+    assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
+    assert_eq!(
+        t.postings[0].lot_date_naive(),
+        Some(NaiveDate::from_ymd_opt(2024, 3, 1).unwrap()),
+    );
 }
 
 #[test]
-#[ignore = "tracks #139 — lot persistence ((note)) not yet supported"]
 fn lot_persistence_note() {
     // Fixture: 10 AAPL {$150} ((BUY-2024-01)). Cost + free-form note.
     let j = compile("lot_persistence_note.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
     assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
-    // TODO(#139): assert lot.cost == $150 AND lot.note == "BUY-2024-01"
-    //   let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
-    //   assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
-    //   assert_eq!(lot.note.as_deref(), Some("BUY-2024-01"));
+    let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
+    assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
+    assert_eq!(t.postings[0].lot_note(), Some("BUY-2024-01"));
+}
+
+#[test]
+fn lot_persistence_combined() {
+    // Fixture: 10 AAPL {$150} [2024-03-01] ((BUY-2024-01)).
+    // All three annotations combined; cost drives cash balance (no @ price).
+    let j = compile("lot_persistence_combined.ledger");
+    let t = &j.transactions[0];
+    assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
+    assert!(t.postings[0].has_lot());
+    assert_eq!(
+        t.postings[0].lot_cost_in("$"),
+        Some(dec!(150)),
+        "lot cost should be $150/share"
+    );
+    assert_eq!(
+        t.postings[0].lot_date_naive(),
+        Some(NaiveDate::from_ymd_opt(2024, 3, 1).unwrap()),
+    );
+    assert_eq!(t.postings[0].lot_note(), Some("BUY-2024-01"));
+}
+
+#[test]
+fn lot_persistence_cost_vs_price() {
+    // Fixture: 10 AAPL {$150} @ $155.
+    // Price ($155) drives the cash balance; cost ($150) is the lot basis.
+    // This is the canonical cost-vs-price scenario: they differ because of
+    // e.g. a non-cash acquisition or a price at time of split.
+    let j = compile("lot_persistence_cost_vs_price.ledger");
+    let t = &j.transactions[0];
+    assert_eq!(t.postings[0].account, "Assets:Brokerage");
+    assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
+    // Price ($155/share) drives cash: -(10 * $155) = -$1550.
+    assert_eq!(t.postings[1].account, "Assets:Cash");
+    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1550)));
+    // Lot cost annotation preserved as $150 (NOT $155).
+    assert_eq!(
+        t.postings[0].lot_cost_in("$"),
+        Some(dec!(150)),
+        "lot cost should be $150, not the price $155"
+    );
 }
 
 #[test]

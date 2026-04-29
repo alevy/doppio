@@ -463,10 +463,12 @@ pub enum AmountDetails {
     /// A standard amount expression, with optional lot pricing and/or a
     /// balance assertion.
     ///
-    /// Example: `10 AAPL @ $150 = $1500`
+    /// Example: `10 AAPL {$150} @ $155 = $1550`
     Amount {
         /// The value expression (may be arithmetic, e.g. `(100 + 50) USD`).
         value: ValueExpr,
+        /// Lot persistence annotations: `{cost}`, `[date]`, `((note))`.
+        lot_annotation: Option<LotAnnotation>,
         /// Cost basis: `@ price_per_unit` or `@@ total_cost`.
         lot_pricing: Option<LotPricing>,
         /// If present, the account balance after this posting must equal this
@@ -482,6 +484,7 @@ impl<I: Into<ValueExpr>> From<I> for AmountDetails {
     fn from(value: I) -> Self {
         AmountDetails::Amount {
             value: value.into(),
+            lot_annotation: None,
             lot_pricing: None,
             balance_assertion: None,
         }
@@ -493,10 +496,22 @@ impl Display for AmountDetails {
         match self {
             AmountDetails::Amount {
                 value,
+                lot_annotation,
                 lot_pricing,
                 balance_assertion,
             } => {
                 write!(f, "{value}")?;
+                if let Some(ann) = lot_annotation {
+                    if let Some(cost) = &ann.cost {
+                        write!(f, " {{{cost}}}")?;
+                    }
+                    if let Some(date) = ann.date {
+                        write!(f, " [{date}]")?;
+                    }
+                    if let Some(note) = &ann.note {
+                        write!(f, " (({note}))")?;
+                    }
+                }
                 if let Some(lot_pricing) = lot_pricing {
                     match lot_pricing {
                         LotPricing::Unit(value_expr) => write!(f, " @ {value_expr}")?,
@@ -691,6 +706,22 @@ pub enum LotPricing {
     Total(ValueExpr),
 }
 
+/// Lot persistence annotations that pin per-lot metadata for capital-gains
+/// tracking and FIFO/LIFO lot selection.
+///
+/// Corresponds to the `{cost}`, `[date]`, and `((note))` annotation forms
+/// in ledger-cli syntax.  All fields are optional; the struct is present on
+/// an [`AmountDetails::Amount`] only when at least one annotation was found.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct LotAnnotation {
+    /// Per-unit cost basis.  `None` if no `{cost}` annotation was present.
+    pub cost: Option<ValueExpr>,
+    /// Acquisition date.  `None` if no `[date]` annotation was present.
+    pub date: Option<chrono::NaiveDate>,
+    /// Free-form note.  `None` if no `((note))` annotation was present.
+    pub note: Option<String>,
+}
+
 /// Cleared/pending state of a transaction or individual posting.
 #[derive(Clone, Debug, Default)]
 pub enum TransactionState {
@@ -758,6 +789,7 @@ mod tests {
                 value: Decimal::from(100),
                 commodity: Some("USD".into()),
             },
+            lot_annotation: None,
             lot_pricing: None,
             balance_assertion: None,
         });

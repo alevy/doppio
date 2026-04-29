@@ -137,6 +137,26 @@ message Amount {
   map<string, Decimal> by_commodity = 1;
 }
 
+// Per-lot cost basis and acquisition metadata, pinned at purchase time for
+// capital-gains tracking and FIFO/LIFO lot selection on a later sale.
+//
+// Corresponds to the `{cost}`, `[date]`, and `((note))` annotation forms
+// in ledger-cli syntax (e.g. `10 AAPL {$150} [2024-03-01] ((BUY-2024-01))`).
+//
+// All three fields are optional; an absent `lot` field on a `Posting` means
+// no lot annotation was present on the posting.
+message Lot {
+  // Per-lot cost basis as a multi-commodity amount. Typically single-commodity
+  // (the lot's quote currency) but the schema mirrors `Amount` for symmetry.
+  // Corresponds to the `{cost}` annotation form (per-unit cost).
+  Amount cost = 1;
+  // Optional lot acquisition date in epoch days (matches Transaction.date).
+  // Corresponds to the `[date]` annotation form.
+  optional sint32 date = 2;
+  // Optional free-form lot note. Corresponds to the `((note))` annotation form.
+  optional string note = 3;
+}
+
 // A posting with a fully evaluated, concrete amount.
 message Posting {
   // The canonical account name (after alias resolution). For virtual postings
@@ -157,6 +177,9 @@ message Posting {
   // Virtual-posting kind. Defaults to REAL (via UNSPECIFIED = 0) so that
   // older `.dop` files without this field continue to behave as all-real.
   PostingKind kind = 7;
+  // Lot annotation (cost basis, acquisition date, free-form note).
+  // Absent (proto3 default) means no lot annotation was present.
+  optional Lot lot = 8;
 }
 
 // A fully evaluated and balanced transaction.

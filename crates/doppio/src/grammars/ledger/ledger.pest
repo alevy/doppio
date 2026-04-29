@@ -115,9 +115,25 @@ amount_logic = ${
     )
 }
 
-// A value expression, optionally followed by lot pricing and/or a balance
-// assertion check.
-value_logic = ${ value_expr ~ (ws* ~ lot_price)? ~ (ws* ~ assertion)? }
+// A value expression, optionally followed by lot annotations and/or lot pricing
+// and/or a balance assertion check.
+//
+// Lot annotations may appear in any order between the value and the optional
+// `@`/`@@` price. Multiple annotations of different kinds are allowed;
+// duplicate kinds take the last value (matching ledger-cli behaviour).
+value_logic = ${ value_expr ~ (ws* ~ lot_annotation_or_price)* ~ (ws* ~ assertion)? }
+lot_annotation_or_price = ${ lot_annotation | lot_price }
+lot_annotation = ${ lot_cost | lot_date | lot_note }
+// Double-brace `{{expr}}` means total cost; single-brace `{expr}` means per-unit
+// cost. Try `{{` before `{` so the longer token wins.
+lot_cost = ${ ("{{" ~ ws* ~ value_expr ~ ws* ~ "}}") | ("{" ~ ws* ~ value_expr ~ ws* ~ "}") }
+// `[date]` — lot acquisition date. Only valid after a posting amount, so there
+// is no ambiguity with `[Account]` virtual balanced postings (those appear in
+// account position, not after an amount).
+lot_date = ${ "[" ~ date ~ "]" }
+// `((note))` — free-form lot note. Try `((` before `(` to avoid partial matches.
+lot_note = ${ "((" ~ lot_note_inner ~ "))" }
+lot_note_inner = @{ (!"))" ~ ANY)* }
 
 // A balance check or balance assignment: `= target` or `== target`.
 // Used in two ways within `amount_logic`:
