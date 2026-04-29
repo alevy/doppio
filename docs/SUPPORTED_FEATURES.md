@@ -77,7 +77,7 @@ Status legend:
 | `alias short = long` | ✅ | Account-name aliases |
 | `P <date> <commodity> <price>` (historical price) | ✅ | Parsed and stored. Rendering / FX conversion not yet applied |
 | Standalone balance-assertion directive `<date> = account amount` | ✅ | Enforced during elaboration |
-| `D $1000.00` (default commodity) | 🔧 | The `commodity ... default` form is supported; the bare-`D` form may not be |
+| `D $1000.00` (default commodity) | ✅ | Both the bare-`D` form and the `commodity ... default` form are supported; bare `D` is lowered at parse time to the same `Directive::Commodity` representation |
 | `~` budget directive | 🚫 | Parsed but intentionally not elaborated. No effect on balances or reports |
 | `= payee` automated transactions | 🚫 | Not modelled |
 

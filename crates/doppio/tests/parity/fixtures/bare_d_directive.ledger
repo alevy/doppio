@@ -1,7 +1,7 @@
 ; Bare `D` directive: declares the default commodity AND its display format.
 ; Equivalent to `commodity $ ; default ; format $1,000.00`. The bare form
 ; is older but still appears in journals in the wild. Tracks #142.
-D $1000.00
+D $1,000.00
 
 2024-01-15 Test
     Expenses:Food   50

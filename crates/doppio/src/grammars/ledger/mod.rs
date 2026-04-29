@@ -99,6 +99,9 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                 Rule::tag_directive => {
                     entries.push(Entry::Directive(parse_tag_directive(pair)));
                 }
+                Rule::default_directive => {
+                    entries.push(Entry::Directive(parse_default_directive(pair)?));
+                }
                 Rule::historical_price => {
                     entries.push(Entry::HistoricalPrice(parse_historical_price(pair)));
                 }
@@ -416,6 +419,57 @@ fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
     }
 
     Directive::Commodity { name, notes, items }
+}
+
+/// Parse a bare `D <amount>` directive into a [`Directive::Commodity`] AST node.
+///
+/// The `D` directive is a compact form that declares the default commodity and
+/// its display format simultaneously. `D $1000.00` lowers to the same internal
+/// representation as:
+///
+/// ```ledger
+/// commodity $
+///     default
+///     format $1,000.00
+/// ```
+///
+/// The commodity symbol is extracted from the value expression. If the expression
+/// carries no commodity (e.g. `D 1000.00` — a bare number), an error is returned
+/// because there is no symbol to register as the default.
+fn parse_default_directive(pair: Pair<Rule>) -> Result<Directive, Box<dyn std::error::Error>> {
+    // The single inner child of `default_directive` is the `value_expr`.
+    let value_expr_pair = pair
+        .into_inner()
+        .next()
+        .expect("default_directive must contain a value_expr");
+
+    // Capture the raw source text *before* consuming the pair — this becomes the
+    // format string. Trim trailing whitespace and newline.
+    let format_str = value_expr_pair.as_str().trim().to_string();
+
+    let parsed = parse_expr(value_expr_pair);
+
+    // Extract the commodity symbol from the parsed expression.
+    // A `D $1000.00` parses as `Amount { value: 1000.00, commodity: Some("$") }`.
+    // A `D 1,000.00 USD` parses as `Amount { value: 1000.00, commodity: Some("USD") }`.
+    let commodity = match &parsed {
+        ValueExpr::Amount {
+            commodity: Some(c), ..
+        } => c.clone(),
+        _ => {
+            return Err(format!(
+                "bare `D` directive requires an amount with an explicit commodity symbol \
+                 (e.g. `D $1000.00`); got `{format_str}` which carries no commodity"
+            )
+            .into());
+        }
+    };
+
+    Ok(Directive::Commodity {
+        name: commodity,
+        notes: vec![],
+        items: vec![CommodityItem::Default, CommodityItem::Format(format_str)],
+    })
 }
 
 /// Parse a `bool_expr` grammar node into a [`BoolExpr`] AST node.

@@ -625,7 +625,6 @@ fn fx_conversion_p_directive() {
 }
 
 #[test]
-#[ignore = "tracks #142 — bare D directive not yet supported"]
 fn bare_d_directive() {
     // Fixture declares `D $1000.00` (default commodity + format) then a
     // posting using a bare amount `50` — which should pick up `$` as
