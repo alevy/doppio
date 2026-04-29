@@ -73,9 +73,31 @@ empty_indented_line = _{ indent+ ~ NEWLINE }
 // The !NEWLINE lookahead prevents a truly empty indented line from being
 // matched as a posting with an empty account name.
 posting = ${
-    indent+ ~ !NEWLINE ~ (state ~ ws+)? ~ account ~ (amount_logic)? ~ (ws* ~ note)? ~ (NEWLINE | EOI) ~
+    indent+ ~ !NEWLINE ~ (state ~ ws+)? ~ posting_account ~ (amount_logic)? ~ (ws* ~ note)? ~ (NEWLINE | EOI) ~
     posting_note*
 }
+
+// The account portion of a posting, which may be a bare account name or a
+// virtual-posting marker wrapping an account name.
+posting_account = ${
+    virtual_unbalanced_account
+    | virtual_balanced_account
+    | account
+}
+
+// `(Account)` — virtual unbalanced: the posting is excluded from the
+// transaction's balance check. The parens are part of the syntax, not the
+// account name; the inner name is captured by `virtual_account_inner`.
+virtual_unbalanced_account = ${ "(" ~ virtual_account_inner ~ ")" }
+
+// `[Account]` — virtual balanced: the posting participates in the balance
+// check but is flagged so reports can include/exclude it via `--real`.
+virtual_balanced_account = ${ "[" ~ virtual_account_inner ~ "]" }
+
+// The bare account name inside a virtual posting marker. The exclusion set
+// matches `account` but also stops at `)` and `]` so the closing marker is
+// never consumed into the name.
+virtual_account_inner = @{ (!("  " | ";" | "\t" | "=" | NEWLINE | ")" | "]") ~ ANY)+ }
 
 // A note line indented beneath a posting.
 posting_note = ${ indent+ ~ note ~ (NEWLINE | EOI) }

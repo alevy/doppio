@@ -530,7 +530,6 @@ fn lot_persistence_note() {
 }
 
 #[test]
-#[ignore = "tracks #140 — virtual postings (Account) not yet supported"]
 fn virtual_posting_unbalanced() {
     // Fixture has 3 postings: Assets:Checking $100, Equity:Opening -$100,
     // (Equity:Reservations) -$25. The parens mark the third as a virtual
@@ -558,12 +557,31 @@ fn virtual_posting_unbalanced() {
         .sum();
     assert_eq!(real_sum, dec!(0), "real postings should balance to 0");
 
-    // TODO(#140): once proto::Posting.kind ships, assert:
-    //   assert_eq!(virt.kind, PostingKind::VirtualUnbalanced as i32);
+    // Virtual-unbalanced posting carries the correct kind field.
+    use doppio::elaboration::PostingKind;
+    assert_eq!(
+        virt.kind,
+        PostingKind::VirtualUnbalanced as i32,
+        "virtual posting should carry PostingKind::VirtualUnbalanced"
+    );
+
+    // Real postings carry kind == Real.
+    let real_postings: Vec<_> = t
+        .postings
+        .iter()
+        .filter(|p| p.account != "Equity:Reservations")
+        .collect();
+    for p in &real_postings {
+        assert_eq!(
+            p.kind,
+            PostingKind::Real as i32,
+            "non-virtual posting {} should carry PostingKind::Real",
+            p.account
+        );
+    }
 }
 
 #[test]
-#[ignore = "tracks #140 — virtual postings [Account] not yet supported"]
 fn virtual_posting_balanced() {
     // Fixture has 3 postings: Assets:Checking $100, [Equity:Reservations]
     // $25, Equity:Opening -$125. Brackets mark the second as a virtual
@@ -590,8 +608,13 @@ fn virtual_posting_balanced() {
         "virtual balanced posting should participate in balance"
     );
 
-    // TODO(#140): once proto::Posting.kind ships, assert:
-    //   assert_eq!(virt.kind, PostingKind::VirtualBalanced as i32);
+    // Virtual-balanced posting carries the correct kind field.
+    use doppio::elaboration::PostingKind;
+    assert_eq!(
+        virt.kind,
+        PostingKind::VirtualBalanced as i32,
+        "virtual balanced posting should carry PostingKind::VirtualBalanced"
+    );
 }
 
 #[test]

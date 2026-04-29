@@ -48,6 +48,29 @@ impl elaboration::Amount {
 }
 
 impl elaboration::Posting {
+    /// Returns the posting kind, mapping the prost-generated `i32` to the
+    /// [`elaboration::PostingKind`] enum.
+    ///
+    /// `POSTING_KIND_UNSPECIFIED` (field absent in older `.dop` files) is
+    /// mapped to `POSTING_KIND_REAL`, preserving backward compatibility:
+    /// pre-#140 archives that don't carry this field are treated as all-real.
+    pub fn posting_kind(&self) -> elaboration::PostingKind {
+        elaboration::PostingKind::try_from(self.kind).unwrap_or(elaboration::PostingKind::Real)
+    }
+
+    /// Returns `true` iff this posting is a "real" (non-virtual) posting.
+    ///
+    /// Both `POSTING_KIND_UNSPECIFIED` and `POSTING_KIND_REAL` are treated as
+    /// real. Older `.dop` files that don't carry the `kind` field (field value
+    /// = 0 = UNSPECIFIED) are therefore treated as all-real on read — no format
+    /// version bump required.
+    pub fn is_real(&self) -> bool {
+        matches!(
+            self.posting_kind(),
+            elaboration::PostingKind::Unspecified | elaboration::PostingKind::Real
+        )
+    }
+
     /// Return this posting's amount, treating an absent amount field as an
     /// empty [`elaboration::Amount`].
     ///

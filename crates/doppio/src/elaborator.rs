@@ -399,6 +399,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                     let mut resolved_postings = vec![];
 
                     for mut posting in transaction.postings {
+                        let posting_kind = posting.kind;
                         if let Some(amount) = posting.amount {
                             let account_name = entry_context
                                 .account_aliases
@@ -511,15 +512,19 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             };
                             let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
 
+                            // Virtual-unbalanced postings are excluded from the transaction's
+                            // balance check. Real and virtual-balanced postings both contribute.
                             // For lot-priced postings, add the *cash* total (in the lot's
                             // commodity) to transaction_state rather than the commodity units.
-                            // This is what needs to balance with the offsetting cash posting.
-                            if let Some((lot_total, lot_commodity)) = lot_pricing {
-                                let dec = transaction_state.0.entry(lot_commodity).or_default();
-                                *dec += lot_total;
-                            } else {
-                                let dec = transaction_state.0.entry(commodity.clone()).or_default();
-                                *dec += value;
+                            if posting_kind != ast::PostingKind::VirtualUnbalanced {
+                                if let Some((lot_total, lot_commodity)) = lot_pricing {
+                                    let dec = transaction_state.0.entry(lot_commodity).or_default();
+                                    *dec += lot_total;
+                                } else {
+                                    let dec =
+                                        transaction_state.0.entry(commodity.clone()).or_default();
+                                    *dec += value;
+                                }
                             }
 
                             let by_commodity =
@@ -531,9 +536,12 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                 state: crate::state_to_proto(&posting.state.into()),
                                 tags: posting.tags,
                                 metadata: posting.metadata,
+                                kind: crate::posting_kind_to_proto(posting_kind),
                             });
                         } else {
-                            // Defer processing and save for next step
+                            // Defer processing and save for next step.
+                            // (Null postings are always REAL — you cannot write a null virtual
+                            // posting, so the kind is left as the default Real from the parser.)
                             null_postings.push(posting);
                         }
                     }
@@ -551,7 +559,10 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                         let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
 
                         // The null posting's amount is the negation of the sum of all
-                        // other postings, making the transaction balance to zero.
+                        // other real/balanced postings (virtual-unbalanced postings are
+                        // excluded from transaction_state, so they don't affect inference).
+                        // Null postings are always REAL; the kind field is left unspecified
+                        // (defaults to 0 = UNSPECIFIED which is treated as REAL by consumers).
                         let by_commodity = transaction_state
                             .0
                             .iter()
@@ -565,9 +576,14 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             state: crate::state_to_proto(&posting.state.into()),
                             tags: posting.tags,
                             metadata: posting.metadata,
+                            kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
                         });
                     } else {
                         // Check that transaction state is all zeros to balance the transaction.
+                        // Virtual-unbalanced postings have already been excluded from
+                        // transaction_state, so a transaction consisting solely of
+                        // virtual-unbalanced postings will have an empty (zero) state and
+                        // will not trigger this error — which is the correct ledger-cli behaviour.
                         if transaction_state.0.values().any(|value| !value.is_zero()) {
                             return Err(ElaborationError::TransactionDoesNotBalance(
                                 transaction_state,
@@ -3359,5 +3375,99 @@ account Assets:Savings
 ";
         // amount=500 > -100 → outer `or` short-circuits to true.
         elaborate(input);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Virtual posting unit tests (#140)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// A transaction with a real posting, a virtual-unbalanced posting, and
+    /// a null posting: the unbalanced posting must not affect the null-posting
+    /// inference (i.e. the null posting absorbs only the real posting's amount).
+    #[test]
+    fn virtual_unbalanced_does_not_affect_null_posting_inference() {
+        let input = "\
+2024-01-15 Test
+    Assets:Checking           $100
+    (Equity:Reservations)     $-25
+    Equity:Opening
+";
+        let j = elaborate(input);
+        let t = &j.transactions[0];
+        assert_eq!(t.postings.len(), 3);
+
+        // Null posting should be inferred as -$100 (negation of real $100),
+        // not -$75 (which would incorrectly include the virtual unbalanced).
+        let null_p = t
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Opening")
+            .expect("null posting present");
+        assert_eq!(null_p.amount_in("$"), Some(dec!(-100)));
+
+        let virt = t
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Reservations")
+            .expect("virtual posting present");
+        assert_eq!(virt.amount_in("$"), Some(dec!(-25)));
+
+        use crate::elaboration::PostingKind;
+        assert_eq!(virt.kind, PostingKind::VirtualUnbalanced as i32);
+        assert_eq!(null_p.kind, PostingKind::Real as i32);
+    }
+
+    /// A transaction with a real posting, a virtual-balanced posting, and a
+    /// null posting: the balanced posting participates in the null-posting
+    /// inference (the null absorbs the sum of real + balanced).
+    #[test]
+    fn virtual_balanced_participates_in_null_posting_inference() {
+        let input = "\
+2024-01-15 Test
+    Assets:Checking           $100
+    [Equity:Reservations]     $25
+    Equity:Opening
+";
+        let j = elaborate(input);
+        let t = &j.transactions[0];
+        assert_eq!(t.postings.len(), 3);
+
+        // Null posting absorbs -(100 + 25) = -$125 because the balanced
+        // virtual posting contributes to the transaction state.
+        let null_p = t
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Opening")
+            .expect("null posting present");
+        assert_eq!(null_p.amount_in("$"), Some(dec!(-125)));
+
+        let virt = t
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Reservations")
+            .expect("virtual posting present");
+        assert_eq!(virt.amount_in("$"), Some(dec!(25)));
+
+        use crate::elaboration::PostingKind;
+        assert_eq!(virt.kind, PostingKind::VirtualBalanced as i32);
+    }
+
+    /// A transaction consisting solely of virtual-unbalanced postings should
+    /// elaborate without a balance error: there are no real postings to balance.
+    #[test]
+    fn transaction_with_only_virtual_unbalanced_postings_does_not_error() {
+        let input = "\
+2024-01-15 Memo-only entry
+    (Budget:Food)    $50
+    (Budget:Travel)  $-50
+";
+        let j = elaborate(input);
+        let t = &j.transactions[0];
+        assert_eq!(t.postings.len(), 2);
+
+        use crate::elaboration::PostingKind;
+        for p in &t.postings {
+            assert_eq!(p.kind, PostingKind::VirtualUnbalanced as i32);
+        }
     }
 }

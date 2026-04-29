@@ -71,6 +71,10 @@ enum Commands {
         /// Output format: text (default), json, or csv.
         #[arg(long, default_value = "text")]
         format: String,
+        /// Exclude virtual postings (both `(unbalanced)` and `[balanced]`);
+        /// show only real postings.
+        #[arg(short = 'R', long, default_value_t = false)]
+        real: bool,
     },
 
     /// List individual postings, optionally filtered by account name.
@@ -96,6 +100,10 @@ enum Commands {
         /// Output format: text (default), json, or csv.
         #[arg(long, default_value = "text")]
         format: String,
+        /// Exclude virtual postings (both `(unbalanced)` and `[balanced]`);
+        /// show only real postings.
+        #[arg(short = 'R', long, default_value_t = false)]
+        real: bool,
     },
 
     /// Re-emit the journal as canonical Ledger source text.
@@ -353,6 +361,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cleared,
             tag,
             format,
+            real,
         } => {
             let format = OutputFormat::parse(&format)?;
             let filter =
@@ -378,6 +387,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         for posting in txn.postings.iter() {
                             if !filter.matches_account(&posting.account) {
+                                continue;
+                            }
+                            if real && !posting.is_real() {
                                 continue;
                             }
 
@@ -446,6 +458,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if !filter.matches_account(&posting.account) {
                                 continue;
                             }
+                            if real && !posting.is_real() {
+                                continue;
+                            }
                             // Sort for deterministic JSON output.
                             let mut sorted_commodities: Vec<_> = posting
                                 .amount
@@ -477,6 +492,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let date = epoch_days_to_string(txn.date);
                         for posting in txn.postings.iter() {
                             if !filter.matches_account(&posting.account) {
+                                continue;
+                            }
+                            if real && !posting.is_real() {
                                 continue;
                             }
                             // Sort for deterministic CSV output.
@@ -611,6 +629,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             depth,
             flat,
             format,
+            real,
         } => {
             let format = OutputFormat::parse(&format)?;
             let filter =
@@ -629,6 +648,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 for posting in txn.postings.iter() {
                     if !filter.matches_account(&posting.account) {
+                        continue;
+                    }
+                    if real && !posting.is_real() {
                         continue;
                     }
                     let account = match depth {

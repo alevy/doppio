@@ -89,6 +89,28 @@ enum TransactionState {
   TRANSACTION_STATE_CLEARED = 3;
 }
 
+// Virtual-posting semantics for a posting.
+//
+// Ledger-cli supports two virtual-posting markers that change balance-rule
+// semantics:
+//
+//   Real (default)            — normal posting; participates in balance check.
+//   VirtualUnbalanced  `(A)` — excluded from the transaction balance check.
+//                               Reports include it by default; omit with --real.
+//   VirtualBalanced    `[A]` — included in the balance check but flagged so
+//                               reports can include/exclude via --real.
+//
+// Proto3 evolution note: the default zero value (UNSPECIFIED) is intentionally
+// treated as REAL by all consumers, so older `.dop` files that pre-date this
+// field continue to behave as if every posting is REAL on read — no format-
+// version bump required.
+enum PostingKind {
+  POSTING_KIND_UNSPECIFIED = 0;        // Treated as REAL by all consumers.
+  POSTING_KIND_REAL = 1;
+  POSTING_KIND_VIRTUAL_UNBALANCED = 2; // `(Account)` — excluded from balance.
+  POSTING_KIND_VIRTUAL_BALANCED = 3;   // `[Account]` — included in balance, flagged.
+}
+
 // A multi-commodity balance: commodity symbol -> Decimal value.
 //
 // Iteration-order note: `by_commodity` is a protobuf `map<string, Decimal>`.
@@ -117,7 +139,9 @@ message Amount {
 
 // A posting with a fully evaluated, concrete amount.
 message Posting {
-  // The canonical account name (after alias resolution).
+  // The canonical account name (after alias resolution). For virtual postings
+  // the surrounding markers (`(` `)` or `[` `]`) are stripped — only the bare
+  // account name is stored here; the marker semantics live in `kind`.
   string account = 1;
   // Payee for this posting — taken from posting-level `payee:` metadata if
   // present, otherwise inherited from the transaction description.
@@ -130,6 +154,9 @@ message Posting {
   repeated string tags = 5;
   // Key-value metadata from `; key: value` in posting notes.
   map<string, string> metadata = 6;
+  // Virtual-posting kind. Defaults to REAL (via UNSPECIFIED = 0) so that
+  // older `.dop` files without this field continue to behave as all-real.
+  PostingKind kind = 7;
 }
 
 // A fully evaluated and balanced transaction.
