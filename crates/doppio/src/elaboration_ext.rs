@@ -3,7 +3,7 @@
 //! `OUT_DIR` via the `build.rs` `include!`) doesn't clobber these impls.
 
 use crate::elaboration;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 impl elaboration::Decimal {
     /// Reconstruct a [`rust_decimal::Decimal`] from this proto-encoded value.
@@ -133,7 +133,19 @@ impl elaboration::Journal {
     /// Rates are multiplied along the path (BFS finds shortest hops first).
     ///
     /// Inverse quotes are also traversed: if only USD→EUR is declared, then
-    /// EUR→USD is available as `1 / (USD→EUR rate)`.
+    /// EUR→USD is available as `1 / (USD→EUR rate)`. Explicit and derived
+    /// (inverse) quotes are merged by the most-recent-date rule.
+    ///
+    /// When multiple shortest paths exist, the one whose intermediate
+    /// commodities sort first alphabetically is used (BFS expansion follows
+    /// the BTreeMap-keyed adjacency map's deterministic key order).
+    ///
+    /// Conversion uses the report's `--end` date as the as-of cutoff, or the
+    /// latest available quote if `--end` is not specified. ledger-cli converts
+    /// per-posting using the transaction's own date by default; this
+    /// implementation uses a single uniform as-of for all postings, which is
+    /// simpler but means historical reports without `--end` will use
+    /// anachronistically recent rates.
     ///
     /// Returns `None` if no conversion path exists.
     pub fn price_at(
@@ -196,22 +208,22 @@ impl elaboration::Journal {
         // BFS from `from_commodity` to `to_commodity`.
         // State: (current_commodity, accumulated_rate).
         let mut queue: VecDeque<(&str, Decimal)> = VecDeque::new();
-        let mut visited: HashMap<&str, ()> = HashMap::new();
+        let mut visited: HashSet<&str> = HashSet::new();
 
         queue.push_back((from_commodity, Decimal::ONE));
-        visited.insert(from_commodity, ());
+        visited.insert(from_commodity);
 
         while let Some((current, rate)) = queue.pop_front() {
             if let Some(neighbours) = adj.get(current) {
                 for (neighbour, (_date, edge_rate)) in neighbours {
-                    if visited.contains_key(neighbour) {
+                    if visited.contains(neighbour) {
                         continue;
                     }
                     let combined = rate * edge_rate;
                     if *neighbour == to_commodity {
                         return Some(combined);
                     }
-                    visited.insert(neighbour, ());
+                    visited.insert(neighbour);
                     queue.push_back((neighbour, combined));
                 }
             }
@@ -710,9 +722,13 @@ mod tests {
 
     #[test]
     fn price_at_as_of_uses_most_recent_eligible_quote() {
-        // Two quotes: an old one at 1.05 and a newer one at 1.10.
-        // as_of=2024-06-01 should use the 2024-03-01 quote, not the 2024-12-01 one.
+        // Three quotes: 1.05 on 2024-01-01, 1.10 on 2024-03-01, and 1.20 on
+        // 2024-12-01 (after the cutoff).  as_of=2024-06-01 must pick the
+        // 2024-03-01 quote (1.10) over the earlier 2024-01-01 quote (1.05),
+        // exercising the most-recent-wins update branch, and must not see the
+        // future 2024-12-01 quote.
         let j = journal_with_prices(vec![
+            make_price(2024, 1, 1, "EUR", "$", "1.05".parse().unwrap()),
             make_price(2024, 3, 1, "EUR", "$", "1.10".parse().unwrap()),
             make_price(2024, 12, 1, "EUR", "$", "1.20".parse().unwrap()),
         ]);
@@ -727,5 +743,26 @@ mod tests {
     fn price_at_no_prices_returns_none() {
         let j = journal_with_prices(vec![]);
         assert_eq!(j.price_at("EUR", "USD", None), None);
+    }
+
+    #[test]
+    fn price_at_cross_directional_quote_collision_most_recent_wins() {
+        // P 2024-01-01 A B 1.0   → explicit A→B at 1.0, derived B→A at 1.0
+        // P 2024-06-01 B A 0.8   → explicit B→A at 0.8 (newer), derived A→B at 1/0.8 = 1.25
+        //
+        // The more recent B→A quote (0.8) beats the older explicit A→B quote
+        // (1.0) because both the explicit and derived (inverse) edges compete
+        // on the same (A→B / B→A) adjacency slots and the most-recent-date
+        // rule applies uniformly.  price_at("A","B",None) should therefore
+        // return 1/0.8 = 1.25, not 1.0.
+        let j = journal_with_prices(vec![
+            make_price(2024, 1, 1, "A", "B", "1.0".parse().unwrap()),
+            make_price(2024, 6, 1, "B", "A", "0.8".parse().unwrap()),
+        ]);
+        let expected = Decimal::ONE / "0.8".parse::<Decimal>().unwrap();
+        let rate = j
+            .price_at("A", "B", None)
+            .expect("path exists via inverse of B→A");
+        assert_eq!(rate, expected);
     }
 }
