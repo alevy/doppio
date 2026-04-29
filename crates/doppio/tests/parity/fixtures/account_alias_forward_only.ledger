@@ -1,0 +1,15 @@
+; Aliases must apply forward-only. A posting that uses `Checking`
+; BEFORE the alias declaration should keep the literal `Checking`
+; name (or fail-to-balance, depending on whether the elaborator treats
+; it as an unknown account). After the alias declaration, postings
+; using `Checking` resolve to `Assets:Checking`.
+2024-01-01 Pre-declaration use
+    Checking      $100
+    Equity:Opening
+
+account Assets:Checking
+    alias Checking
+
+2024-01-02 Post-declaration use
+    Checking      $200
+    Equity:Opening

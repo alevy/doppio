@@ -1,0 +1,11 @@
+; The `account` block declares an alias AND an assert in the same block.
+; The assert is evaluated against postings that arrive via the alias —
+; the alias resolution must run before the assert is applied so the
+; assert sees the canonical account name.
+account Assets:Checking
+    alias Checking
+    assert commodity == "$"
+
+2024-01-01 Deposit via alias
+    Checking      $100
+    Equity:Opening

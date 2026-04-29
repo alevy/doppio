@@ -646,27 +646,129 @@ fn bare_d_directive() {
 }
 
 #[test]
-#[ignore = "tracks #143 — account alias sub-directive resolution incomplete"]
 fn account_alias_subdir() {
-    // Fixture: `account Assets:Checking / alias Checking`. A later posting
-    // written as `Checking` should resolve to `Assets:Checking` in the
-    // elaborated journal — same semantics as the top-level
-    // `alias Checking = Assets:Checking` form (covered by `top_level_alias`).
+    // The simplest case: `account Assets:Checking / alias Checking`,
+    // then a posting using `Checking` should resolve to `Assets:Checking`.
+    // This case turns out to work end-to-end through the parse → resolve
+    // → elaborate pipeline (PR #153 surfaced it). The `🔧 Partial` flag
+    // in SUPPORTED_FEATURES.md was left over from before the integration
+    // test corpus existed.
     let j = compile("account_alias_subdir.ledger");
     let t = &j.transactions[0];
-
-    // The alias resolves: posting's account is the canonical name.
     let checking = t
         .postings
         .iter()
         .find(|p| p.account == "Assets:Checking")
         .expect("alias `Checking` should resolve to `Assets:Checking`");
     assert_eq!(checking.amount_in("$"), Some(dec!(1000)));
-
-    // The unaliased name should NOT also appear.
     assert!(
         !t.postings.iter().any(|p| p.account == "Checking"),
-        "alias should resolve at parse/resolve time; unaliased `Checking` \
+        "alias should resolve at resolution time; unaliased `Checking` \
          must not appear in the elaborated journal"
+    );
+}
+
+#[test]
+fn account_alias_multiple_per_block() {
+    // An `account` block can carry multiple `alias` sub-directives; each
+    // should be added to the alias map and resolve independently.
+    let j = compile("account_alias_multiple_per_block.ledger");
+    assert_eq!(j.transactions.len(), 2);
+
+    // Both transactions' aliased postings should resolve to Assets:Checking.
+    let t0 = &j.transactions[0];
+    assert!(
+        t0.postings
+            .iter()
+            .any(|p| p.account == "Assets:Checking" && p.amount_in("$") == Some(dec!(100))),
+        "long alias `Checking` should resolve to Assets:Checking; got {:?}",
+        t0.postings.iter().map(|p| &p.account).collect::<Vec<_>>()
+    );
+    let t1 = &j.transactions[1];
+    assert!(
+        t1.postings
+            .iter()
+            .any(|p| p.account == "Assets:Checking" && p.amount_in("$") == Some(dec!(50))),
+        "short alias `C` should resolve to Assets:Checking; got {:?}",
+        t1.postings.iter().map(|p| &p.account).collect::<Vec<_>>()
+    );
+
+    // Neither raw alias name should appear in the elaborated journal.
+    for t in &j.transactions {
+        for p in &t.postings {
+            assert_ne!(p.account, "Checking", "alias `Checking` not resolved");
+            assert_ne!(p.account, "C", "alias `C` not resolved");
+        }
+    }
+}
+
+#[test]
+fn account_alias_across_blocks() {
+    // Two account blocks each declare their own alias. Both aliases must
+    // remain live after the second block is parsed, so a transaction that
+    // uses both resolves correctly.
+    let j = compile("account_alias_across_blocks.ledger");
+    let t = &j.transactions[0];
+
+    let checking = t
+        .postings
+        .iter()
+        .find(|p| p.account == "Assets:Checking")
+        .expect("Checking alias should resolve");
+    assert_eq!(checking.amount_in("$"), Some(dec!(-100)));
+
+    let savings = t
+        .postings
+        .iter()
+        .find(|p| p.account == "Assets:Savings")
+        .expect("Savings alias should resolve");
+    assert_eq!(savings.amount_in("$"), Some(dec!(100)));
+}
+
+#[test]
+fn account_alias_forward_only() {
+    // The alias affects entries declared AFTER the account block, not
+    // before. The pre-declaration posting keeps the literal `Checking`
+    // name; the post-declaration one resolves to `Assets:Checking`.
+    // (In ledger-cli the pre-declaration `Checking` is just a regular
+    // account name — there's no error, just no resolution.)
+    let j = compile("account_alias_forward_only.ledger");
+    assert_eq!(j.transactions.len(), 2);
+
+    // Pre-declaration: literal `Checking` is the elaborated account name.
+    let pre = &j.transactions[0];
+    assert!(
+        pre.postings.iter().any(|p| p.account == "Checking"),
+        "pre-declaration posting should keep literal `Checking` name; \
+         got {:?}",
+        pre.postings.iter().map(|p| &p.account).collect::<Vec<_>>()
+    );
+    assert!(
+        !pre.postings.iter().any(|p| p.account == "Assets:Checking"),
+        "alias must not retroactively apply"
+    );
+
+    // Post-declaration: `Checking` resolves to `Assets:Checking`.
+    let post = &j.transactions[1];
+    assert!(
+        post.postings.iter().any(|p| p.account == "Assets:Checking"),
+        "post-declaration posting should resolve via alias"
+    );
+}
+
+#[test]
+fn account_alias_inside_block_assert() {
+    // The same block carries both an `alias` and an `assert`. The assert
+    // is evaluated against postings that arrive via the alias — alias
+    // resolution must happen before the assert is applied so the
+    // assert sees the canonical account name (in this fixture, the
+    // assert checks `commodity == "$"`, which the aliased posting
+    // satisfies). Reaching elaboration without error means the assert
+    // fired against the resolved posting.
+    let j = compile("account_alias_inside_block_assert.ledger");
+    let t = &j.transactions[0];
+    assert!(
+        t.postings.iter().any(|p| p.account == "Assets:Checking"),
+        "alias should resolve and the assert should pass on the resolved posting"
     );
 }

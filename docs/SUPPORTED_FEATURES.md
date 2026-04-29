@@ -63,7 +63,7 @@ Status legend:
 | `account` + `note` sub-directive | ✅ | |
 | `account` + `assert <expr>` | ✅ | v0.2.0 (PR #76). Fatal: posting whose elaboration fails an account-level assert halts the run with `ElaborationError::AccountAssertionFailed` |
 | `account` + `check <expr>` | ✅ | v0.2.0 (PR #76). Non-fatal: prints a warning to stderr and continues |
-| `account` + `alias` sub-directive | 🔧 | Parsed; alias resolution may be incomplete in some HIR paths |
+| `account` + `alias` sub-directive | ✅ | Resolves through the parse → resolve → elaborate pipeline; covered by `tests/parity/account_alias_*.ledger` (single, multiple-per-block, across-blocks, with-assert, forward-only) |
 | `commodity SYMBOL` block | ✅ | |
 | `commodity` + `format` sub-directive | ✅ | v0.2.0 (PR #84). Drives `balance` and `register` rendering (prefix/suffix, thousands separator, decimal places, sign) |
 | `commodity` + `default` sub-directive | ✅ | v0.2.0. Equivalent to a `D` directive |
