@@ -210,3 +210,30 @@ If you find a ledger-cli or hledger construct that doppio rejects (or accepts
 but elaborates wrong) and it isn't documented here, please open an issue at
 <https://github.com/alevy/doppio/issues> — small minimal-failing-case
 snippets are especially welcome.
+
+## Dependency feature flags (non-default)
+
+This section documents every non-default Cargo feature that the doppio workspace
+enables, so future contributors do not need to re-derive the rationale.
+
+### `crates/doppio` (library)
+
+| Crate | Feature | Why enabled |
+|---|---|---|
+| `chrono` | _(none beyond no-default)_ | `default-features = false` keeps `std` without pulling in `js-sys` or serde. No serde integration with chrono types is used; dates travel over the wire as epoch-day integers (prost `i32`). |
+| `rust_decimal` | _(none in prod)_ | Default features are sufficient for arithmetic. The `macros` feature (`dec!` literal syntax) is enabled only in `[dev-dependencies]` for unit tests. |
+| `prost` | _(default)_ | No extra features needed; `prost-build` + `protoc-bin-vendored` are build-deps only. |
+
+### `crates/doppio-cli` (binary)
+
+| Crate | Feature | Why enabled |
+|---|---|---|
+| `chrono` | _(same as library)_ | Parses and formats `NaiveDate` values for `--begin`/`--end`/`--as-of` CLI flags; no serde involvement. |
+| `clap` | `derive` | Enables `#[derive(Parser)]` and `#[derive(Subcommand)]` proc-macros used in `main.rs`. |
+| `serde_json` | _(default)_ | Used directly (`serde_json::json!`, `to_string_pretty`) for `--format json` output. `serde` itself is pulled in transitively by `serde_json` and is not declared as a direct dependency. |
+
+### `crates/doppio-categorize`
+
+| Crate | Feature | Why enabled |
+|---|---|---|
+| `chrono` | _(same as library)_ | `NaiveDate` used in `Sample` and `Query` types for recency-weighted scoring. |
