@@ -3,6 +3,7 @@
 //! `OUT_DIR` via the `build.rs` `include!`) doesn't clobber these impls.
 
 use crate::elaboration;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 impl elaboration::Decimal {
     /// Reconstruct a [`rust_decimal::Decimal`] from this proto-encoded value.
@@ -115,6 +116,108 @@ impl elaboration::HistoricalPrice {
     /// (1970-01-01 = 0, negative for pre-epoch).
     pub fn date_naive(&self) -> chrono::NaiveDate {
         epoch_days_to_naive_date(self.date)
+    }
+}
+
+impl elaboration::Journal {
+    /// Return the conversion rate from `from_commodity` to `to_commodity` as
+    /// of `as_of` (or the latest available if `as_of` is `None`).
+    ///
+    /// Searches `self.prices` for `P` entries and performs a BFS through the
+    /// commodity price graph to find a conversion path. For each pair of
+    /// commodities the most recent quote whose date is `<= as_of` (or the
+    /// most recent overall when `as_of` is `None`) is used.
+    ///
+    /// Multi-hop conversion is supported: if there is no direct EUR→USD quote
+    /// but there are EUR→GBP and GBP→USD quotes, the combined rate is returned.
+    /// Rates are multiplied along the path (BFS finds shortest hops first).
+    ///
+    /// Inverse quotes are also traversed: if only USD→EUR is declared, then
+    /// EUR→USD is available as `1 / (USD→EUR rate)`.
+    ///
+    /// Returns `None` if no conversion path exists.
+    pub fn price_at(
+        &self,
+        from_commodity: &str,
+        to_commodity: &str,
+        as_of: Option<chrono::NaiveDate>,
+    ) -> Option<rust_decimal::Decimal> {
+        use rust_decimal::Decimal;
+
+        if from_commodity == to_commodity {
+            return Some(Decimal::ONE);
+        }
+
+        // Build adjacency map: commodity → { neighbour → (date, rate) }.
+        // For each HistoricalPrice entry, keep only the most recent quote
+        // per (from, to) pair that satisfies the as_of constraint.
+        let mut adj: BTreeMap<&str, BTreeMap<&str, (chrono::NaiveDate, Decimal)>> = BTreeMap::new();
+
+        for hp in &self.prices {
+            let price_val = match &hp.price {
+                Some(p) => p.to_decimal(),
+                None => continue,
+            };
+            if price_val == Decimal::ZERO {
+                continue;
+            }
+            let date = hp.date_naive();
+            if let Some(cutoff) = as_of
+                && date > cutoff
+            {
+                continue;
+            }
+
+            let from = hp.commodity.as_str();
+            let to = hp.price_commodity.as_str();
+
+            // Forward edge: from → to at rate price_val.
+            let fwd = adj
+                .entry(from)
+                .or_default()
+                .entry(to)
+                .or_insert((date, price_val));
+            if date > fwd.0 {
+                *fwd = (date, price_val);
+            }
+
+            // Inverse edge: to → from at rate 1/price_val.
+            let inv_rate = Decimal::ONE / price_val;
+            let inv = adj
+                .entry(to)
+                .or_default()
+                .entry(from)
+                .or_insert((date, inv_rate));
+            if date > inv.0 {
+                *inv = (date, inv_rate);
+            }
+        }
+
+        // BFS from `from_commodity` to `to_commodity`.
+        // State: (current_commodity, accumulated_rate).
+        let mut queue: VecDeque<(&str, Decimal)> = VecDeque::new();
+        let mut visited: HashMap<&str, ()> = HashMap::new();
+
+        queue.push_back((from_commodity, Decimal::ONE));
+        visited.insert(from_commodity, ());
+
+        while let Some((current, rate)) = queue.pop_front() {
+            if let Some(neighbours) = adj.get(current) {
+                for (neighbour, (_date, edge_rate)) in neighbours {
+                    if visited.contains_key(neighbour) {
+                        continue;
+                    }
+                    let combined = rate * edge_rate;
+                    if *neighbour == to_commodity {
+                        return Some(combined);
+                    }
+                    visited.insert(neighbour, ());
+                    queue.push_back((neighbour, combined));
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -482,5 +585,147 @@ mod tests {
             hp.date_naive(),
             NaiveDate::from_ymd_opt(2024, 3, 4).unwrap()
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Journal::price_at
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Build a minimal `HistoricalPrice` proto entry.
+    fn make_price(
+        year: i32,
+        month: u32,
+        day: u32,
+        commodity: &str,
+        price_commodity: &str,
+        amount: Decimal,
+    ) -> elaboration::HistoricalPrice {
+        let mantissa = amount.mantissa();
+        elaboration::HistoricalPrice {
+            date: epoch_days(year, month, day),
+            commodity: commodity.to_string(),
+            price_commodity: price_commodity.to_string(),
+            price: Some(elaboration::Decimal {
+                mantissa_high: (mantissa >> 64) as i64,
+                mantissa_low: mantissa as u64,
+                scale: amount.scale(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Construct a `Journal` with only the given price entries.
+    fn journal_with_prices(prices: Vec<elaboration::HistoricalPrice>) -> elaboration::Journal {
+        elaboration::Journal {
+            prices,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn price_at_same_commodity_returns_one() {
+        let j = journal_with_prices(vec![]);
+        assert_eq!(
+            j.price_at("USD", "USD", None),
+            Some(Decimal::ONE),
+            "same commodity → rate 1"
+        );
+    }
+
+    #[test]
+    fn price_at_direct_quote() {
+        let j = journal_with_prices(vec![make_price(
+            2024,
+            1,
+            1,
+            "EUR",
+            "$",
+            "1.10".parse().unwrap(),
+        )]);
+        let rate = j.price_at("EUR", "$", None).expect("direct quote present");
+        assert_eq!(rate, "1.10".parse::<Decimal>().unwrap());
+    }
+
+    #[test]
+    fn price_at_inverse_quote() {
+        // Only USD→EUR declared; querying EUR→USD should give 1/rate.
+        let j = journal_with_prices(vec![make_price(
+            2024,
+            1,
+            1,
+            "USD",
+            "EUR",
+            "0.9".parse().unwrap(),
+        )]);
+        let rate = j.price_at("EUR", "USD", None).expect("inverse path exists");
+        // 1 / 0.9 ≈ 1.111...
+        let expected = Decimal::ONE / "0.9".parse::<Decimal>().unwrap();
+        assert_eq!(rate, expected);
+    }
+
+    #[test]
+    fn price_at_two_hop_chain() {
+        // EUR→GBP and GBP→USD; no direct EUR→USD.
+        let j = journal_with_prices(vec![
+            make_price(2024, 1, 1, "EUR", "GBP", "0.85".parse().unwrap()),
+            make_price(2024, 1, 1, "GBP", "USD", "1.27".parse().unwrap()),
+        ]);
+        let rate = j.price_at("EUR", "USD", None).expect("two-hop path exists");
+        let expected = "0.85".parse::<Decimal>().unwrap() * "1.27".parse::<Decimal>().unwrap();
+        assert_eq!(rate, expected);
+    }
+
+    #[test]
+    fn price_at_no_path_returns_none() {
+        // EUR→GBP exists, but there is no path to USD.
+        let j = journal_with_prices(vec![make_price(
+            2024,
+            1,
+            1,
+            "EUR",
+            "GBP",
+            "0.85".parse().unwrap(),
+        )]);
+        assert_eq!(j.price_at("EUR", "USD", None), None);
+    }
+
+    #[test]
+    fn price_at_as_of_filtering_excludes_future_quote() {
+        // Quote dated 2024-01-01; as_of is 2023-12-31 — should not be visible.
+        let j = journal_with_prices(vec![make_price(
+            2024,
+            1,
+            1,
+            "EUR",
+            "$",
+            "1.10".parse().unwrap(),
+        )]);
+        let cutoff = NaiveDate::from_ymd_opt(2023, 12, 31).unwrap();
+        assert_eq!(
+            j.price_at("EUR", "$", Some(cutoff)),
+            None,
+            "future quote must be invisible to past as_of"
+        );
+    }
+
+    #[test]
+    fn price_at_as_of_uses_most_recent_eligible_quote() {
+        // Two quotes: an old one at 1.05 and a newer one at 1.10.
+        // as_of=2024-06-01 should use the 2024-03-01 quote, not the 2024-12-01 one.
+        let j = journal_with_prices(vec![
+            make_price(2024, 3, 1, "EUR", "$", "1.10".parse().unwrap()),
+            make_price(2024, 12, 1, "EUR", "$", "1.20".parse().unwrap()),
+        ]);
+        let cutoff = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+        let rate = j
+            .price_at("EUR", "$", Some(cutoff))
+            .expect("eligible quote exists");
+        assert_eq!(rate, "1.10".parse::<Decimal>().unwrap());
+    }
+
+    #[test]
+    fn price_at_no_prices_returns_none() {
+        let j = journal_with_prices(vec![]);
+        assert_eq!(j.price_at("EUR", "USD", None), None);
     }
 }
