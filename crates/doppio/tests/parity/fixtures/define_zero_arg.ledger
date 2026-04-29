@@ -1,0 +1,7 @@
+; Zero-arg `define` is a value alias — the body is substituted at use sites.
+; Useful for centralising recurring magic numbers like rent, tax rate, etc.
+define monthly_rent = $1500.00
+
+2024-01-01 Rent payment
+    Expenses:Rent   monthly_rent
+    Assets:Checking

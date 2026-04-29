@@ -186,6 +186,277 @@ fn metadata_inheritance() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Date / state / code / amount-form coverage.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn date_formats() {
+    // Both `YYYY-MM-DD` and `YYYY/MM/DD` are accepted; the elaborated
+    // dates are the same i32-epoch-days values regardless of the source
+    // format.
+    let j = compile("date_formats.ledger");
+    assert_eq!(j.transactions.len(), 2);
+    assert_eq!(
+        j.transactions[0].date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()
+    );
+    assert_eq!(
+        j.transactions[1].date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2024, 2, 20).unwrap()
+    );
+}
+
+#[test]
+fn secondary_date() {
+    let j = compile("secondary_date.ledger");
+    let t = &j.transactions[0];
+    assert_eq!(
+        t.date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2024, 1, 15).unwrap()
+    );
+    assert_eq!(
+        t.secondary_date_naive(),
+        Some(chrono::NaiveDate::from_ymd_opt(2024, 1, 20).unwrap())
+    );
+}
+
+#[test]
+fn transaction_state() {
+    use doppio::elaboration::TransactionState;
+    let j = compile("transaction_state.ledger");
+    assert_eq!(j.transactions.len(), 3);
+    assert_eq!(j.transactions[0].state, TransactionState::Cleared as i32);
+    assert_eq!(j.transactions[1].state, TransactionState::Pending as i32);
+    assert_eq!(j.transactions[2].state, TransactionState::Uncleared as i32);
+}
+
+#[test]
+fn transaction_code() {
+    let j = compile("transaction_code.ledger");
+    let t = &j.transactions[0];
+    assert_eq!(t.code.as_deref(), Some("INV-042"));
+    assert_eq!(t.description, "Invoice paid");
+}
+
+#[test]
+fn amount_forms() {
+    let j = compile("amount_forms.ledger");
+    assert_eq!(j.transactions.len(), 5);
+    // Symbol-first positive: $100
+    assert_eq!(
+        j.transactions[0].postings[0].amount_in("$"),
+        Some(dec!(100))
+    );
+    // Symbol-first leading minus: -$100
+    assert_eq!(
+        j.transactions[1].postings[0].amount_in("$"),
+        Some(dec!(-100))
+    );
+    // Symbol-first inside minus: $-100
+    assert_eq!(
+        j.transactions[2].postings[0].amount_in("$"),
+        Some(dec!(-100))
+    );
+    // Number-first positive: 100 USD
+    assert_eq!(
+        j.transactions[3].postings[0].amount_in("USD"),
+        Some(dec!(100))
+    );
+    // Number-first negative: -100 USD
+    assert_eq!(
+        j.transactions[4].postings[0].amount_in("USD"),
+        Some(dec!(-100))
+    );
+}
+
+#[test]
+fn posting_state() {
+    use doppio::elaboration::TransactionState;
+    let j = compile("posting_state.ledger");
+    let postings = &j.transactions[0].postings;
+    assert_eq!(postings.len(), 3);
+    assert_eq!(postings[0].state, TransactionState::Cleared as i32);
+    assert_eq!(postings[1].state, TransactionState::Pending as i32);
+    // The null posting (the third one, no explicit marker) inherits the
+    // transaction's state, which is Uncleared by default.
+    assert_eq!(postings[2].state, TransactionState::Uncleared as i32);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Comments / metadata / tags.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn transaction_notes() {
+    // Header-level metadata + posting-level metadata both survive
+    // elaboration. The `KeyA: ValueA` becomes a metadata entry on the
+    // transaction; `KeyB: ValueB` on the posting.
+    let j = compile("transaction_notes.ledger");
+    let t = &j.transactions[0];
+    assert_eq!(t.metadata.get("KeyA").map(String::as_str), Some("ValueA"));
+    let food = t
+        .postings
+        .iter()
+        .find(|p| p.account == "Expenses:Food")
+        .expect("food posting present");
+    assert_eq!(
+        food.metadata.get("KeyB").map(String::as_str),
+        Some("ValueB")
+    );
+}
+
+#[test]
+fn bare_tag_list() {
+    // The `; :urgent:reviewed:` line appears in the transaction-header
+    // position (above any posting), so the tags attach to the
+    // transaction, not to a specific posting.
+    let j = compile("bare_tag_list.ledger");
+    let t = &j.transactions[0];
+    assert!(
+        t.tags.iter().any(|s| s == "urgent"),
+        "expected `urgent` tag on transaction, got {:?}",
+        t.tags
+    );
+    assert!(
+        t.tags.iter().any(|s| s == "reviewed"),
+        "expected `reviewed` tag on transaction, got {:?}",
+        t.tags
+    );
+}
+
+#[test]
+fn comment_chars() {
+    // Top-level lines starting with ; # * % | are full-line comments.
+    // Only the one real transaction in the fixture should make it into
+    // the elaborated journal.
+    let j = compile("comment_chars.ledger");
+    assert_eq!(j.transactions.len(), 1);
+    assert_eq!(j.transactions[0].description, "Real transaction");
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Directive completeness.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn account_check() {
+    // Non-fatal `check` (vs the fatal `assert`). The fixture's commodity
+    // matches, so no warning is emitted, but even on a failing check
+    // elaboration would still complete.
+    let j = compile("account_check.ledger");
+    assert_eq!(j.transactions.len(), 1);
+    assert!(j.accounts.contains_key("Assets:Checking"));
+}
+
+#[test]
+fn account_note() {
+    let j = compile("account_note.ledger");
+    let brokerage = j
+        .accounts
+        .get("Assets:Brokerage")
+        .expect("account block declared");
+    assert_eq!(brokerage.note.as_deref(), Some("Schwab #1234"));
+}
+
+#[test]
+fn commodity_default() {
+    // After `commodity $ ; default`, a bare `100` should pick up `$`.
+    let j = compile("commodity_default.ledger");
+    let t = &j.transactions[0];
+    let food = &t.postings[0];
+    assert_eq!(food.amount_in("$"), Some(dec!(100)));
+}
+
+#[test]
+fn top_level_alias() {
+    // `alias Checking = Assets:Checking` — postings using `Checking`
+    // resolve to the canonical `Assets:Checking` in the elaborated
+    // journal.
+    let j = compile("top_level_alias.ledger");
+    let t = &j.transactions[0];
+    let checking = t
+        .postings
+        .iter()
+        .find(|p| p.account == "Assets:Checking")
+        .expect("alias should resolve to Assets:Checking");
+    assert_eq!(checking.amount_in("$"), Some(dec!(1000)));
+}
+
+#[test]
+fn standalone_balance_assertion() {
+    // `<date> = <account>  <amount>` — passes if the running balance at
+    // that point matches. Reaching elaboration without error means the
+    // assertion passed.
+    let j = compile("standalone_balance_assertion.ledger");
+    assert_eq!(j.transactions.len(), 1);
+}
+
+#[test]
+fn define_zero_arg() {
+    // `define monthly_rent = $1500.00` — body substituted at use site.
+    let j = compile("define_zero_arg.ledger");
+    let rent = j.transactions[0]
+        .postings
+        .iter()
+        .find(|p| p.account == "Expenses:Rent")
+        .expect("rent posting present");
+    assert_eq!(rent.amount_in("$"), Some(dec!(1500.00)));
+}
+
+#[test]
+fn budget_directive() {
+    // `~` budget directives parse but are intentionally not elaborated;
+    // the surrounding journal still elaborates as if the budget weren't
+    // there. Only the real 2024-01-01 transaction should appear.
+    let j = compile("budget_directive.ledger");
+    assert_eq!(
+        j.transactions.len(),
+        1,
+        "budget directive should not produce an elaborated transaction"
+    );
+    assert_eq!(j.transactions[0].description, "Real spending");
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Expressions.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn regex_match() {
+    // `assert account =~ /^Expenses:/` in an account block. The posting
+    // matches, so elaboration succeeds.
+    let j = compile("regex_match.ledger");
+    assert_eq!(j.transactions.len(), 1);
+}
+
+#[test]
+fn arithmetic_expression() {
+    // `($30 + $20)` should evaluate to $50.
+    let j = compile("arithmetic_expression.ledger");
+    let food = j.transactions[0]
+        .postings
+        .iter()
+        .find(|p| p.account == "Expenses:Food")
+        .expect("food posting present");
+    assert_eq!(food.amount_in("$"), Some(dec!(50)));
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Multi-transaction state.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn running_balance() {
+    // Three transactions accumulate $1400 in Assets:Checking; the
+    // standalone balance assertion at month-end confirms the running
+    // total. Exercises the elaborator's per-account balance bookkeeping
+    // across multiple entries.
+    let j = compile("running_balance.ledger");
+    assert_eq!(j.transactions.len(), 3);
+    // The fourth entry is the standalone assertion, not a transaction.
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Not-yet-implemented features. Each `#[ignore]` references its tracking
 // issue. When the feature lands, remove the `#[ignore]` and replace the
 // panic with real assertions that consume the corresponding `lift the

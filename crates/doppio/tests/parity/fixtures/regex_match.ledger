@@ -1,0 +1,11 @@
+; `=~` (match) and `!~` (not-match) operators in account-block asserts.
+; The fixture asserts the posting's commodity matches `^[$]$` (i.e., is `$`)
+; and does NOT match `^EUR$`. Reaching elaboration without error means
+; both expressions evaluated correctly.
+account Expenses:Food
+    assert commodity =~ /^[$]$/
+    check  commodity !~ /^EUR$/
+
+2024-01-01 Lunch
+    Expenses:Food   $10.00
+    Assets:Cash

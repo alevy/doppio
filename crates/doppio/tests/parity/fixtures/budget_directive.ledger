@@ -1,0 +1,12 @@
+; `~` budget directive. Per docs/SUPPORTED_FEATURES.md it's parsed but
+; intentionally not elaborated — the budget transaction has no effect
+; on real balances. The budget keyword must be one of yearly | monthly
+; | weekly. Sanity check that journals containing budget directives
+; compile without error.
+~ monthly
+    Expenses:Food   $400
+    Assets:Budget
+
+2024-01-01 Real spending
+    Expenses:Food   $50
+    Assets:Cash

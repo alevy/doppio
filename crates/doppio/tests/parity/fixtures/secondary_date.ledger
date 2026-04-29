@@ -1,0 +1,5 @@
+; Secondary date (effective date) follows the primary with `=`. Stored on
+; the elaborated transaction's `secondary_date` field.
+2024-01-15=2024-01-20 Trade
+    Expenses:Food   $50
+    Assets:Cash

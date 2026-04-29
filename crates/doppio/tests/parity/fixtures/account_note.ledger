@@ -1,0 +1,8 @@
+; account block with a `note` sub-directive. The note text is captured on
+; the journal's `accounts[name].note` field.
+account Assets:Brokerage
+    note Schwab #1234
+
+2024-01-01 Initial deposit
+    Assets:Brokerage   $1000
+    Equity:Opening

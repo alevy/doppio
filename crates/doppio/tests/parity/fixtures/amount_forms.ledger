@@ -1,0 +1,23 @@
+; Various amount syntaxes. Each line is a separate transaction.
+; Order/sign variants:
+;   - symbol-first: $100, -$100, $-100
+;   - number-first: 100 USD, -100 USD
+2024-01-01 Symbol-first positive
+    Expenses:A      $100
+    Assets:Cash
+
+2024-01-02 Symbol-first negative leading minus
+    Income:A       -$100
+    Assets:Cash
+
+2024-01-03 Symbol-first negative inside
+    Income:B       $-100
+    Assets:Cash
+
+2024-01-04 Number-first positive
+    Expenses:C      100 USD
+    Assets:Cash
+
+2024-01-05 Number-first negative
+    Income:D       -100 USD
+    Assets:Cash
