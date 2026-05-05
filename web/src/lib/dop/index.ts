@@ -1,15 +1,32 @@
-// Public surface of the JS-native .dop reader. Implementation lands in #151.
+// Public surface of the JS-native .dop reader.
 //
-// Intended shape (subject to refinement during #151):
-//   export function readDop(buf: Uint8Array): Journal;
+// Usage:
+//   import { readDop } from "@/lib/dop";
+//   const journal = readDop(new Uint8Array(await (await fetch("/sample.dop")).arrayBuffer()));
 //
-// where Journal is a TS-native projection of proto::Journal with:
-//   - Decimal values eagerly converted to decimal.js Decimal
-//   - Dates carried as { year, month, day } LocalDate triples
-//   - oneof fields normalised to discriminated unions
-//
-// The wire-shape types (proto::Journal etc.) are generated into ./generated/
-// at build time via `buf generate`. The decoder layer translates between the
-// wire shape and the public TS shape so views never depend on protobuf
-// internals.
-export {};
+// All decode errors throw `DopError` with a `kind` discriminator. See
+// `errors.ts` for the kinds.
+export { readDop } from "./loader.js";
+export { DopError } from "./errors.js";
+export type { DopErrorKind } from "./errors.js";
+export {
+  localDateFromEpochDays,
+  epochDaysFromLocalDate,
+  localDateToString,
+  compareLocalDate,
+  localDateToJSDate,
+  localDateFromJSDate,
+} from "./date.js";
+export type { LocalDate } from "./date.js";
+export type {
+  Journal,
+  Transaction,
+  Posting,
+  Amount,
+  Lot,
+  AccountProperties,
+  CommodityProperties,
+  HistoricalPrice,
+  PostingKind,
+  TransactionState,
+} from "./types.js";
