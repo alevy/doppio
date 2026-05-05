@@ -306,9 +306,27 @@ message Transaction {
 // Note: `assert` / `check` expressions declared on accounts are evaluated
 // during elaboration and are not persisted — they are a compile-time check,
 // not runtime data.
+//
+// Metadata is extracted from `; key: value` notes on the account
+// directive (header line or indented note lines) and from `key: value`
+// items in the directive body. The map is **denormalised by inheritance**:
+// an account's metadata at elaboration time includes every key declared
+// on it OR on any of its colon-separated ancestors, with closer
+// ancestors winning over distant ones. So a directive like
+//     account Income
+//         type: R
+// makes `Journal.accounts["Income:Salary"].metadata["type"] = "R"` even
+// when `Income:Salary` itself has no directive.
+//
+// The schema deliberately stays generic — meaning is up to the
+// consumer. `type:` is the only key carried by convention (see
+// hledger's account-type tag) but no other key is reserved.
 message AccountProperties {
   // Free-form note from the `note` sub-directive.
   optional string note = 1;
+  // Inherited key-value metadata. See message-level comment for
+  // extraction and inheritance semantics.
+  map<string, string> metadata = 2;
 }
 
 // Display and market-data properties of a commodity declared with a

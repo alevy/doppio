@@ -52,6 +52,11 @@ export interface Transaction {
 
 export interface AccountProperties {
   note?: string;
+  // Inherited key-value metadata. The compiler denormalises by walking
+  // colon-separated ancestors at elaboration time, so consumers see a
+  // fully-resolved map per account and never need to do the inheritance
+  // walk themselves.
+  metadata: Record<string, string>;
 }
 
 export interface CommodityProperties {

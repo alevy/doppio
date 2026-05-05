@@ -119,7 +119,7 @@ export function incomeExpenseByMonth(
       if (p.kind === "virtualUnbalanced") continue;
       const v = getCommodityValue(p.amount.byCommodity, PRIMARY_COMMODITY);
       if (v.isZero()) continue;
-      const type = inferAccountType(p.account);
+      const type = inferAccountType(p.account, journal.accounts[p.account]);
       if (type === "income") {
         // Income is credit-normal; flip to read positive.
         b.income = b.income.plus(v.neg());
@@ -199,7 +199,7 @@ export function netWorthByMonth(
         if (p.kind === "virtualUnbalanced") continue;
         const v = getCommodityValue(p.amount.byCommodity, PRIMARY_COMMODITY);
         if (v.isZero()) continue;
-        const type = inferAccountType(p.account);
+        const type = inferAccountType(p.account, journal.accounts[p.account]);
         if (type === "assets") {
           assets = assets.plus(v);
         } else if (type === "liabilities") {

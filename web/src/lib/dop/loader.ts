@@ -106,7 +106,12 @@ export function readDop(buf: Uint8Array): Journal {
 function convertJournal(j: WireJournal): Journal {
   return {
     transactions: j.transactions.map(convertTransaction),
-    accounts: { ...j.accounts },
+    accounts: Object.fromEntries(
+      Object.entries(j.accounts).map(([name, a]) => [
+        name,
+        { note: a.note, metadata: { ...a.metadata } },
+      ]),
+    ),
     commodities: Object.fromEntries(
       Object.entries(j.commodities).map(([name, c]) => [
         name,
