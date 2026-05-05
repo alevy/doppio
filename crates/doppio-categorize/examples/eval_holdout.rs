@@ -46,8 +46,7 @@ fn load_journal(path: &Path) -> Result<Journal, Box<dyn std::error::Error>> {
         let base_path = path.parent().unwrap_or(Path::new(""));
         let mut input = String::new();
         File::open(path)?.read_to_string(&mut input)?;
-        let ast_journal = frontend.parse(&input, base_path, &doppio::file_opener)?;
-        let hir: doppio::resolution::HIR = ast_journal.try_into()?;
+        let hir = frontend.parse(&input, base_path, &doppio::file_opener)?;
         Ok(hir.try_into()?)
     }
 }

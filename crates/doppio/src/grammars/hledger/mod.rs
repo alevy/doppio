@@ -29,7 +29,7 @@ use std::path::PathBuf;
 /// The raw pest parser generated from `hledger.pest` via `pest_derive`.
 #[derive(Parser)]
 #[grammar = "grammars/hledger/hledger.pest"]
-pub struct HledgerParser;
+pub(crate) struct HledgerParser;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Internal parser state
@@ -627,7 +627,8 @@ fn clean_decimal(s: &str) -> Decimal {
 ///
 /// Any `include` directives in the input are silently resolved to empty (no
 /// entries included). Useful for unit tests and standalone parsing.
-pub fn parse_hledger(input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
+#[cfg(test)]
+pub(crate) fn parse_hledger(input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
     Parser {
         opener: |_| Ok(String::new()),
         base_path: PathBuf::new(),
@@ -668,12 +669,13 @@ impl crate::frontend::Frontend for HledgerFrontend {
         input: &str,
         base_path: &std::path::Path,
         opener: &crate::frontend::Opener,
-    ) -> Result<crate::ast::Journal, Box<dyn std::error::Error>> {
-        Parser {
+    ) -> Result<crate::resolution::HIR, Box<dyn std::error::Error>> {
+        let ast_journal = Parser {
             opener: |path: &str| opener(path),
             base_path: base_path.to_path_buf(),
         }
-        .parse(input)
+        .parse(input)?;
+        Ok(ast_journal.try_into()?)
     }
 }
 

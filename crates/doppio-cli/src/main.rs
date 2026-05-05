@@ -194,8 +194,7 @@ fn load_proto_journal(
         let base_path = path.parent().unwrap_or(std::path::Path::new(""));
         let mut file = String::new();
         File::open(path)?.read_to_string(&mut file)?;
-        let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
-        let hir: doppio::resolution::HIR = ast_journal.try_into()?;
+        let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
         Ok(doppio::elaborate(hir)?)
     }
 }
@@ -382,8 +381,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let base_path = source.parent().unwrap_or(std::path::Path::new(""));
             let mut file = String::new();
             File::open(&source)?.read_to_string(&mut file)?;
-            let ast_journal = frontend.parse(&file, base_path, &doppio::file_opener)?;
-            let hir: doppio::resolution::HIR = ast_journal.try_into()?;
+            let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
             let journal: doppio::elaboration::Journal = doppio::elaborate(hir)?;
             let compression = if no_compression {
                 doppio::Compression::None
@@ -452,7 +450,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 sorted_commodities
                                     .into_iter()
                                     .map(|(commodity, proto_amount)| {
-                                        let amount = doppio::decimal_from_proto(proto_amount);
+                                        let amount = proto_amount.to_decimal();
                                         maybe_convert_amount(
                                             commodity,
                                             amount,
@@ -527,7 +525,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or_default();
                             sorted_commodities.sort_by_key(|(k, _)| k.as_str());
                             for (commodity, proto_amount) in sorted_commodities {
-                                let raw_amount = doppio::decimal_from_proto(proto_amount);
+                                let raw_amount = proto_amount.to_decimal();
                                 let (commodity, amount) = maybe_convert_amount(
                                     commodity,
                                     raw_amount,
@@ -570,7 +568,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or_default();
                             sorted_commodities.sort_by_key(|(k, _)| k.as_str());
                             for (commodity, proto_amount) in sorted_commodities {
-                                let raw_amount = doppio::decimal_from_proto(proto_amount);
+                                let raw_amount = proto_amount.to_decimal();
                                 let (commodity, amount) = maybe_convert_amount(
                                     commodity,
                                     raw_amount,
@@ -607,9 +605,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let base_path = source.parent().unwrap_or(std::path::Path::new(""));
             let mut file = String::new();
             File::open(&source)?.read_to_string(&mut file)?;
-            let ast_journal: doppio::ast::Journal =
-                frontend.parse(&file, base_path, &doppio::file_opener)?;
-            let hir: doppio::resolution::HIR = ast_journal.try_into()?;
+            let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
             doppio::write_ledger(hir.transactions(), &mut std::io::stdout())?;
         }
         Commands::Accounts { source, pattern } => {
@@ -734,7 +730,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     if let Some(amount) = &posting.amount {
                         for (commodity, proto_amount) in &amount.by_commodity {
-                            let raw = doppio::decimal_from_proto(proto_amount);
+                            let raw = proto_amount.to_decimal();
                             let (converted_commodity, converted_amount) = maybe_convert_amount(
                                 commodity,
                                 raw,

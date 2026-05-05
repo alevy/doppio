@@ -15,9 +15,8 @@
 //! 8       N       Payload (protobuf, optionally deflate-compressed per byte 6)
 //! ```
 //!
-//! Use [`dop_write_header`] / [`dop_read_header`] for portable, tested I/O of
-//! this header.  Use [`write_dop`] / [`read_dop`] for the full
-//! header + (optional) compression + protobuf round-trip.
+//! Use [`write_dop`] / [`read_dop`] for the full header + (optional)
+//! compression + protobuf round-trip.
 //!
 //! # Pipeline
 //!
@@ -37,11 +36,9 @@
 //!
 //! # Modules
 //!
-//! - [`ast`] — abstract syntax tree produced by the parser.
 //! - [`frontend`] — the [`Frontend`] trait for pluggable file-format support.
 //! - [`grammars`] — grammar implementations ([`grammars::ledger`] for
-//!   ledger-cli; future: hledger).
-//! - [`parser`] — re-exported ledger parser types for backwards compatibility.
+//!   ledger-cli, [`grammars::hledger`] for hledger).
 //! - [`resolution`] — alias resolution, date normalisation, metadata
 //!   extraction.
 //! - [`elaboration`] — prost-generated Protocol Buffers types
@@ -74,21 +71,10 @@ pub mod ast;
 // be folded directly into `elaboration::*` (the proto-shaped types) but for
 // now it stays as a transitional intermediate.
 pub(crate) mod elaborator;
-pub use elaborator::{ElaborationError, EvaluationError};
+pub use elaborator::{Amount, ElaborationError, EvaluationError};
 pub mod frontend;
 pub mod grammars;
 pub mod resolution;
-
-/// Re-export of the ledger parser module for backwards compatibility.
-///
-/// All items previously at `doppio::parser::*` remain accessible here.
-/// New code should prefer [`grammars::ledger`] directly.
-pub mod parser {
-    pub use crate::grammars::ledger::{LedgerParser, Parser, Rule, parse_ledger};
-    // parse_expr is crate-internal; re-exported with the same visibility so
-    // ast.rs can still use it via `crate::parser::parse_expr`.
-    pub(crate) use crate::grammars::ledger::parse_expr;
-}
 
 /// Prost-generated Protocol Buffers types — canonical wire shape of `.dop` bodies.
 pub mod elaboration {
@@ -171,10 +157,9 @@ fn decimal_to_proto(d: rust_decimal::Decimal) -> elaboration::Decimal {
 
 /// Reconstruct a `rust_decimal::Decimal` from its [`elaboration::Decimal`] encoding.
 ///
-/// This is the inverse of the private `decimal_to_proto` helper. Most consumers
-/// should prefer the inherent method [`elaboration::Decimal::to_decimal`]
-/// instead of calling this free function directly.
-pub fn decimal_from_proto(p: &elaboration::Decimal) -> rust_decimal::Decimal {
+/// Crate-internal: external consumers should call the inherent method
+/// [`elaboration::Decimal::to_decimal`] instead.
+pub(crate) fn decimal_from_proto(p: &elaboration::Decimal) -> rust_decimal::Decimal {
     let mantissa = ((p.mantissa_high as i128) << 64) | (p.mantissa_low as i128);
     rust_decimal::Decimal::from_i128_with_scale(mantissa, p.scale)
 }
@@ -334,7 +319,7 @@ where
 /// Load and concatenate all files matching a glob pattern.
 ///
 /// This is the default file-opener used by the CLI when processing `include`
-/// directives. It is passed to [`parser::Parser`] as the `opener` field.
+/// directives. It is passed to [`grammars::ledger::Parser`] as the `opener` field.
 ///
 /// ## Glob patterns
 ///
@@ -401,16 +386,10 @@ pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> 
 
 /// Compile Ledger source text into a fully elaborated [`Journal`].
 ///
-/// Runs the three in-memory pipeline stages in sequence:
-///
-/// 1. [`parser::Parser::parse`] — tokenise `input` into an [`ast::Journal`].
-/// 2. [`resolution::HIR::try_from`] — resolve dates, aliases, and metadata.
-/// 3. [`elaborate`] — evaluate amounts and balance
-///    transactions.
-///
-/// The `parser` argument supplies the file-opener for `include` directives and
-/// the base path for relative path resolution. For single-file inputs without
-/// includes, use [`parser::parse_ledger`] instead.
+/// Runs the three in-memory pipeline stages in sequence — parse,
+/// resolve, elaborate. The `parser` argument supplies the file-opener
+/// for `include` directives and the base path for relative path
+/// resolution.
 ///
 /// # Errors
 ///
@@ -418,7 +397,7 @@ pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> 
 /// error, or elaboration error).
 pub fn compile<F>(
     input: &str,
-    mut parser: parser::Parser<F>,
+    mut parser: grammars::ledger::Parser<F>,
 ) -> Result<elaboration::Journal, Box<dyn std::error::Error>>
 where
     F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>,
@@ -505,23 +484,21 @@ pub fn eval_transaction(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Four-byte magic that identifies every `.dop` file.
-pub const DOP_MAGIC: [u8; 4] = *b"DOP\0";
+pub(crate) const DOP_MAGIC: [u8; 4] = *b"DOP\0";
 
 /// Format version embedded in every `.dop` header.
 ///
 /// Bump this constant (and update [`dop_read_header`]) whenever the
 /// serialisation format changes in a breaking way.
-pub const DOP_FORMAT_VERSION: u16 = 3;
+pub(crate) const DOP_FORMAT_VERSION: u16 = 3;
 
 /// Write the 8-byte `.dop` header to `writer`.
 ///
 /// Layout: magic (4 bytes) + version LE u16 (2 bytes) +
 ///         compression byte (1 byte) + reserved byte (1 byte).
 ///
-/// # Errors
-///
-/// Propagates any [`std::io::Error`] from `writer`.
-pub fn dop_write_header<W: std::io::Write>(
+/// Crate-internal helper for [`write_dop`].
+pub(crate) fn dop_write_header<W: std::io::Write>(
     writer: &mut W,
     compression: Compression,
 ) -> std::io::Result<()> {
@@ -533,18 +510,9 @@ pub fn dop_write_header<W: std::io::Write>(
 
 /// Read and validate the 8-byte `.dop` header from `reader`.
 ///
-/// Returns the [`Compression`] method declared in the header.
-///
-/// `path` is used only for error messages; it should be the path of the file
-/// being opened so diagnostics point to the right location.
-///
-/// # Errors
-///
-/// Returns a boxed error with a user-actionable message if:
-/// - the magic bytes are missing or incorrect,
-/// - the format version is not [`DOP_FORMAT_VERSION`], or
-/// - the compression byte is unrecognised.
-pub fn dop_read_header<R: std::io::Read>(
+/// Returns the [`Compression`] method declared in the header. Crate-internal
+/// helper for [`read_dop`].
+pub(crate) fn dop_read_header<R: std::io::Read>(
     reader: &mut R,
     path: &std::path::Path,
 ) -> Result<Compression, Box<dyn std::error::Error>> {
@@ -608,7 +576,7 @@ mod write_ledger_tests {
 
     /// Parse a Ledger-format source string and return the resolved transactions.
     fn parse_transactions(source: &str) -> Vec<resolution::Transaction> {
-        let mut p = parser::Parser {
+        let mut p = grammars::ledger::Parser {
             opener: |_: &str| Ok(String::new()),
             base_path: std::path::PathBuf::new(),
         };

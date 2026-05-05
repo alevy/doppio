@@ -38,7 +38,7 @@ fn fixture(name: &str) -> String {
 
 fn compile(name: &str) -> Journal {
     let src = fixture(name);
-    let parser = doppio::parser::Parser {
+    let parser = doppio::grammars::ledger::Parser {
         // No-op opener: parity fixtures are self-contained, no `include`.
         opener: |_: &str| Ok::<String, Box<dyn std::error::Error>>(String::new()),
         base_path: PathBuf::new(),

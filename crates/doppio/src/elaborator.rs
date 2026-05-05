@@ -1907,7 +1907,7 @@ mod tests {
     /// Parse a ledger journal string through the full pipeline and return the
     /// elaborated `Journal`. Panics on any parse/resolution/elaboration error.
     fn elaborate(input: &str) -> crate::elaboration::Journal {
-        use crate::{parser::parse_ledger, resolution::HIR};
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
         crate::elaboration::Journal::try_from(hir).expect("elaboration failed")
@@ -1992,7 +1992,7 @@ define base_amount = 100 USD
         // first transaction would fail to elaborate. Instead, use an explicit
         // amount for the first transaction and verify the define is only in
         // context 1 via the HIR, not context 0.
-        use crate::{parser::parse_ledger, resolution::HIR};
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
 
         let input = "\
 2024-01-01 Before Define
@@ -2166,7 +2166,7 @@ define myval = $99.00
     /// Try to elaborate a ledger input string, returning the elaboration
     /// result (including errors) rather than panicking.
     fn try_elaborate(input: &str) -> Result<crate::elaboration::Journal, ElaborationError> {
-        use crate::{parser::parse_ledger, resolution::HIR};
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
         crate::elaboration::Journal::try_from(hir)
@@ -2345,7 +2345,7 @@ define myval = $99.00
 
     /// Helper: attempt elaboration and expect an `AccountAssertionFailed` error.
     fn elaborate_assert_fails(input: &str) -> (String, usize, String) {
-        use crate::{parser::parse_ledger, resolution::HIR};
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
         match crate::elaboration::Journal::try_from(hir).expect_err("expected assertion failure") {
@@ -3027,7 +3027,7 @@ account Expenses:Food
     /// parse time, not silently accepted to fail later during elaboration.
     #[test]
     fn test_invalid_regex_fails_at_parse_time() {
-        use crate::parser::parse_ledger;
+        use crate::grammars::ledger::parse_ledger;
         let input = "\
 account Expenses:Food
     assert commodity =~ /[unclosed/
@@ -3246,7 +3246,7 @@ account Expenses:Food
     Expenses:Food  $10.00
     Assets:Cash
 ";
-        let ast = crate::parser::parse_ledger(input).expect("parse failed");
+        let ast = crate::grammars::ledger::parse_ledger(input).expect("parse failed");
         let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
         let result = crate::elaboration::Journal::try_from(hir);
         assert!(
@@ -3302,7 +3302,7 @@ account Expenses:Food
     Expenses:Food  $50.00
     Assets:Cash
 ";
-        let ast = crate::parser::parse_ledger(input).expect("parse failed");
+        let ast = crate::grammars::ledger::parse_ledger(input).expect("parse failed");
         let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
         let result = crate::elaboration::Journal::try_from(hir);
         assert!(

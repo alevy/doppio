@@ -1,8 +1,9 @@
 //! Integration tests for the `.dop` binary format header and round-trip.
 //!
-//! These tests exercise the [`doppio::dop_write_header`] /
-//! [`doppio::dop_read_header`] helpers and the full compile → load
-//! round-trip via the library's public [`doppio::write_dop`] / [`doppio::read_dop`] API.
+//! These tests exercise the public [`doppio::write_dop`] /
+//! [`doppio::read_dop`] API: header parsing, error paths for bad
+//! magic / empty file / wrong version, and the full compile → load
+//! round-trip.
 
 use std::{io::Write as _, path::Path};
 
@@ -22,7 +23,7 @@ fn compile_to_dop_with_compression(
     compression: doppio::Compression,
 ) -> NamedTempFile {
     // Build the journal in memory.
-    let mut parser = doppio::parser::Parser {
+    let mut parser = doppio::grammars::ledger::Parser {
         opener: |_: &str| Ok(String::new()),
         base_path: std::path::PathBuf::new(),
     };
@@ -112,7 +113,7 @@ fn bad_magic_returns_error() {
 
     let path = tmp.path().to_owned();
     let mut f = std::fs::File::open(&path).expect("open");
-    let err = doppio::dop_read_header(&mut f, &path).expect_err("expected an error for bad magic");
+    let err = doppio::read_dop(&mut f, &path).expect_err("expected an error for bad magic");
 
     assert!(
         err.to_string().contains("missing magic header"),
@@ -131,7 +132,7 @@ fn empty_file_returns_missing_magic_error() {
 
     let path = tmp.path().to_owned();
     let mut f = std::fs::File::open(&path).expect("open");
-    let err = doppio::dop_read_header(&mut f, &path).expect_err("expected an error for empty file");
+    let err = doppio::read_dop(&mut f, &path).expect_err("expected an error for empty file");
 
     assert!(
         err.to_string().contains("missing magic header"),
@@ -157,8 +158,7 @@ fn wrong_version_returns_error_with_version_number() {
 
     let path = tmp.path().to_owned();
     let mut f = std::fs::File::open(&path).expect("open");
-    let err =
-        doppio::dop_read_header(&mut f, &path).expect_err("expected an error for wrong version");
+    let err = doppio::read_dop(&mut f, &path).expect_err("expected an error for wrong version");
 
     let msg = err.to_string();
     assert!(

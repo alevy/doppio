@@ -41,7 +41,7 @@ use crate::ast;
 #[derive(Debug)]
 pub struct HIR {
     /// Transactions and other entries in source order.
-    pub entries: Vec<ResolutionEntry>,
+    pub(crate) entries: Vec<ResolutionEntry>,
     /// Versioned snapshots of the alias/default-commodity state.
     ///
     /// A new [`Context`] is pushed every time a directive changes the alias
@@ -103,12 +103,12 @@ pub struct Context {
     ///
     /// During elaboration, a bare identifier or parameterized call `name(args)`
     /// in a value or boolean expression is looked up here and expanded.
-    pub defines: BTreeMap<String, Define>,
+    pub(crate) defines: BTreeMap<String, Define>,
 }
 
 /// A resolved `define` entry, carrying parameter names and the macro body.
 #[derive(Debug, Clone)]
-pub struct Define {
+pub(crate) struct Define {
     /// Ordered parameter names. Empty for zero-argument defines.
     pub params: Vec<String>,
     /// The body expression to evaluate when the define is invoked.
@@ -132,10 +132,10 @@ pub struct GlobalContext {
 pub struct TagProperties {
     /// Fatal assertions: elaboration halts if any fails for a matching
     /// `; TagName: value` metadata pair.
-    pub asserts: Vec<ast::BoolExpr>,
+    pub(crate) asserts: Vec<ast::BoolExpr>,
     /// Non-fatal checks: a warning is printed to stderr but elaboration
     /// continues if any fails.
-    pub checks: Vec<ast::BoolExpr>,
+    pub(crate) checks: Vec<ast::BoolExpr>,
 }
 
 /// Display and market-data properties of a commodity.
@@ -156,10 +156,10 @@ pub struct AccountProperties {
     pub note: Option<String>,
     /// Fatal assertions: every posting to this account must satisfy all of
     /// these expressions. Elaboration halts if any fails.
-    pub asserts: Vec<ast::BoolExpr>,
+    pub(crate) asserts: Vec<ast::BoolExpr>,
     /// Non-fatal checks: if any fail, a warning is printed to stderr but
     /// elaboration continues.
-    pub checks: Vec<ast::BoolExpr>,
+    pub(crate) checks: Vec<ast::BoolExpr>,
     /// Key-value metadata declared on this account directive only — not
     /// yet inherited from ancestors. Sources include `; key: value`
     /// notes on the directive header and `key: value` sub-items inside
@@ -169,7 +169,7 @@ pub struct AccountProperties {
 
 /// A single entry in the resolved journal, paired with its active context.
 #[derive(Debug)]
-pub struct ResolutionEntry {
+pub(crate) struct ResolutionEntry {
     /// Index into [`HIR::contexts`]. The context at this index is the one that
     /// was active when this entry appeared in the source file.
     pub context_id: usize, // index into `Journal#contexts`
@@ -179,7 +179,7 @@ pub struct ResolutionEntry {
 
 /// A resolved journal entry.
 #[derive(Debug)]
-pub enum Entry {
+pub(crate) enum Entry {
     /// A double-entry transaction with resolved dates and extracted metadata.
     Transaction(Transaction),
     /// A standalone balance assertion directive.
@@ -192,7 +192,7 @@ pub enum Entry {
 /// in the HIR for use by the elaboration stage; enforcement is a follow-up
 /// (tracked in issue #37).
 #[derive(Debug)]
-pub struct AssertionDirective {
+pub(crate) struct AssertionDirective {
     /// The date at which the balance assertion applies.
     pub date: chrono::NaiveDate,
     /// The account whose balance is being asserted.
