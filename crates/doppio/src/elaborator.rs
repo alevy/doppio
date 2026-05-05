@@ -331,12 +331,18 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
 
         // Pre-populate the accounts map from directives so that accounts
         // declared with notes but never posted to still appear in the output.
+        // Metadata is denormalised after the entry loop — see end of fn.
         let mut accounts = BTreeMap::new();
         for (name, properties) in &value.global_context.account_properties {
             accounts.insert(
                 name.clone(),
                 crate::elaboration::AccountProperties {
                     note: properties.note.clone(),
+                    metadata: properties
+                        .metadata
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
                 },
             );
         }
@@ -804,6 +810,41 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
             })
             .collect();
 
+        // Denormalise account metadata by inheritance. For every account
+        // in the journal (declared OR only referenced by postings), walk
+        // its colon-separated ancestor chain root→leaf, merging in any
+        // metadata declared on each ancestor's own `account` directive.
+        // Closer ancestors override more distant ones; the account's own
+        // declared metadata wins last. Consumers thus see a fully
+        // resolved metadata map per account and never need to do the
+        // inheritance walk themselves.
+        let declared_metadata: BTreeMap<&str, &BTreeMap<String, String>> = value
+            .global_context
+            .account_properties
+            .iter()
+            .map(|(name, props)| (name.as_str(), &props.metadata))
+            .collect();
+        let account_names: Vec<String> = accounts.keys().cloned().collect();
+        for name in account_names {
+            let mut inherited: BTreeMap<String, String> = BTreeMap::new();
+            for prefix in ancestor_prefixes(&name) {
+                if let Some(parent_meta) = declared_metadata.get(prefix.as_str()) {
+                    for (k, v) in *parent_meta {
+                        inherited.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            // `inherited` now holds the merged ancestor metadata in
+            // root-→-leaf order (closer wins). For declared accounts
+            // their own metadata was the last entry written, so we are
+            // already correct. For undeclared accounts (referenced only
+            // by postings) `inherited` is purely from ancestors. Either
+            // way, overwrite the field.
+            if let Some(props) = accounts.get_mut(&name) {
+                props.metadata = inherited;
+            }
+        }
+
         Ok(crate::elaboration::Journal {
             transactions,
             accounts,
@@ -811,6 +852,18 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
             prices,
         })
     }
+}
+
+/// Yield the colon-separated ancestor prefixes of `name`, root first,
+/// `name` itself last. So `"Income:Salary:Base"` yields
+/// `["Income", "Income:Salary", "Income:Salary:Base"]`.
+fn ancestor_prefixes(name: &str) -> Vec<String> {
+    let mut prefixes = Vec::new();
+    for (i, _) in name.match_indices(':') {
+        prefixes.push(name[..i].to_string());
+    }
+    prefixes.push(name.to_string());
+    prefixes
 }
 
 /// Evaluate tag-level assert/check directives for a set of metadata key-value pairs.

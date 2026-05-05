@@ -362,6 +362,54 @@ fn account_note() {
 }
 
 #[test]
+fn account_metadata() {
+    let j = compile("account_metadata.ledger");
+
+    // Header-line `; type: R` lands as metadata on Income.
+    let income = j.accounts.get("Income").expect("Income declared");
+    assert_eq!(income.metadata.get("type").map(String::as_str), Some("R"));
+
+    // Indented `; type: L` note line lands as metadata on Liabilities.
+    let liab = j.accounts.get("Liabilities").expect("Liabilities declared");
+    assert_eq!(liab.metadata.get("type").map(String::as_str), Some("L"));
+
+    // Indented `key: value` sub-item with no leading semicolon lands as
+    // metadata on Assets.
+    let assets = j.accounts.get("Assets").expect("Assets declared");
+    assert_eq!(assets.metadata.get("type").map(String::as_str), Some("A"));
+
+    // Sub-account inheritance: Income:Salary appears via posting only,
+    // and inherits type:R from Income.
+    let salary = j
+        .accounts
+        .get("Income:Salary")
+        .expect("Income:Salary referenced via posting");
+    assert_eq!(salary.metadata.get("type").map(String::as_str), Some("R"));
+
+    // Liabilities:Visa inherits type:L; Assets:Bank:Checking inherits type:A.
+    let visa = j
+        .accounts
+        .get("Liabilities:Visa")
+        .expect("Liabilities:Visa referenced via posting");
+    assert_eq!(visa.metadata.get("type").map(String::as_str), Some("L"));
+    let checking = j
+        .accounts
+        .get("Assets:Bank:Checking")
+        .expect("Assets:Bank:Checking referenced via posting");
+    assert_eq!(checking.metadata.get("type").map(String::as_str), Some("A"));
+
+    // Closer ancestor wins: Assets:Brokerage redeclares type as I,
+    // overriding Assets's A.
+    let brokerage = j.accounts.get("Assets:Brokerage").expect("declared");
+    assert_eq!(
+        brokerage.metadata.get("type").map(String::as_str),
+        Some("I")
+    );
+    // The directive's `note Schwab #1234` still flows through.
+    assert_eq!(brokerage.note.as_deref(), Some("Schwab #1234"));
+}
+
+#[test]
 fn commodity_default() {
     // After `commodity $ ; default`, a bare `100` should pick up `$`.
     let j = compile("commodity_default.ledger");

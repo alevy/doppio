@@ -1,0 +1,32 @@
+; Account-directive metadata, hledger-compatible. Tracks #168.
+;
+; Two forms exercised:
+;   - header-line `; key: value` note (Income)
+;   - indented `; key: value` note line (Liabilities, Assets, Assets:Brokerage)
+;
+; Both should land in AccountProperties.metadata. The metadata is also
+; inherited by sub-accounts: Income:Salary inherits type:R from Income;
+; Liabilities:Visa inherits type:L from Liabilities;
+; Assets:Bank:Checking inherits type:A from Assets even though it has
+; no directive of its own. Closer ancestors override more distant ones,
+; so Assets:Brokerage's type:I beats Assets's type:A.
+
+account Income  ; type: R
+
+account Liabilities
+    ; type: L
+
+account Assets
+    ; type: A
+
+account Assets:Brokerage
+    ; type: I
+    note Schwab #1234
+
+2024-01-15 Salary
+    Income:Salary                   $-3,000.00
+    Assets:Bank:Checking
+
+2024-01-20 Card charge
+    Liabilities:Visa                  $-50.00
+    Assets:Bank:Checking

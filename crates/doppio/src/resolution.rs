@@ -160,6 +160,11 @@ pub struct AccountProperties {
     /// Non-fatal checks: if any fail, a warning is printed to stderr but
     /// elaboration continues.
     pub checks: Vec<ast::BoolExpr>,
+    /// Key-value metadata declared on this account directive only — not
+    /// yet inherited from ancestors. Sources include `; key: value`
+    /// notes on the directive header and `key: value` sub-items inside
+    /// the block. Elaboration denormalises by walking ancestors.
+    pub metadata: BTreeMap<String, String>,
 }
 
 /// A single entry in the resolved journal, paired with its active context.
@@ -580,16 +585,23 @@ impl TryFrom<ast::Journal> for HIR {
                         }
                     }
                 }
-                ast::Entry::Directive(ast::Directive::Account {
-                    name,
-                    notes: _,
-                    items,
-                }) => {
+                ast::Entry::Directive(ast::Directive::Account { name, notes, items }) => {
                     let global_context = result
                         .global_context
                         .account_properties
                         .entry(name.clone())
                         .or_default();
+
+                    // Header-line and trailing `; key: value` notes contribute
+                    // metadata via the same parser that handles transaction
+                    // and posting notes. Bare `:tag1:tag2:` forms and free-
+                    // form comments on accounts are dropped — they have no
+                    // current consumer and the wire schema only carries
+                    // metadata.
+                    let (_tags, header_metadata, _comments) = Self::resolve_metadata(notes);
+                    for (k, v) in header_metadata {
+                        global_context.metadata.insert(k, v);
+                    }
 
                     for item in items {
                         match item {
@@ -607,7 +619,16 @@ impl TryFrom<ast::Journal> for HIR {
                             ast::AccountItem::Check(expr) => {
                                 global_context.checks.push(expr);
                             }
-                            ast::AccountItem::Unknown(_, _) => { /* TODO */ }
+                            ast::AccountItem::Unknown(key, value) => {
+                                // Sub-items without a value (e.g. a bare
+                                // `; type` line) are treated as metadata
+                                // with an empty value, mirroring how
+                                // hledger handles the same syntax.
+                                let val = value.unwrap_or_default();
+                                global_context
+                                    .metadata
+                                    .insert(key.trim().to_string(), val.trim().to_string());
+                            }
                         }
                     }
                 }
