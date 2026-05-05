@@ -8,12 +8,9 @@ import {
   type LocalDate,
 } from "@/lib/dop";
 
-defineProps<{ showDepth?: boolean }>();
-
 const filters = useFiltersStore();
-const { pattern, clearedOnly, begin, end, depth, naturalSigns } = storeToRefs(filters);
+const { clearedOnly, begin, end } = storeToRefs(filters);
 
-// Bind LocalDate state to <input type="date"> via ISO YYYY-MM-DD strings.
 const beginISO = computed({
   get: () => (begin.value ? toISO(begin.value) : ""),
   set: (v) => {
@@ -26,21 +23,12 @@ const endISO = computed({
     end.value = v ? fromISO(v) : null;
   },
 });
-const depthString = computed({
-  get: () => (depth.value === null ? "" : String(depth.value)),
-  set: (v) => {
-    const n = parseInt(v, 10);
-    depth.value = Number.isFinite(n) && n > 0 ? n : null;
-  },
-});
 
 function toISO(d: LocalDate): string {
   return new Date(epochDaysFromLocalDate(d) * 86_400_000).toISOString().slice(0, 10);
 }
 
 function fromISO(s: string): LocalDate {
-  // <input type="date"> emits YYYY-MM-DD in the user's locale. Treat it
-  // as a calendar date — no timezone conversion.
   const [y, m, d] = s.split("-").map(Number);
   return localDateFromEpochDays(
     Math.round(Date.UTC(y!, (m ?? 1) - 1, d ?? 1) / 86_400_000),
@@ -51,15 +39,6 @@ function fromISO(s: string): LocalDate {
 <template>
   <div class="filter-bar">
     <label>
-      <span class="label">Account</span>
-      <input
-        v-model="pattern"
-        type="text"
-        placeholder="filter (substring)"
-        spellcheck="false"
-      />
-    </label>
-    <label>
       <span class="label">Begin</span>
       <input v-model="beginISO" type="date" />
     </label>
@@ -67,23 +46,9 @@ function fromISO(s: string): LocalDate {
       <span class="label">End</span>
       <input v-model="endISO" type="date" />
     </label>
-    <label v-if="showDepth">
-      <span class="label">Depth</span>
-      <input
-        v-model="depthString"
-        type="number"
-        min="1"
-        placeholder="∞"
-        class="narrow"
-      />
-    </label>
     <label class="toggle">
       <input v-model="clearedOnly" type="checkbox" />
       <span>Cleared only</span>
-    </label>
-    <label class="toggle" title="Display Income / Liabilities / Equity with their natural sign instead of the raw double-entry sign.">
-      <input v-model="naturalSigns" type="checkbox" />
-      <span>Natural signs</span>
     </label>
   </div>
 </template>
@@ -98,7 +63,6 @@ function fromISO(s: string): LocalDate {
   background: #fff;
   border: 1px solid #e5e5e5;
   border-radius: 0.5rem;
-  margin-bottom: 1rem;
 }
 
 label {
@@ -123,8 +87,6 @@ label.toggle {
   color: #777;
 }
 
-input[type="text"],
-input[type="number"],
 input[type="date"] {
   padding: 0.3rem 0.5rem;
   border: 1px solid #ccc;
@@ -132,10 +94,5 @@ input[type="date"] {
   font: inherit;
   min-width: 9rem;
   background: #fafafa;
-}
-
-input.narrow {
-  min-width: 4rem;
-  width: 5rem;
 }
 </style>
