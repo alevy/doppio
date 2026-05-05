@@ -98,8 +98,12 @@ export function buildBalanceTree(
         acc.set(c, (acc.get(c) ?? new Decimal(0)).plus(v));
       }
     }
+    // Keep zero rollups so accounts that net to zero (e.g. a credit card
+    // whose charges and payments cancel within the period) still surface
+    // with an explicit "$0.00" instead of disappearing. Commodities the
+    // subtree never touched are simply absent from `acc`.
     for (const [c, v] of acc) {
-      if (!v.isZero()) node.rollupTotals.byCommodity[c] = v;
+      node.rollupTotals.byCommodity[c] = v;
     }
   }
 
@@ -129,13 +133,5 @@ export function buildBalanceTree(
     for (const t of tops) prune(t);
   }
 
-  // Drop subtrees whose rollup is entirely zero (everything cancelled).
-  function isAllZero(t: BalanceTotals): boolean {
-    return Object.keys(t.byCommodity).length === 0;
-  }
-  function pruneEmpty(node: BalanceNode): boolean {
-    node.children = node.children.filter(pruneEmpty);
-    return !isAllZero(node.rollupTotals);
-  }
-  return tops.filter(pruneEmpty);
+  return tops;
 }

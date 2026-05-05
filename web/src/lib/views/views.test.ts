@@ -96,6 +96,21 @@ describe("buildBalanceTree", () => {
     expect(flat).toEqual(["Assets:Bank:Checking"]);
   });
 
+  it("preserves zero-balance accounts (e.g. a credit card cleared each period)", () => {
+    const tree = buildBalanceTree(journal, noFilter, null);
+    function find(name: string, nodes = tree): any {
+      for (const n of nodes) {
+        if (n.fullName === name) return n;
+        const hit = find(name, n.children);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    const cc = find("Liabilities:CreditCard");
+    expect(cc).toBeTruthy();
+    expect(cc.rollupTotals.byCommodity["$"].isZero()).toBe(true);
+  });
+
   it("flips signs for credit-normal subtrees when naturalSigns is on", () => {
     const tree = buildBalanceTree(journal, noFilter, null, true);
     function find(name: string, nodes = tree): any {
