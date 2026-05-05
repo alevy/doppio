@@ -5,6 +5,17 @@
 //! year, amounts are unevaluated [`ValueExpr`] trees, and directives are kept
 //! in their raw form. Subsequent pipeline stages ([`crate::resolution`] and
 //! [`crate::elaboration`]) refine these into higher-level structures.
+//!
+//! Many of the structural types here are now `pub(crate)` after the 1.0
+//! API audit. They are populated by the parser and consumed by the
+//! resolver, but never inspected by external callers — the resolver
+//! consumes the journal and produces a [`crate::resolution::HIR`].
+//! Enum variants and fields that the resolver doesn't observe show up
+//! as dead code under `cargo clippy`; the suppression below is
+//! deliberate and tracks future cleanup as a 1.x quality-of-life
+//! task rather than gating the 1.0 cut.
+
+#![allow(dead_code)]
 
 use std::{collections::BTreeMap, fmt::Display};
 
@@ -12,19 +23,23 @@ use chrono::{Datelike, NaiveDate};
 use pest::Parser as PestParser;
 use rust_decimal::Decimal;
 
-use crate::parser::{self, LedgerParser};
+use crate::grammars::ledger::{self, LedgerParser};
 
 /// The root of a parsed ledger file.
 ///
-/// Contains all top-level entries in source order.
+/// Contains all top-level entries in source order. The `entries` field
+/// itself is crate-private because the [`Entry`] enum is an internal
+/// representation; consumers receive a `Journal` from
+/// [`crate::grammars::ledger::Parser::parse`] and pass it on to
+/// [`crate::resolution::HIR::try_from`] without inspecting it directly.
 #[derive(Debug)]
 pub struct Journal {
-    pub entries: Vec<Entry>,
+    pub(crate) entries: Vec<Entry>,
 }
 
 /// A single top-level entry in the journal.
 #[derive(Debug)]
-pub enum Entry {
+pub(crate) enum Entry {
     /// A double-entry accounting transaction (date, description, postings).
     Transaction(Transaction),
     /// A configuration directive (`commodity`, `account`, `alias`, …).
@@ -47,7 +62,7 @@ pub enum Entry {
 ///
 /// Example: `2024-01-15 == Assets:Checking  $1000.00`
 #[derive(Debug, Clone)]
-pub struct AssertionDirective {
+pub(crate) struct AssertionDirective {
     /// The date at which the balance assertion applies.
     pub date: Date,
     /// The account whose balance is being asserted.
@@ -63,7 +78,7 @@ pub struct AssertionDirective {
 ///
 /// Example: `P 2024-01-15 14:30:00 AAPL $182.50`
 #[derive(Debug, Clone)]
-pub struct HistoricalPrice {
+pub(crate) struct HistoricalPrice {
     /// The date on which this price was recorded.
     pub date: Date,
     /// Optional wall-clock time of the price quote (`HH:MM` or `HH:MM:SS`).
@@ -76,7 +91,7 @@ pub struct HistoricalPrice {
 
 /// A configuration directive parsed from the ledger source.
 #[derive(Debug)]
-pub enum Directive {
+pub(crate) enum Directive {
     /// A `commodity` block declaring properties of a commodity symbol.
     Commodity {
         /// The canonical commodity name (e.g. `"USD"`, `"BTC"`, `"$"`).
@@ -138,7 +153,7 @@ pub enum Directive {
 
 /// A single key/value item inside a `commodity` directive block.
 #[derive(Clone, Debug)]
-pub enum CommodityItem {
+pub(crate) enum CommodityItem {
     /// An alternative name for this commodity (`alias <name>`).
     Alias(String),
     /// A display format string, e.g. `"1,000.00 USD"`.
@@ -155,7 +170,7 @@ pub enum CommodityItem {
 
 /// A single key/value item inside an `account` directive block.
 #[derive(Clone, Debug)]
-pub enum AccountItem {
+pub(crate) enum AccountItem {
     /// An alternative name for this account (`alias <name>`).
     Alias(String),
     /// A free-form note describing the account.
@@ -254,7 +269,7 @@ impl std::fmt::Display for BoolExpr {
 /// arithmetic macros) or a boolean expression (for predicate macros used in
 /// `assert`/`check` directives).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DefineBody {
+pub(crate) enum DefineBody {
     /// A value expression, e.g. `define monthly = $1500`.
     Value(ValueExpr),
     /// A boolean expression, e.g. `define positive(x) = x > 0`.
@@ -277,7 +292,7 @@ impl std::fmt::Display for DefineBody {
 /// dates uniformly. The [`crate::resolution`] stage rejects dates where
 /// no year can be determined.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Default, Debug)]
-pub struct Date {
+pub(crate) struct Date {
     /// The calendar year, e.g. `2024`. `None` if not present in the source.
     pub year: Option<i32>,
     /// Month of the year (1–12).
@@ -305,7 +320,7 @@ impl From<NaiveDate> for Date {
 /// This is the raw parse-tree representation. For programmatic transaction
 /// construction, use [`crate::resolution::Transaction`] and its builder methods instead.
 #[derive(Clone, Default, Debug)]
-pub struct Transaction {
+pub(crate) struct Transaction {
     /// The primary (effective) date.
     pub date: Date,
     /// An optional secondary date (`date=secondary_date`), used for the
@@ -391,7 +406,7 @@ pub enum PostingKind {
 /// This is the raw parse-tree representation. For programmatic posting
 /// construction, use [`crate::resolution::Posting`] and its builder methods instead.
 #[derive(Clone, Default, Debug)]
-pub struct Posting {
+pub(crate) struct Posting {
     /// The account name, e.g. `"Expenses:Food"`.
     ///
     /// For virtual postings the surrounding markers (`(` `)` or `[` `]`) are
@@ -458,7 +473,12 @@ impl Display for Posting {
 }
 
 /// The amount field of a posting, in one of two forms.
+///
+/// Marked `#[non_exhaustive]` so that doppio can grow new posting-amount
+/// shapes (e.g. for future budget directives) in 1.x without bumping
+/// the major version. Match arms must use a wildcard `_ => …` arm.
 #[derive(PartialEq, Eq, Clone, Debug)]
+#[non_exhaustive]
 pub enum AmountDetails {
     /// A standard amount expression, with optional lot pricing and/or a
     /// balance assertion.
@@ -589,7 +609,12 @@ impl Display for ValueExpr {
 /// The variants cover all syntactic forms that can appear in a posting amount:
 /// numeric literals, string literals, arithmetic, function calls, and
 /// commodity type annotations.
+///
+/// Marked `#[non_exhaustive]` so that the grammar can grow new
+/// expression forms in 1.x without bumping the major version. Match
+/// arms must use a wildcard `_ => …` arm.
 #[derive(PartialEq, Eq, Debug, Clone)]
+#[non_exhaustive]
 pub enum ValueExpr {
     /// A key-value object, used as the return type of the `account()` function.
     /// Fields are accessed with the [`ValueExpr::Access`] form.
@@ -675,10 +700,10 @@ impl ValueExpr {
     /// # use doppio::ast::ValueExpr;
     /// let expr = ValueExpr::parse("100 USD").unwrap();
     /// ```
-    pub fn parse(input: &str) -> Result<ValueExpr, pest::error::Error<parser::Rule>> {
-        let mut pairs = LedgerParser::parse(parser::Rule::value_expr, input)?;
+    pub fn parse(input: &str) -> Result<ValueExpr, pest::error::Error<ledger::Rule>> {
+        let mut pairs = LedgerParser::parse(ledger::Rule::value_expr, input)?;
         let pair = pairs.next().unwrap();
-        Ok(parser::parse_expr(pair))
+        Ok(ledger::parse_expr(pair))
     }
 }
 

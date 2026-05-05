@@ -27,10 +27,10 @@ use std::sync::LazyLock; // Or once_cell
 /// The raw pest parser generated from `ledger.pest` via `pest_derive`.
 ///
 /// This type is only used internally by [`Parser<F>::parse`]. Callers
-/// should use [`Parser`] or the convenience function [`parse_ledger`].
+/// should use [`Parser`] directly.
 #[derive(Parser)]
 #[grammar = "grammars/ledger/ledger.pest"]
-pub struct LedgerParser;
+pub(crate) struct LedgerParser;
 
 /// A stateful parser that resolves `include` directives.
 ///
@@ -190,7 +190,8 @@ fn validate_bool_expr_regexes(expr: &BoolExpr) -> Result<(), Box<dyn std::error:
 /// Useful in tests and benchmarks where a self-contained string is parsed
 /// and no file I/O is needed. Any `include` directives in the input are
 /// silently resolved to an empty string (no entries are included).
-pub fn parse_ledger(input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
+#[cfg(test)]
+pub(crate) fn parse_ledger(input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
     Parser {
         opener: |_| Ok(String::new()),
         base_path: PathBuf::new(),
@@ -215,14 +216,14 @@ pub fn parse_ledger(input: &str) -> Result<Journal, Box<dyn std::error::Error>> 
 /// use doppio::LedgerFrontend;
 /// use std::path::Path;
 ///
-/// let journal = LedgerFrontend
+/// let hir = LedgerFrontend
 ///     .parse(
 ///         "2024-01-01 Test\n  Expenses:Food  $10\n  Assets:Cash\n",
 ///         Path::new(""),
 ///         &|_| Ok(String::new()),
 ///     )
 ///     .unwrap();
-/// assert_eq!(journal.entries.len(), 1);
+/// assert_eq!(hir.transactions().count(), 1);
 /// ```
 pub struct LedgerFrontend;
 
@@ -236,15 +237,16 @@ impl crate::frontend::Frontend for LedgerFrontend {
         input: &str,
         base_path: &std::path::Path,
         opener: &crate::frontend::Opener,
-    ) -> Result<crate::ast::Journal, Box<dyn std::error::Error>> {
+    ) -> Result<crate::resolution::HIR, Box<dyn std::error::Error>> {
         // Wrap the dyn-Fn opener into a concrete closure so we can store it in
         // the generic Parser<F>. This adds one indirection per include call,
         // which is acceptable because includes are rare compared to parse work.
-        Parser {
+        let ast_journal = Parser {
             opener: |path: &str| opener(path),
             base_path: base_path.to_path_buf(),
         }
-        .parse(input)
+        .parse(input)?;
+        Ok(ast_journal.try_into()?)
     }
 }
 

@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // disk latency on the first run (cold page cache).
     let t0 = Instant::now();
     let base_path = source.parent().unwrap().to_path_buf();
-    let mut parser = doppio::parser::Parser {
+    let mut parser = doppio::grammars::ledger::Parser {
         opener: doppio::file_opener,
         base_path,
     };

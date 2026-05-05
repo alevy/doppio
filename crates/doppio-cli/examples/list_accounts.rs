@@ -18,7 +18,7 @@ fn load_journal(path: &PathBuf) -> Result<doppio::Journal, Box<dyn std::error::E
         Ok(doppio::read_dop(&mut f, path)?)
     } else {
         let base_path = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let parser = doppio::parser::Parser {
+        let parser = doppio::grammars::ledger::Parser {
             opener: doppio::file_opener,
             base_path: base_path.to_path_buf(),
         };

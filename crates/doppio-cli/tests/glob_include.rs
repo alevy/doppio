@@ -1,7 +1,7 @@
 //! Integration tests for glob pattern support in `include` directives.
 //!
 //! These tests exercise [`doppio::file_opener`] and the include-handling path
-//! of [`doppio::parser::Parser`] against real files on disk, covering:
+//! of [`doppio::grammars::ledger::Parser`] against real files on disk, covering:
 //!
 //! - single-file (literal path) includes — unchanged behaviour
 //! - glob patterns matching multiple files — lexicographic ordering
@@ -32,7 +32,7 @@ fn compile_with_dir(
     source: &str,
     dir: &std::path::Path,
 ) -> Result<doppio::Journal, Box<dyn std::error::Error>> {
-    let parser = doppio::parser::Parser {
+    let parser = doppio::grammars::ledger::Parser {
         opener: doppio::file_opener,
         base_path: dir.to_path_buf(),
     };

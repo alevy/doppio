@@ -4,8 +4,8 @@ use std::path::PathBuf;
 mod data;
 
 fn make_parser()
--> doppio::parser::Parser<impl Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
-    doppio::parser::Parser {
+-> doppio::grammars::ledger::Parser<impl Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
+    doppio::grammars::ledger::Parser {
         opener: |_: &str| Ok(String::new()),
         base_path: PathBuf::new(),
     }
