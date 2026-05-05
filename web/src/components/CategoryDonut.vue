@@ -11,7 +11,7 @@ import Decimal from "decimal.js";
 import { useJournalStore } from "@/store/journal";
 import { useFiltersStore } from "@/store/filters";
 import { expensesByCategory, latestMonth } from "@/lib/views/period";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, monthLabelLong } from "@/lib/format";
 
 ChartJS.register(ArcElement, Tooltip);
 
@@ -76,11 +76,7 @@ const chartOptions = computed(() => ({
   },
 }));
 
-const monthLabel = computed(() => {
-  if (!month.value) return "";
-  return new Date(Date.UTC(month.value.year, month.value.month - 1, 1))
-    .toLocaleDateString("en", { month: "long", year: "numeric" });
-});
+const monthLabel = computed(() => (month.value ? monthLabelLong(month.value) : ""));
 </script>
 
 <template>

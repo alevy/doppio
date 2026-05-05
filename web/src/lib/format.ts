@@ -1,4 +1,33 @@
 import type Decimal from "decimal.js";
+import type { MonthKey } from "./views/period.js";
+
+const MONTH_NAMES_SHORT = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+const MONTH_NAMES_LONG = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/**
+ * Render a MonthKey as a short label like "Apr 24". Hand-built rather
+ * than going through Date + toLocaleDateString — that path treats the
+ * Date as UTC and formats in local time, which off-by-one's the month
+ * label for any viewer west of UTC.
+ */
+export function monthLabelShort(m: MonthKey): string {
+  return `${MONTH_NAMES_SHORT[m.month - 1]} ${String(m.year).slice(-2)}`;
+}
+
+/**
+ * Render a MonthKey as a long label like "April 2024". Same rationale
+ * as `monthLabelShort`.
+ */
+export function monthLabelLong(m: MonthKey): string {
+  return `${MONTH_NAMES_LONG[m.month - 1]} ${m.year}`;
+}
 
 /**
  * Render a (commodity, value) pair for display. Recognises the bare `$`

@@ -6,8 +6,8 @@ import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip } fro
 import Decimal from "decimal.js";
 import { useJournalStore } from "@/store/journal";
 import { useFiltersStore } from "@/store/filters";
-import { incomeExpenseByMonth, type MonthKey } from "@/lib/views/period";
-import { formatAmount } from "@/lib/format";
+import { incomeExpenseByMonth } from "@/lib/views/period";
+import { formatAmount, monthLabelShort } from "@/lib/format";
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip);
 
@@ -21,14 +21,8 @@ const buckets = computed(() => {
   return incomeExpenseByMonth(j, begin.value, end.value, clearedOnly.value);
 });
 
-const monthLabel = (m: MonthKey) =>
-  new Date(Date.UTC(m.year, m.month - 1, 1)).toLocaleDateString("en", {
-    month: "short",
-    year: "2-digit",
-  });
-
 const chartData = computed(() => ({
-  labels: buckets.value.map((b) => monthLabel(b.month)),
+  labels: buckets.value.map((b) => monthLabelShort(b.month)),
   datasets: [
     {
       label: "Income",

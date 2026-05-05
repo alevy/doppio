@@ -9,15 +9,13 @@ import {
   LineElement,
   Tooltip,
   Filler,
-  TimeScale,
 } from "chart.js";
-import "chartjs-adapter-date-fns";
 import Decimal from "decimal.js";
 import { storeToRefs } from "pinia";
 import { useJournalStore } from "@/store/journal";
 import { useFiltersStore } from "@/store/filters";
 import { netWorthByMonth } from "@/lib/views/period";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, monthLabelLong, monthLabelShort } from "@/lib/format";
 
 ChartJS.register(
   CategoryScale,
@@ -26,7 +24,6 @@ ChartJS.register(
   LineElement,
   Tooltip,
   Filler,
-  TimeScale,
 );
 
 const journals = useJournalStore();
@@ -39,7 +36,7 @@ const series = computed(() => {
 });
 
 const chartData = computed(() => ({
-  labels: series.value.map((p) => new Date(Date.UTC(p.month.year, p.month.month - 1, 1))),
+  labels: series.value.map((p) => monthLabelShort(p.month)),
   datasets: [
     {
       label: "Net worth",
@@ -59,11 +56,7 @@ const chartOptions = computed(() => ({
   maintainAspectRatio: false,
   interaction: { mode: "index" as const, intersect: false },
   scales: {
-    x: {
-      type: "time" as const,
-      time: { unit: "month" as const, tooltipFormat: "MMM yyyy" },
-      grid: { color: "#f0f0f0" },
-    },
+    x: { grid: { color: "#f0f0f0" } },
     y: {
       grid: { color: "#f0f0f0" },
       ticks: {
@@ -75,10 +68,11 @@ const chartOptions = computed(() => ({
     legend: { display: false },
     tooltip: {
       callbacks: {
-        title: (items: { parsed: { x: number | null } }[]) => {
-          const x = items[0]?.parsed.x;
-          if (x == null) return "";
-          return new Date(x).toLocaleDateString("en", { month: "long", year: "numeric" });
+        title: (items: { dataIndex: number }[]) => {
+          const idx = items[0]?.dataIndex;
+          if (idx == null) return "";
+          const p = series.value[idx];
+          return p ? monthLabelLong(p.month) : "";
         },
         label: (ctx: { parsed: { y: number | null } }) =>
           ctx.parsed.y == null ? "" : formatAmount("$", new Decimal(ctx.parsed.y)),
