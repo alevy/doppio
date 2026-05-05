@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import type { Journal, LocalDate, Posting, Transaction } from "@/lib/dop";
+import { displaySign } from "./accountType.js";
 import { filteredPostings, type ViewFilters } from "./filter.js";
 
 export interface RegisterRow {
@@ -8,8 +9,13 @@ export interface RegisterRow {
   state: Transaction["state"];
   account: string;
   posting: Posting;
-  // Running total per commodity AFTER this row is applied. Zero entries
-  // are pruned at build time.
+  // Posting amount with the per-account display sign already applied.
+  // Identical to `posting.amount.byCommodity` when naturalSigns is off.
+  // Zero entries are pruned at build time.
+  amount: Record<string, Decimal>;
+  // Running total per commodity AFTER this row is applied. Computed
+  // from `amount` (sign-aware), not from the raw posting — so swapping
+  // naturalSigns at the call site re-computes the running consistently.
   running: Record<string, Decimal>;
 }
 
@@ -22,12 +28,20 @@ export interface RegisterRow {
  * matching ledger-cli's convention that `register Expenses` shows the
  * running total of just-Expenses postings, not of every posting.
  */
-export function buildRegister(journal: Journal, filters: ViewFilters): RegisterRow[] {
+export function buildRegister(
+  journal: Journal,
+  filters: ViewFilters,
+  naturalSigns = false,
+): RegisterRow[] {
   const running = new Map<string, Decimal>();
   const rows: RegisterRow[] = [];
   for (const { transaction, posting } of filteredPostings(journal, filters)) {
+    const sign = displaySign(posting.account, naturalSigns);
+    const amount: Record<string, Decimal> = {};
     for (const [c, v] of Object.entries(posting.amount.byCommodity)) {
-      running.set(c, (running.get(c) ?? new Decimal(0)).plus(v));
+      const flipped = sign === -1 ? v.neg() : v;
+      amount[c] = flipped;
+      running.set(c, (running.get(c) ?? new Decimal(0)).plus(flipped));
     }
     const snapshot: Record<string, Decimal> = {};
     for (const [c, v] of running) {
@@ -39,6 +53,7 @@ export function buildRegister(journal: Journal, filters: ViewFilters): RegisterR
       state: transaction.state,
       account: posting.account,
       posting,
+      amount,
       running: snapshot,
     });
   }

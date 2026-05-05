@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import type { Journal } from "@/lib/dop";
+import { displaySign } from "./accountType.js";
 import { filteredPostings, type ViewFilters } from "./filter.js";
 
 export interface BalanceTotals {
@@ -38,6 +39,7 @@ export function buildBalanceTree(
   journal: Journal,
   filters: ViewFilters,
   maxDepth: number | null,
+  naturalSigns = false,
 ): BalanceNode[] {
   // Step 1: accumulate own-totals per full account name.
   const own = new Map<string, Map<string, Decimal>>();
@@ -47,8 +49,10 @@ export function buildBalanceTree(
       totals = new Map();
       own.set(p.account, totals);
     }
+    const sign = displaySign(p.account, naturalSigns);
     for (const [c, v] of Object.entries(p.amount.byCommodity)) {
-      totals.set(c, (totals.get(c) ?? new Decimal(0)).plus(v));
+      const flipped = sign === -1 ? v.neg() : v;
+      totals.set(c, (totals.get(c) ?? new Decimal(0)).plus(flipped));
     }
   }
 

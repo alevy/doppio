@@ -4,6 +4,7 @@ import {
   type Journal,
   type LocalDate,
 } from "@/lib/dop";
+import { displaySign } from "./accountType.js";
 import { dateInRange } from "./filter.js";
 
 export interface ChartPoint {
@@ -32,7 +33,9 @@ export function buildAccountSeries(
   commodity: string,
   begin: LocalDate | null,
   end: LocalDate | null,
+  naturalSigns = false,
 ): ChartPoint[] {
+  const sign = displaySign(account, naturalSigns);
   const sorted = [...journal.transactions].sort((a, b) =>
     compareLocalDate(a.date, b.date),
   );
@@ -46,7 +49,7 @@ export function buildAccountSeries(
       if (p.kind === "virtualUnbalanced") continue;
       if (p.account !== account) continue;
       const v = p.amount.byCommodity[commodity];
-      if (v) dayChange = dayChange.plus(v);
+      if (v) dayChange = dayChange.plus(sign === -1 ? v.neg() : v);
     }
     if (dayChange.isZero()) continue;
     balance = balance.plus(dayChange);

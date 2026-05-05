@@ -11,7 +11,7 @@ import {
 defineProps<{ showDepth?: boolean }>();
 
 const filters = useFiltersStore();
-const { pattern, clearedOnly, begin, end, depth } = storeToRefs(filters);
+const { pattern, clearedOnly, begin, end, depth, naturalSigns } = storeToRefs(filters);
 
 // Bind LocalDate state to <input type="date"> via ISO YYYY-MM-DD strings.
 const beginISO = computed({
@@ -80,6 +80,10 @@ function fromISO(s: string): LocalDate {
     <label class="toggle">
       <input v-model="clearedOnly" type="checkbox" />
       <span>Cleared only</span>
+    </label>
+    <label class="toggle" title="Display Income / Liabilities / Equity with their natural sign instead of the raw double-entry sign.">
+      <input v-model="naturalSigns" type="checkbox" />
+      <span>Natural signs</span>
     </label>
   </div>
 </template>

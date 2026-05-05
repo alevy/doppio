@@ -95,6 +95,26 @@ describe("buildBalanceTree", () => {
     walk(tree);
     expect(flat).toEqual(["Assets:Bank:Checking"]);
   });
+
+  it("flips signs for credit-normal subtrees when naturalSigns is on", () => {
+    const tree = buildBalanceTree(journal, noFilter, null, true);
+    function find(name: string, nodes = tree): any {
+      for (const n of nodes) {
+        if (n.fullName === name) return n;
+        const hit = find(name, n.children);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    // Income flips: was -23800, displays as +23800.
+    expect(find("Income:Consulting").rollupTotals.byCommodity["$"].equals(new Decimal("23800"))).toBe(true);
+    // Equity flips: was -18500, displays as +18500.
+    expect(find("Equity:OpeningBalances").rollupTotals.byCommodity["$"].equals(new Decimal("18500"))).toBe(true);
+    // Assets does NOT flip — Checking stays at +10318.88.
+    expect(find("Assets:Bank:Checking").rollupTotals.byCommodity["$"].equals(new Decimal("10318.88"))).toBe(true);
+    // Expenses (debit-normal, outside the heuristic table) does NOT flip.
+    expect(find("Expenses:Rent").rollupTotals.byCommodity["$"].equals(new Decimal("10800.00"))).toBe(true);
+  });
 });
 
 describe("buildRegister", () => {
@@ -120,6 +140,22 @@ describe("buildRegister", () => {
     expect(cleared.length).toBeLessThanOrEqual(all.length);
     expect(cleared.every((r) => r.state === "cleared")).toBe(true);
   });
+
+  it("naturalSigns flips per-row amounts and the running total for credit-normal accounts", () => {
+    const rows = buildRegister(journal, { ...noFilter, pattern: "income:consulting" }, true);
+    expect(rows.length).toBeGreaterThan(0);
+    // Each Income row was -3400 raw; with natural signs, it displays as +3400.
+    expect(rows[0]!.amount["$"].equals(new Decimal("3400"))).toBe(true);
+    // Final running = 7 invoices × 3400 = 23800 (two in January, then monthly Feb-Jun).
+    const last = rows[rows.length - 1]!;
+    expect(last.running["$"].equals(new Decimal("23800.00"))).toBe(true);
+  });
+
+  it("naturalSigns leaves debit-normal accounts unchanged", () => {
+    const rows = buildRegister(journal, { ...noFilter, pattern: "expenses:rent" }, true);
+    const last = rows[rows.length - 1]!;
+    expect(last.running["$"].equals(new Decimal("10800.00"))).toBe(true);
+  });
 });
 
 describe("buildAccountSeries", () => {
@@ -143,6 +179,25 @@ describe("buildAccountSeries", () => {
   it("returns empty when the account never touches the commodity", () => {
     const series = buildAccountSeries(journal, "Assets:Bank:Checking", "EUR", null, null);
     expect(series).toEqual([]);
+  });
+
+  it("naturalSigns flips the entire series for credit-normal accounts", () => {
+    const raw = buildAccountSeries(journal, "Income:Consulting", "$", null, null);
+    const flipped = buildAccountSeries(journal, "Income:Consulting", "$", null, null, true);
+    expect(flipped.length).toBe(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      expect(flipped[i]!.value.equals(raw[i]!.value.neg())).toBe(true);
+    }
+    // And the closing point for income reads positive under natural signs.
+    expect(flipped[flipped.length - 1]!.value.equals(new Decimal("23800.00"))).toBe(true);
+  });
+
+  it("naturalSigns leaves Assets series unchanged", () => {
+    const raw = buildAccountSeries(journal, "Assets:Bank:Checking", "$", null, null);
+    const flipped = buildAccountSeries(journal, "Assets:Bank:Checking", "$", null, null, true);
+    for (let i = 0; i < raw.length; i++) {
+      expect(flipped[i]!.value.equals(raw[i]!.value)).toBe(true);
+    }
   });
 });
 

@@ -36,7 +36,7 @@ ChartJS.register(
 
 const journals = useJournalStore();
 const filters = useFiltersStore();
-const { begin, end } = storeToRefs(filters);
+const { begin, end, naturalSigns } = storeToRefs(filters);
 
 const pairs = computed(() => {
   const j = journals.journal;
@@ -68,6 +68,7 @@ const series = computed(() => {
     selected.value.commodity,
     begin.value,
     end.value,
+    naturalSigns.value,
   );
 });
 

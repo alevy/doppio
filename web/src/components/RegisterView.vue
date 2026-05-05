@@ -9,17 +9,21 @@ import { localDateToString } from "@/lib/dop";
 
 const journals = useJournalStore();
 const filters = useFiltersStore();
-const { pattern, clearedOnly, begin, end } = storeToRefs(filters);
+const { pattern, clearedOnly, begin, end, naturalSigns } = storeToRefs(filters);
 
 const rows = computed(() => {
   const j = journals.journal;
   if (!j) return [];
-  return buildRegister(j, {
-    pattern: pattern.value,
-    clearedOnly: clearedOnly.value,
-    begin: begin.value,
-    end: end.value,
-  });
+  return buildRegister(
+    j,
+    {
+      pattern: pattern.value,
+      clearedOnly: clearedOnly.value,
+      begin: begin.value,
+      end: end.value,
+    },
+    naturalSigns.value,
+  );
 });
 
 function postingAmounts(commodities: Record<string, import("decimal.js").default>) {
@@ -50,7 +54,7 @@ function postingAmounts(commodities: Record<string, import("decimal.js").default
         <td class="account">{{ row.account }}</td>
         <td class="num">
           <span
-            v-for="([commodity, value], i) in postingAmounts(row.posting.amount.byCommodity)"
+            v-for="([commodity, value], i) in postingAmounts(row.amount)"
             :key="commodity"
             class="amount"
             :class="{ negative: value.isNegative() }"

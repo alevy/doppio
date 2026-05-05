@@ -8,7 +8,7 @@ import { formatAmount } from "@/lib/format";
 
 const journals = useJournalStore();
 const filters = useFiltersStore();
-const { pattern, clearedOnly, begin, end, depth } = storeToRefs(filters);
+const { pattern, clearedOnly, begin, end, depth, naturalSigns } = storeToRefs(filters);
 
 const tree = computed<BalanceNode[]>(() => {
   const j = journals.journal;
@@ -22,6 +22,7 @@ const tree = computed<BalanceNode[]>(() => {
       end: end.value,
     },
     depth.value,
+    naturalSigns.value,
   );
 });
 
