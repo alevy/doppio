@@ -1,0 +1,240 @@
+; Demo journal for the doppio web GUI.
+;
+; Fictional finances of "Sam Casey", an independent illustrator, over the
+; first half of 2024. Designed to exercise every view in the demo:
+;   - balance hierarchy with multiple commodities (USD, EUR, AAPL)
+;   - balance assertions
+;   - lot pricing (cost basis on a stock holding)
+;   - cross-currency expenses (a trip to France via P-directive FX)
+;   - enough monthly activity on the checking account for a chart
+;
+; All names, payees, and amounts are entirely fictional. This file is
+; intended for demonstration purposes only; do NOT use it as a template
+; for real bookkeeping.
+
+account Assets:Bank:Checking
+account Assets:Bank:Savings
+account Assets:Brokerage
+account Assets:Cash:EUR
+account Liabilities:CreditCard
+account Equity:OpeningBalances
+account Income:Consulting
+account Expenses:Rent
+account Expenses:Groceries
+account Expenses:Restaurants
+account Expenses:Utilities
+account Expenses:Transit
+account Expenses:Travel
+account Expenses:Entertainment
+
+commodity $
+    format $1,000.00
+    default
+
+commodity EUR
+    format 1,000.00 EUR
+
+P 2024-01-02 EUR $1.09
+P 2024-03-01 EUR $1.08
+P 2024-05-15 EUR $1.07
+P 2024-02-15 AAPL $182.50
+P 2024-04-15 AAPL $171.40
+P 2024-06-15 AAPL $193.20
+
+; --- Opening balances ---
+
+2024-01-01 * Opening cash balances
+    Assets:Bank:Checking             $4,250.00
+    Assets:Bank:Savings             $12,000.00
+    Liabilities:CreditCard            $-750.00
+    Equity:OpeningBalances
+
+2024-01-01 * Opening AAPL position
+    Assets:Brokerage                20 AAPL {$150.00} [2023-08-01]
+    Equity:OpeningBalances           $-3,000.00
+
+; --- January ---
+
+2024-01-05 * Landlord — January rent
+    Expenses:Rent                    $1,800.00
+    Assets:Bank:Checking
+
+2024-01-08 * Card payment
+    Liabilities:CreditCard             $750.00
+    Assets:Bank:Checking
+
+2024-01-12 * Acme Studio — invoice 0123
+    Income:Consulting               $-3,400.00
+    Assets:Bank:Checking
+
+2024-01-15 * Whole Foods
+    Expenses:Groceries                  $87.43
+    Liabilities:CreditCard
+
+2024-01-18 * ConEd — utilities
+    Expenses:Utilities                 $145.00
+    Assets:Bank:Checking
+
+2024-01-22 ! Le Pain Quotidien
+    Expenses:Restaurants                $42.50
+    Liabilities:CreditCard
+
+2024-01-26 * Acme Studio — invoice 0124
+    Income:Consulting               $-3,400.00
+    Assets:Bank:Checking
+
+2024-01-30 * Card payment
+    Liabilities:CreditCard             $129.93
+    Assets:Bank:Checking
+
+; --- February ---
+
+2024-02-05 * Landlord — February rent
+    Expenses:Rent                    $1,800.00
+    Assets:Bank:Checking
+
+2024-02-10 * Trader Joe's
+    Expenses:Groceries                 $112.18
+    Liabilities:CreditCard
+
+2024-02-12 * Acme Studio — invoice 0125
+    Income:Consulting               $-3,400.00
+    Assets:Bank:Checking
+
+2024-02-15 * Buy AAPL
+    Assets:Brokerage                10 AAPL {$182.50} [2024-02-15]
+    Assets:Bank:Checking            $-1,825.00
+
+2024-02-20 * MTA — monthly pass
+    Expenses:Transit                   $132.00
+    Liabilities:CreditCard
+
+2024-02-23 * Trattoria Spaghetto
+    Expenses:Restaurants                $58.75
+    Liabilities:CreditCard
+
+2024-02-26 * Card payment
+    Liabilities:CreditCard             $302.93
+    Assets:Bank:Checking
+
+; --- March ---
+
+2024-03-04 * Landlord — March rent
+    Expenses:Rent                    $1,800.00
+    Assets:Bank:Checking
+
+2024-03-08 * Whole Foods
+    Expenses:Groceries                  $94.62
+    Liabilities:CreditCard
+
+2024-03-11 * Acme Studio — invoice 0126
+    Income:Consulting               $-3,400.00
+    Assets:Bank:Checking
+
+2024-03-15 * Bookshop NYC
+    Expenses:Entertainment              $48.20
+    Liabilities:CreditCard
+
+2024-03-19 * ConEd — utilities
+    Expenses:Utilities                 $138.00
+    Assets:Bank:Checking
+
+2024-03-22 * MTA — monthly pass
+    Expenses:Transit                   $132.00
+    Liabilities:CreditCard
+
+2024-03-28 * Card payment
+    Liabilities:CreditCard             $274.82
+    Assets:Bank:Checking
+
+; --- April ---
+
+2024-04-05 * Landlord — April rent
+    Expenses:Rent                    $1,800.00
+    Assets:Bank:Checking
+
+2024-04-09 * Trader Joe's
+    Expenses:Groceries                 $103.40
+    Liabilities:CreditCard
+
+2024-04-12 * Acme Studio — invoice 0127
+    Income:Consulting               $-3,400.00
+    Assets:Bank:Checking
+
+2024-04-15 * Booking — Paris flights
+    Expenses:Travel                    $683.00
+    Liabilities:CreditCard
+
+2024-04-18 * MTA — monthly pass
+    Expenses:Transit                   $132.00
+    Liabilities:CreditCard
+
+2024-04-22 * Pizzeria Roma
+    Expenses:Restaurants                $52.10
+    Liabilities:CreditCard
+
+2024-04-26 * Card payment
+    Liabilities:CreditCard             $970.50
+    Assets:Bank:Checking
+
+; --- May (Paris trip) ---
+
+2024-05-03 * Landlord — May rent
+    Expenses:Rent                    $1,800.00
+    Assets:Bank:Checking
+
+2024-05-10 * Acme Studio — invoice 0128
+    Income:Consulting               $-3,400.00
+    Assets:Bank:Checking
+
+2024-05-15 * Buy euros at airport kiosk
+    Assets:Cash:EUR                  500.00 EUR @ $1.07
+    Assets:Bank:Checking              $-535.00
+
+2024-05-17 * Hotel Lutèce — Paris
+    Expenses:Travel                  420.00 EUR
+    Assets:Cash:EUR
+
+2024-05-18 * Le Petit Bistrot
+    Expenses:Restaurants              38.50 EUR
+    Assets:Cash:EUR
+
+2024-05-22 * Métro carnet
+    Expenses:Transit                  16.90 EUR
+    Assets:Cash:EUR
+
+; --- June ---
+
+2024-06-04 * Landlord — June rent
+    Expenses:Rent                    $1,800.00
+    Assets:Bank:Checking
+
+2024-06-08 * Whole Foods
+    Expenses:Groceries                 $76.94
+    Liabilities:CreditCard
+
+2024-06-12 * Acme Studio — invoice 0129
+    Income:Consulting               $-3,400.00
+    Assets:Bank:Checking
+
+2024-06-14 * Transfer to savings
+    Assets:Bank:Savings              $1,500.00
+    Assets:Bank:Checking
+
+2024-06-18 * ConEd — utilities
+    Expenses:Utilities                 $151.00
+    Assets:Bank:Checking
+
+2024-06-22 * MTA — monthly pass
+    Expenses:Transit                   $132.00
+    Liabilities:CreditCard
+
+2024-06-26 * Card payment
+    Liabilities:CreditCard             $208.94
+    Assets:Bank:Checking
+
+; --- End-of-period balance assertion ---
+
+2024-06-30 * Mid-year reconciliation
+    Assets:Bank:Checking                $0.00 = $10,318.88
+    Equity:OpeningBalances

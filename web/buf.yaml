@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: ../proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # The schema is consumed canonically as proto3 messages by Rust+TS clients;
+    # standard-package and field-naming style rules don't apply to this layout.
+    - PACKAGE_VERSION_SUFFIX
+    - PACKAGE_DIRECTORY_MATCH
+    - FIELD_LOWER_SNAKE_CASE
+    - SERVICE_SUFFIX
+breaking:
+  use:
+    - FILE

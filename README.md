@@ -215,6 +215,12 @@ cargo build --release
 
 The resulting binary is `target/release/dop`.
 
+## Web demo
+
+A small browser app under [`web/`](./web/) renders balance, register, and chart views over a `.dop` file using a JS-native protobuf decoder — no Rust or WASM at runtime. It serves as the working validator of doppio's format-as-API claim: any non-Rust language can read `.dop` files via the published [`proto/doppio.proto`](./proto/doppio.proto) schema.
+
+Live preview: <https://alevy.github.io/doppio/> (deployed automatically from `main`).
+
 ## Changelog
 
 See [CHANGELOG.md](./CHANGELOG.md) for release notes.
