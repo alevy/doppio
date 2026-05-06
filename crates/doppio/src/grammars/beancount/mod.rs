@@ -40,9 +40,15 @@
 //!   held commodity distinction is collapsed.
 //! - `pad` is preserved as an [`Entry::Pad`] marker but the elaborator does
 //!   not yet act on it; the algorithm is the subject of #147.
-//! - String escape sequences inside quoted strings are not interpreted.
 //! - Org-mode outline headings (`*`, `**`, `***`, ... at column 0) are
 //!   accepted and silently dropped, matching Beancount itself.
+//!
+//! ## String escape sequences
+//!
+//! Recognised inside double-quoted strings: `\\`, `\"`, `\n`, `\t`,
+//! `\r`. Unrecognised escapes (e.g. `\q`) pass through verbatim with
+//! the leading backslash preserved, rather than erroring. An escaped
+//! quote inside a string literal does not terminate the string.
 //!
 //! ## Lexically-scoped tag and metadata directives
 //!
@@ -235,14 +241,49 @@ fn parse_flag(s: &str) -> TransactionState {
     }
 }
 
-/// Extract the inner text of a `string` pair (strip surrounding quotes).
+/// Extract and decode the inner text of a `string` pair: strip the
+/// surrounding quotes and interpret recognised backslash escape
+/// sequences.
+///
+/// Recognised: `\\`, `\"`, `\n`, `\t`, `\r`. Unrecognised escapes
+/// (e.g. `\q`) pass through verbatim with the leading backslash
+/// preserved -- this matches Python's "be lenient on unknown escapes
+/// in string literals" stance and avoids losing source bytes.
 fn string_inner(pair: Pair<Rule>) -> String {
     // string = ${ "\"" ~ string_inner ~ "\"" }
     let inner_pair = pair
         .into_inner()
         .next()
         .expect("string must contain string_inner");
-    inner_pair.as_str().to_string()
+    decode_string_escapes(inner_pair.as_str())
+}
+
+fn decode_string_escapes(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            // Unknown escape: keep the backslash and the following
+            // character verbatim. This is intentionally lenient.
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            // Trailing lone backslash (only possible if the grammar
+            // somehow let one through; preserve it).
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 // ---
@@ -816,6 +857,34 @@ mod tests {
     }
 
     #[test]
+    fn string_with_escape_sequences() {
+        // Escaped quote inside the literal must not terminate the string.
+        parse_one(Rule::string, "\"hello \\\" world\"");
+        // Common escapes the grammar must accept.
+        parse_one(Rule::string, "\"line1\\nline2\"");
+        parse_one(Rule::string, "\"col1\\tcol2\"");
+        parse_one(Rule::string, "\"path C:\\\\Users\\\\me\"");
+    }
+
+    #[test]
+    fn decode_string_escapes_recognises_known_sequences() {
+        assert_eq!(decode_string_escapes("hello"), "hello");
+        assert_eq!(decode_string_escapes(r"line1\nline2"), "line1\nline2");
+        assert_eq!(decode_string_escapes(r"col1\tcol2"), "col1\tcol2");
+        assert_eq!(decode_string_escapes(r"x\rclear"), "x\rclear");
+        assert_eq!(decode_string_escapes(r#"say \"hi\""#), r#"say "hi""#);
+        assert_eq!(decode_string_escapes(r"a\\b"), r"a\b");
+    }
+
+    #[test]
+    fn decode_string_escapes_passes_unknown_through() {
+        // \q is not a recognised escape; the backslash + char survive.
+        assert_eq!(decode_string_escapes(r"a\qb"), r"a\qb");
+        // Trailing lone backslash also survives.
+        assert_eq!(decode_string_escapes(r"a\"), r"a\");
+    }
+
+    #[test]
     fn flag_recognises_star_bang_txn() {
         parse_one(Rule::flag, "*");
         parse_one(Rule::flag, "!");
@@ -1221,6 +1290,35 @@ mod tests {
             .filter(|e| matches!(e.data, crate::resolution::Entry::Transaction(_)))
             .count();
         assert_eq!(resolved_txn_count, 1);
+    }
+
+    #[test]
+    fn transaction_string_with_embedded_escapes() {
+        // The narration contains an escaped quote and an explicit newline
+        // sequence. Both must (a) parse without terminating the string
+        // early, and (b) be decoded into their actual characters in the
+        // resulting Transaction.description.
+        let input = "\
+2024-01-01 open Expenses:Food
+2024-01-01 open Assets:Cash USD
+
+2024-03-10 * \"order #42 \\\"weekly\\\" delivery\\nnote: replace tomatoes\"
+  Expenses:Food      12.34 USD
+  Assets:Cash       -12.34 USD
+";
+        let journal = parse_beancount(input).expect("parse");
+        let Entry::Transaction(tx) = journal
+            .entries
+            .iter()
+            .find(|e| matches!(e, Entry::Transaction(_)))
+            .expect("transaction present")
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            tx.description, "order #42 \"weekly\" delivery\nnote: replace tomatoes",
+            "string escapes should be decoded into actual characters"
+        );
     }
 
     // -- pushtag/poptag, pushmeta/popmeta (#188 / #189) ---------------------

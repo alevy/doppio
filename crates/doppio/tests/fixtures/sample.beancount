@@ -65,6 +65,12 @@ include "secondary.beancount"
   Assets:Cash:EUR              500.00 EUR @ 1.07 USD
   Assets:Bank:Checking        -535.00 USD
 
+;; --- String literal with escape sequences ---
+
+2024-04-01 * "Quote in narration: he said \"go\" then left"
+  Expenses:Food                   25.00 USD
+  Liabilities:CreditCard         -25.00 USD
+
 ;; --- Lexically-scoped tags + metadata (pushtag/pushmeta) ---
 
 pushtag #household
