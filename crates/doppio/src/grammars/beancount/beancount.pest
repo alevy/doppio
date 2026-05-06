@@ -261,10 +261,15 @@ date = ${ year ~ "-" ~ monthdate ~ "-" ~ monthdate }
 year = @{ ASCII_DIGIT{4} }
 monthdate = @{ ASCII_DIGIT{2} }
 
-// String literal: simple double-quoted form. Escape sequences are not
-// modelled (see header note).
+// String literal: double-quoted form with backslash escape sequences.
+// The grammar accepts any byte after a backslash so the inner text
+// matches even malformed escapes; the AST adapter is responsible for
+// interpreting the recognised sequences (\\, \", \n, \t, \r) and
+// passing through unknown escapes verbatim with the leading backslash
+// preserved.
 string = ${ "\"" ~ string_inner ~ "\"" }
-string_inner = @{ (!"\"" ~ ANY)* }
+string_inner = @{ (escape_seq | (!"\"" ~ !"\\" ~ ANY))* }
+escape_seq = @{ "\\" ~ ANY }
 
 // Account: colon-separated segments. Beancount accepts segments
 // starting with an uppercase letter or digit; we accept either case
