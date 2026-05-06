@@ -1,6 +1,14 @@
 ; Sample Beancount journal exercising every directive the grammar
-; supports. Used by the grammar smoke test in
+; supports (except `plugin`, which is exercised at the grammar-rule
+; level in `mod.rs` -- including a real plugin name here would tie the
+; fixture to a specific Beancount runtime version). Used by the grammar
+; smoke test in
 ; `crates/doppio/src/grammars/beancount/mod.rs::tests::sample_fixture_parses`.
+;
+; This fixture is also valid Beancount: it is expected to pass `bean-check`
+; cleanly, with the sibling stub files `secondary.beancount` (for the
+; `include` directive) and `jan-statement.txt` (for the `document`
+; directive) sitting alongside it in the same directory.
 ;
 ; Names, payees, and amounts are entirely synthetic. The file is
 ; intended for parser tests only; do not use it as a real-bookkeeping
@@ -9,15 +17,13 @@
 option "title" "Sample Journal"
 option "operating_currency" "USD"
 
-plugin "beancount.plugins.implicit_prices"
-plugin "beancount.plugins.auto" "argument-string"
-
 include "secondary.beancount"
 
 ;; --- Account lifecycle ---
 
 2024-01-01 open Assets:Bank:Checking USD
 2024-01-01 open Assets:Brokerage AAPL,USD "FIFO"
+2024-01-01 open Assets:Cash:EUR EUR
 2024-01-01 open Liabilities:CreditCard USD
 2024-01-01 open Income:Salary USD
 2024-01-01 open Expenses:Food
@@ -74,7 +80,7 @@ include "secondary.beancount"
 
 2024-01-20 note Assets:Bank:Checking "Need to verify January statement"
 
-2024-01-22 document Assets:Bank:Checking "/scans/jan-statement.pdf"
+2024-01-22 document Assets:Bank:Checking "jan-statement.txt"
 
 2024-01-01 event "location" "Berlin"
 2024-06-30 event "location" "Lisbon"

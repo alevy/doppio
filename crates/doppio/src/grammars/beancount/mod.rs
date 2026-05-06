@@ -107,4 +107,16 @@ mod tests {
         parse_one(Rule::tag, "#trip-2024");
         parse_one(Rule::link, "^statement-2024-01");
     }
+
+    #[test]
+    fn plugin_directive_with_and_without_arg() {
+        // Covered here rather than in sample.beancount because real
+        // Beancount plugins are signature-versioned and bean-check
+        // refuses the fixture if a referenced plugin's API has shifted.
+        parse_one(Rule::plugin_directive, "plugin \"beancount.plugins.foo\"\n");
+        parse_one(
+            Rule::plugin_directive,
+            "plugin \"beancount.plugins.foo\" \"argument-string\"\n",
+        );
+    }
 }

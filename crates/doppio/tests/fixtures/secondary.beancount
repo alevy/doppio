@@ -1,0 +1,3 @@
+; Stub include target referenced by sample.beancount's `include` directive.
+; Kept intentionally empty: the parity fixture only needs this file to exist
+; so bean-check resolves the include without erroring.
