@@ -28,7 +28,7 @@
 //! | `pad target source` | [`Entry::Pad`] -- marker; #147 owns elaboration |
 //! | `option` / `plugin` | [`Entry::Comment`] |
 //! | `include "path"` | recursively parsed via the same opener as hledger |
-//! | `#tag` / `^link` on a transaction | folded into `transaction.notes` as `tag:NAME` / `link:NAME` |
+//! | `#tag` / `^link` on a transaction | collected into `Transaction.tags` (links collapse onto tags; the AST has no separate link concept) |
 //!
 //! ## Known limitations / stubs
 //!
@@ -177,18 +177,33 @@ fn parse_transaction(pair: Pair<Rule>) -> Result<Transaction, Box<dyn std::error
     let mut state = TransactionState::Uncleared;
     let mut payee_or_desc: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
+    let mut tags: Vec<String> = Vec::new();
 
     for p in header_fields {
         match p.as_rule() {
             Rule::flag => state = parse_flag(p.as_str()),
             Rule::string => payee_or_desc.push(string_inner(p)),
-            Rule::tag => notes.push(format!("tag:{}", &p.as_str()[1..])),
-            Rule::link => notes.push(format!("link:{}", &p.as_str()[1..])),
+            // Both `#tag` and `^link` collapse to tags. Beancount
+            // distinguishes them (links bind related transactions
+            // across an event; tags categorise) but our AST/HIR has
+            // no separate link concept, and resolution lifts the
+            // bare-tag `:a:b:` note format into Transaction.tags. A
+            // distinct link channel can be added later if a real
+            // consumer needs to tell them apart.
+            Rule::tag | Rule::link => tags.push(p.as_str()[1..].to_string()),
             Rule::note => {
                 notes.push(p.into_inner().as_str().trim().to_string());
             }
             _ => {}
         }
+    }
+
+    // Emit collected tags/links as a single ledger-cli-style bare-tag
+    // note. resolve_metadata splits on `:` and pushes each into
+    // Transaction.tags, so multiple tags survive (they would otherwise
+    // clobber each other if encoded as `key: value` metadata).
+    if !tags.is_empty() {
+        notes.push(format!(":{}:", tags.join(":")));
     }
 
     // Beancount transaction headers carry up to two strings: `"payee" "narration"`
@@ -754,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn tags_and_links_become_notes() {
+    fn tags_and_links_collected_as_bare_tag_note() {
         let input = "\
 2024-01-12 * \"Trip\" #vacation #beach ^trip-001
   Expenses:Travel    100.00 USD
@@ -764,9 +779,55 @@ mod tests {
         let Entry::Transaction(tx) = &journal.entries[0] else {
             panic!();
         };
-        assert!(tx.notes.iter().any(|n| n == "tag:vacation"));
-        assert!(tx.notes.iter().any(|n| n == "tag:beach"));
-        assert!(tx.notes.iter().any(|n| n == "link:trip-001"));
+        // The AST stores them as a single `:a:b:c:` note that resolve_metadata
+        // lifts into Transaction.tags.
+        assert!(
+            tx.notes.iter().any(|n| n == ":vacation:beach:trip-001:"),
+            "expected a bare-tag note, got notes={:?}",
+            tx.notes
+        );
+    }
+
+    #[test]
+    fn tags_and_links_land_in_resolved_transaction_tags() {
+        // End-to-end: parse a Beancount transaction with #tag and ^link, run
+        // it through resolution, and verify both kinds end up in
+        // Transaction.tags (links collapse onto tags). This guards against the
+        // earlier `tag:NAME` encoding which clobbered itself in the metadata
+        // map for multi-tag transactions.
+        let input = "\
+2024-01-01 open Expenses:Travel
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-01-12 * \"Trip\" #vacation #beach ^trip-001
+  Expenses:Travel        100.00 USD
+  Assets:Bank:Checking  -100.00 USD
+";
+        let journal = parse_beancount(input).expect("parse");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let tx_entry = hir
+            .entries
+            .iter()
+            .find(|e| matches!(e.data, crate::resolution::Entry::Transaction(_)))
+            .expect("a transaction entry should be present");
+        let crate::resolution::Entry::Transaction(ref tx) = tx_entry.data else {
+            unreachable!();
+        };
+        let tags: std::collections::HashSet<&str> = tx.tags.iter().map(String::as_str).collect();
+        assert!(tags.contains("vacation"), "tags={:?}", tx.tags);
+        assert!(tags.contains("beach"), "tags={:?}", tx.tags);
+        assert!(tags.contains("trip-001"), "tags={:?}", tx.tags);
+        // Nothing should have leaked into the metadata map.
+        assert!(
+            !tx.metadata.contains_key("tag"),
+            "metadata leak: {:?}",
+            tx.metadata
+        );
+        assert!(
+            !tx.metadata.contains_key("link"),
+            "metadata leak: {:?}",
+            tx.metadata
+        );
     }
 
     #[test]
