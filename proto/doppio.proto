@@ -166,6 +166,35 @@
 //       return &best.rate
 //     }
 
+// =============================================================================
+// Evolution policy
+// =============================================================================
+//
+// Normative from doppio 1.0 forward. Full rationale and how-to-land-a-change
+// guide live at `docs/proto-evolution.md`. Summary:
+//
+// 1. **Additive only.** New fields take new tag numbers. Existing tag numbers
+//    and field names never change meaning. Renaming a field is allowed
+//    (wire-compatible); repurposing a field is not (use a new tag).
+//
+// 2. **Reserved on deprecation.** When a field is removed, its tag AND its
+//    field name are added to the message's `reserved` clause so they can
+//    never be reused. The CI test `crates/doppio/tests/proto_evolution.rs`
+//    fails any PR that skips a tag without reserving it.
+//
+// 3. **Header-version bumps are rare.** The 8-byte `.dop` header carries a
+//    u16 format version (currently 3). It bumps ONLY when a change is
+//    breaking for old readers — e.g. changing an existing field's wire
+//    encoding, repurposing a tag, or adding a new compression byte. Adding
+//    new optional fields, message types, or enum variants does NOT bump
+//    the version (old readers ignore unknowns).
+//
+// 4. **Behaviour preservation.** For a fixed input and fixed compiler
+//    version, `dop compile` produces byte-identical `.dop` output across
+//    patch and minor releases (modulo documented format-version bumps).
+//    Map fields use `BTreeMap` on the Rust side and consumers in other
+//    languages sort by key explicitly when reproducibility matters.
+
 syntax = "proto3";
 
 package doppio;
