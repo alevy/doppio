@@ -762,8 +762,15 @@ pub enum LotPricing {
 /// an [`AmountDetails::Amount`] only when at least one annotation was found.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct LotAnnotation {
-    /// Per-unit cost basis.  `None` if no `{cost}` annotation was present.
+    /// Per-unit cost basis (or, when [`Self::cost_is_total`] is `true`,
+    /// the *total* lot cost). `None` if no `{cost}` / `{{total}}`
+    /// annotation was present.
     pub cost: Option<ValueExpr>,
+    /// `true` when the cost was expressed as a total via the
+    /// `{{total}}` double-brace form. The elaborator divides
+    /// [`Self::cost`] by the posting's unit count before using it as
+    /// per-unit basis. Defaults to `false` (per-unit).
+    pub cost_is_total: bool,
     /// Acquisition date.  `None` if no `[date]` annotation was present.
     pub date: Option<chrono::NaiveDate>,
     /// Free-form note.  `None` if no `((note))` annotation was present.

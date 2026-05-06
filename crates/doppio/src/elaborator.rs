@@ -154,6 +154,10 @@ pub enum ElaborationError {
         /// A rendered form of the failing expression (for diagnostics).
         expression: String,
     },
+    /// A `{{total}}` lot annotation was attached to a posting whose
+    /// unit count is zero, so per-unit basis cannot be derived. This is
+    /// a malformed input, not a doppio bug.
+    TotalCostWithZeroUnits,
 }
 
 /// Error produced when evaluating a value expression (e.g., an amount or
@@ -331,6 +335,12 @@ impl Display for ElaborationError {
                 write!(
                     f,
                     "tag assertion failed for {tag_name}: \"{tag_value}\": assert {expression}"
+                )
+            }
+            ElaborationError::TotalCostWithZeroUnits => {
+                write!(
+                    f,
+                    "`{{{{total}}}}` lot cost cannot be applied to a posting with zero units"
                 )
             }
         }
@@ -565,14 +575,28 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                                 .expect("epoch is valid");
                                             let proto_date =
                                                 ann.date.map(|d| (d - epoch).num_days() as i32);
+                                            let cost_is_total = ann.cost_is_total;
                                             let (proto_cost, cost_pair) =
                                                 if let Some(cost_expr) = ann.cost {
-                                                    let (cv, cc) =
+                                                    let (mut cv, cc) =
                                                         evaluator::eval_and_normalize_amount(
                                                             cost_expr,
                                                             entry_context,
                                                             &state,
                                                         )?;
+                                                    // `{{total}}` form: convert total -> per-unit
+                                                    // by dividing by the posting's absolute unit
+                                                    // count. The proto stores the canonical
+                                                    // per-unit form; the source-syntax
+                                                    // distinction is intentionally erased here.
+                                                    if cost_is_total {
+                                                        if value.is_zero() {
+                                                            return Err(
+                                                        ElaborationError::TotalCostWithZeroUnits,
+                                                    );
+                                                        }
+                                                        cv /= value.abs();
+                                                    }
                                                     let proto_amount = crate::elaboration::Amount {
                                                         by_commodity: BTreeMap::from([(
                                                             cc.clone(),

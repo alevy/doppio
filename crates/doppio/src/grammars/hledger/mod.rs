@@ -18,6 +18,14 @@
 //!   See TODO(#103).
 //! - `comment` / `end comment` block comments are not yet supported.
 //! - Full date inference from a `Y year` directive is not implemented.
+//!
+//! ## Lot-cost forms
+//!
+//! Both per-unit `{cost}` and total `{{total}}` forms are supported.
+//! The adapter records the brace count on
+//! [`ast::LotAnnotation::cost_is_total`]; the elaborator divides by
+//! the posting's unit count when applying a total-cost lot, so the
+//! canonical per-unit basis flows through the rest of the pipeline.
 
 use crate::ast::*;
 use pest::Parser as _;
@@ -266,7 +274,7 @@ fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::er
                             }
                             Rule::lot_annotation => {
                                 has_lot_annotation = true;
-                                parse_lot_annotation_into(child, &mut lot_annotation)?;
+                                parse_lot_annotation_into(child, &mut lot_annotation);
                             }
                             _ => unreachable!(),
                         }
@@ -310,29 +318,19 @@ fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::er
 /// [`LotAnnotation`] struct.  Duplicate annotations of the same kind take the
 /// last value (matching ledger-cli behaviour).
 ///
-/// # Errors
-///
-/// Returns an error if a `{{total}}` double-brace lot cost is encountered.
-/// The double-brace form is syntactically accepted by the grammar but its
-/// per-lot total-cost semantics are not yet implemented.  Treating it silently
-/// as a per-unit cost would produce wrong balances (e.g. `10 AAPL {{$1500}}`
-/// would yield a cash contribution of $15 000 instead of $1 500).  Use
-/// `{cost}` for per-unit cost or `@@ total` for transient total cost instead.
-fn parse_lot_annotation_into(
-    pair: Pair<Rule>,
-    acc: &mut LotAnnotation,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// The `{{total}}` double-brace form is recognised and recorded by setting
+/// [`LotAnnotation::cost_is_total`]; the elaborator divides the captured
+/// total by the posting's unit count to derive per-unit basis.
+fn parse_lot_annotation_into(pair: Pair<Rule>, acc: &mut LotAnnotation) {
     let child = pair.into_inner().next().unwrap();
     match child.as_rule() {
         Rule::lot_cost => {
-            // Reject the `{{expr}}` double-brace form. The grammar matches it
-            // before `{expr}` so the raw token text starts with "{{".
+            // The `{{total}}` form: the grammar matches it before
+            // `{cost}` so the raw token text starts with `{{`. The
+            // elaborator divides by the posting's unit count when
+            // applying the cost.
             if child.as_str().starts_with("{{") {
-                return Err(
-                    "double-brace `{{total}}` lot syntax is not yet implemented; \
-                     use `{cost}` for per-unit cost or `@@ total` for transient total cost"
-                        .into(),
-                );
+                acc.cost_is_total = true;
             }
             let expr_pair = child.into_inner().next().unwrap();
             acc.cost = Some(parse_expr(expr_pair));
@@ -350,7 +348,6 @@ fn parse_lot_annotation_into(
         }
         _ => unreachable!(),
     }
-    Ok(())
 }
 
 fn parse_historical_price(pair: Pair<Rule>) -> HistoricalPrice {
@@ -1252,17 +1249,23 @@ P 2024-02-15 AAPL $182.50
     }
 
     #[test]
-    fn test_lot_annotation_double_brace_rejected() {
+    fn test_lot_annotation_double_brace_total_form() {
+        // `{{$1500}}` declares the total lot cost. The adapter records
+        // `cost_is_total = true` and stores the inner expression
+        // verbatim; the elaborator (covered by integration tests in the
+        // doppio crate) divides by the unit count to derive per-unit
+        // basis. Here we only assert the AST shape.
         let input = "2024-03-01 Buy\n    assets:brokerage   10 AAPL {{$1500}}\n    assets:cash\n";
-        let result = parse_hledger(input);
-        assert!(
-            result.is_err(),
-            "double-brace `{{total}}` should be rejected at parse time"
-        );
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("double-brace"),
-            "error message should mention double-brace, got: {msg}"
-        );
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction")
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        let AmountDetails::Amount { lot_annotation, .. } = details else {
+            panic!("expected Amount details")
+        };
+        let ann = lot_annotation.as_ref().expect("lot annotation present");
+        assert!(ann.cost_is_total, "double-brace form sets cost_is_total");
+        assert!(ann.cost.is_some(), "cost expression captured");
     }
 }
