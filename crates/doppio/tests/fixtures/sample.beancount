@@ -19,6 +19,9 @@ option "operating_currency" "USD"
 
 include "secondary.beancount"
 
+* Personal
+** 2024 Journal
+
 ;; --- Account lifecycle ---
 
 2024-01-01 open Assets:Bank:Checking USD
