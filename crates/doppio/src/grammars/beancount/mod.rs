@@ -35,9 +35,12 @@
 //! - The lot syntax `{cost, date, label}` is parsed best-effort (TODO #185):
 //!   comma-split parts are classified as cost (first amount-looking part),
 //!   date (ISO), or quoted label. The wildcard `{*}` form is accepted but
-//!   the wildcard is silently dropped, the total-cost `{{total}}` form is
-//!   not distinguished from per-unit `{cost}`, and the cost commodity vs
-//!   held commodity distinction is collapsed.
+//!   the wildcard is silently dropped, and the cost commodity vs held
+//!   commodity distinction is collapsed.
+//! - The total-cost `{{total}}` form is rejected at parse time with a
+//!   clear error (matching the hledger frontend's existing stance).
+//!   Real total-cost lot basis support is tracked cross-frontend in
+//!   #193; when that lands, this rejection goes away.
 //! - `pad` is preserved as an [`Entry::Pad`] marker but the elaborator does
 //!   not yet act on it; the algorithm is the subject of #147.
 //! - Org-mode outline headings (`*`, `**`, `***`, ... at column 0) are
@@ -419,6 +422,21 @@ fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::er
         match p.as_rule() {
             Rule::value_expr => value = Some(parse_expr(p)),
             Rule::lot_annotation => {
+                // Reject the `{{total}}` double-brace form. The grammar
+                // matches it before `{cost}` so the raw token text starts
+                // with `{{`. Treating it as per-unit cost here would
+                // produce a wrong basis (e.g. `10 AAPL {{$1500}}` would
+                // yield $15,000 instead of $1,500); explicit error is
+                // safer than silent miscomputation. Real total-cost
+                // support is tracked in #193 (cross-frontend); when that
+                // lands this rejection goes away.
+                if p.as_str().starts_with("{{") {
+                    return Err(
+                        "Beancount `{{total}}` lot syntax is not yet implemented (#193); \
+                         use `{cost}` for per-unit cost or `@@ total` for transient total cost"
+                            .into(),
+                    );
+                }
                 has_lot_annotation = true;
                 merge_lot_annotation_into(p, &mut lot_annotation);
             }
@@ -455,16 +473,15 @@ fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::er
 /// - The wildcard `{*}` / `{*, ...}` form ("automatic cost") is silently
 ///   dropped: there is no AST representation for "infer this lot's cost
 ///   from the inventory."
-/// - The total-cost form `{{total}}` is parsed identically to the
-///   per-unit form `{cost}`. Both feed the cost into
-///   `LotAnnotation::cost` regardless of which brace form was used,
-///   which silently misrepresents the lot basis when the source uses
-///   `{{...}}`.
 /// - The cost commodity is not distinguished from the held commodity:
 ///   `10 AAPL {150 USD}` should let downstream consumers tell which
 ///   commodity is the basis vs the held lot, but today the inner cost
 ///   expression is captured as a single `ValueExpr` with no extra
 ///   structural hint.
+///
+/// The total-cost `{{total}}` form is rejected at the call site
+/// (`parse_amount_logic`) before this function is invoked; full
+/// support is tracked cross-frontend in #193.
 fn merge_lot_annotation_into(pair: Pair<Rule>, acc: &mut LotAnnotation) {
     // lot_annotation = ${ ("{{" ~ lot_inner_total ~ "}}") | ("{" ~ lot_inner ~ "}") }
     let inner = pair
@@ -1159,6 +1176,27 @@ mod tests {
             "date should be parsed"
         );
         assert_eq!(ann.note.as_deref(), Some("buy-2024-02"));
+    }
+
+    #[test]
+    fn double_brace_total_cost_lot_is_rejected() {
+        // `10 AAPL {{$1825 USD}}` means the entire lot was acquired for
+        // a total of 1825 USD (per-unit basis 182.50). Treating it as
+        // per-unit cost (the current best-effort code path) would
+        // silently produce a 10x-wrong basis. Until cross-frontend
+        // support lands (#193), parse must error -- explicit failure
+        // is far better than silent miscomputation.
+        let input = "\
+2024-02-15 * \"Apple lot purchase via total-cost\"
+  Assets:Brokerage   10 AAPL {{1825.00 USD}}
+  Assets:Bank:Checking       -1825.00 USD
+";
+        let err = parse_beancount(input).expect_err("`{{total}}` must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("{{total}}") && msg.contains("#193"),
+            "error should explain the gap and reference #193, got: {msg}"
+        );
     }
 
     #[test]
