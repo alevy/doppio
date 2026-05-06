@@ -28,7 +28,7 @@
 //! | `pad target source` | [`Entry::Pad`] -- marker; #147 owns elaboration |
 //! | `option` / `plugin` | [`Entry::Comment`] |
 //! | `include "path"` | recursively parsed via the same opener as hledger |
-//! | `#tag` / `^link` on a transaction | collected into `Transaction.tags` (links collapse onto tags; the AST has no separate link concept) |
+//! | `#tag` / `^link` on a transaction | collected into `Transaction.tags`. `#tag` becomes a bare tag (`vacation`); `^link` keeps its prefix (`^trip-001`), so a Beancount link is a doppio tag whose name starts with `^`. |
 //!
 //! ## Known limitations / stubs
 //!
@@ -183,14 +183,14 @@ fn parse_transaction(pair: Pair<Rule>) -> Result<Transaction, Box<dyn std::error
         match p.as_rule() {
             Rule::flag => state = parse_flag(p.as_str()),
             Rule::string => payee_or_desc.push(string_inner(p)),
-            // Both `#tag` and `^link` collapse to tags. Beancount
-            // distinguishes them (links bind related transactions
-            // across an event; tags categorise) but our AST/HIR has
-            // no separate link concept, and resolution lifts the
-            // bare-tag `:a:b:` note format into Transaction.tags. A
-            // distinct link channel can be added later if a real
-            // consumer needs to tell them apart.
-            Rule::tag | Rule::link => tags.push(p.as_str()[1..].to_string()),
+            // Both `#tag` and `^link` land in Transaction.tags, but
+            // the `^` prefix is preserved so the Beancount
+            // tag-vs-link distinction can be recovered downstream:
+            // a Beancount link is encoded as a doppio tag that
+            // starts with `^`. The `#` prefix is stripped because
+            // every other ledger-cli-style tag is bare.
+            Rule::tag => tags.push(p.as_str()[1..].to_string()),
+            Rule::link => tags.push(p.as_str().to_string()),
             Rule::note => {
                 notes.push(p.into_inner().as_str().trim().to_string());
             }
@@ -782,8 +782,8 @@ mod tests {
         // The AST stores them as a single `:a:b:c:` note that resolve_metadata
         // lifts into Transaction.tags.
         assert!(
-            tx.notes.iter().any(|n| n == ":vacation:beach:trip-001:"),
-            "expected a bare-tag note, got notes={:?}",
+            tx.notes.iter().any(|n| n == ":vacation:beach:^trip-001:"),
+            "expected a bare-tag note (link prefix preserved), got notes={:?}",
             tx.notes
         );
     }
@@ -816,7 +816,9 @@ mod tests {
         let tags: std::collections::HashSet<&str> = tx.tags.iter().map(String::as_str).collect();
         assert!(tags.contains("vacation"), "tags={:?}", tx.tags);
         assert!(tags.contains("beach"), "tags={:?}", tx.tags);
-        assert!(tags.contains("trip-001"), "tags={:?}", tx.tags);
+        // Beancount `^link`s land in tags too, but with the `^` prefix
+        // preserved so consumers can recover the link-vs-tag distinction.
+        assert!(tags.contains("^trip-001"), "tags={:?}", tx.tags);
         // Nothing should have leaked into the metadata map.
         assert!(
             !tx.metadata.contains_key("tag"),
