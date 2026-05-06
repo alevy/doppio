@@ -8,8 +8,7 @@ or to the `.dop` header.
 doppio's value proposition includes a stable, language-agnostic
 compiled-journal format. Consumers in any language can read `.dop` files
 via the published `proto/doppio.proto` schema. That promise only holds
-if the format evolves under documented rules. This document captures
-those rules.
+if the format evolves under documented rules -- and these are those rules.
 
 ## Two layers, two cadences
 
@@ -68,7 +67,7 @@ meaning. Existing field names never change meaning.
 
 If you want to rename a field, do so without changing its tag number;
 the wire encoding is unaffected. If you want to repurpose a field,
-**don't** — add a new field with a new tag and deprecate the old one.
+**don't** -- add a new field with a new tag and deprecate the old one.
 
 ### 2. Reserved on deprecation
 
@@ -109,7 +108,7 @@ top-comment recipes for examples.
 
 For a fixed input source file and fixed compiler version, `dop compile`
 must produce **byte-identical** `.dop` output across patch and minor
-releases — modulo documented format-version bumps. This is what
+releases -- modulo documented format-version bumps. This is what
 downstream consumers rely on for diff-based reproducibility (e.g.
 "did anything change?" CI checks on committed `.dop` files).
 
@@ -119,11 +118,11 @@ tag appears), which is by-construction expected and not a regression.
 
 ## How a typical change lands
 
-1. Edit `proto/doppio.proto` — add the new field with a fresh tag
+1. Edit `proto/doppio.proto` -- add the new field with a fresh tag
    number, document its semantics in a comment.
 2. Update `crates/doppio/src/elaborator.rs` (or wherever the proto type
    is constructed) to populate the new field.
-3. Update consumers — Rust callers via the regenerated prost types,
+3. Update consumers -- Rust callers via the regenerated prost types,
    JS callers via the regenerated Buf types in `web/src/lib/proto/`.
 4. Add a parity fixture or unit test that exercises the new field.
 5. CHANGELOG entry under the next version's "Added" section.

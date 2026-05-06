@@ -2,13 +2,13 @@
 //!
 //! One small ledger fixture per feature lives under
 //! `tests/parity/fixtures/<feature>.ledger`. Each test in this file loads
-//! its fixture, compiles it through the full parse → resolve → elaborate
+//! its fixture, compiles it through the full parse -> resolve -> elaborate
 //! pipeline, and asserts properties of the resulting
 //! [`doppio::elaboration::Journal`].
 //!
 //! Tests for **implemented** features must pass on every run. Tests for
 //! **not-yet-implemented** features are marked `#[ignore = "tracks #N"]`
-//! and carry the spec — real assertions on the elaborated journal that
+//! and carry the spec -- real assertions on the elaborated journal that
 //! describe what should be true once the tracking issue closes. Most fail
 //! today (parsing rejects the syntax, the elaborator diverges from spec,
 //! or a schema field doesn't yet exist); the failure messages show the
@@ -23,9 +23,9 @@ use doppio::elaboration::Journal;
 use rust_decimal::dec;
 use std::path::PathBuf;
 
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 // helpers
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 
 fn fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -46,9 +46,9 @@ fn compile(name: &str) -> Journal {
     doppio::compile(&src, parser).expect("compile failed")
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Implemented features — must pass.
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
+// Implemented features -- must pass.
+// --------------------------------------------------------------------------
 
 #[test]
 fn transactions_basic() {
@@ -84,7 +84,7 @@ fn lot_pricing_unit() {
     let j = compile("lot_pricing_unit.ledger");
     assert_eq!(j.transactions.len(), 1);
     let t = &j.transactions[0];
-    // 10 AAPL @ $150 → cash side null posting = -$1500.
+    // 10 AAPL @ $150 -> cash side null posting = -$1500.
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
     assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
 }
@@ -94,7 +94,7 @@ fn lot_pricing_total() {
     let j = compile("lot_pricing_total.ledger");
     assert_eq!(j.transactions.len(), 1);
     let t = &j.transactions[0];
-    // 10 AAPL @@ $1500 → cash side null posting = -$1500.
+    // 10 AAPL @@ $1500 -> cash side null posting = -$1500.
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
     assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
 }
@@ -147,7 +147,7 @@ fn commodity_format() {
 
 #[test]
 fn tag_check() {
-    // `tag Statement / check value =~ /^foo/` — non-fatal warning if the
+    // `tag Statement / check value =~ /^foo/` -- non-fatal warning if the
     // regex fails. Here it matches, so elaboration completes silently.
     let j = compile("tag_check.ledger");
     assert_eq!(j.transactions.len(), 1);
@@ -188,9 +188,9 @@ fn metadata_inheritance() {
     assert_eq!(j.transactions.len(), 1);
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 // Date / state / code / amount-form coverage.
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 
 #[test]
 fn date_formats() {
@@ -285,9 +285,9 @@ fn posting_state() {
     assert_eq!(postings[2].state, TransactionState::Uncleared as i32);
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 // Comments / metadata / tags.
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 
 #[test]
 fn transaction_notes() {
@@ -337,9 +337,9 @@ fn comment_chars() {
     assert_eq!(j.transactions[0].description, "Real transaction");
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 // Directive completeness.
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 
 #[test]
 fn account_check() {
@@ -420,7 +420,7 @@ fn commodity_default() {
 
 #[test]
 fn top_level_alias() {
-    // `alias Checking = Assets:Checking` — postings using `Checking`
+    // `alias Checking = Assets:Checking` -- postings using `Checking`
     // resolve to the canonical `Assets:Checking` in the elaborated
     // journal.
     let j = compile("top_level_alias.ledger");
@@ -435,7 +435,7 @@ fn top_level_alias() {
 
 #[test]
 fn standalone_balance_assertion() {
-    // `<date> = <account>  <amount>` — passes if the running balance at
+    // `<date> = <account>  <amount>` -- passes if the running balance at
     // that point matches. Reaching elaboration without error means the
     // assertion passed.
     let j = compile("standalone_balance_assertion.ledger");
@@ -444,7 +444,7 @@ fn standalone_balance_assertion() {
 
 #[test]
 fn define_zero_arg() {
-    // `define monthly_rent = $1500.00` — body substituted at use site.
+    // `define monthly_rent = $1500.00` -- body substituted at use site.
     let j = compile("define_zero_arg.ledger");
     let rent = j.transactions[0]
         .postings
@@ -468,9 +468,9 @@ fn budget_directive() {
     assert_eq!(j.transactions[0].description, "Real spending");
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 // Expressions.
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 
 #[test]
 fn regex_match() {
@@ -492,9 +492,9 @@ fn arithmetic_expression() {
     assert_eq!(food.amount_in("$"), Some(dec!(50)));
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 // Multi-transaction state.
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 
 #[test]
 fn running_balance() {
@@ -507,9 +507,9 @@ fn running_balance() {
     // The fourth entry is the standalone assertion, not a transaction.
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 // Not-yet-implemented features. Each `#[ignore]` references its tracking
-// issue. The test body carries the **expected** spec — real assertions on
+// issue. The test body carries the **expected** spec -- real assertions on
 // the elaborated journal that should pass once the feature lands. Today
 // each test fails (some panic in `compile()` because the fixture won't
 // parse; some panic in the assertions because current behavior diverges
@@ -521,11 +521,11 @@ fn running_balance() {
 // (e.g. `proto::Posting.lot` for #139, `proto::Posting.kind` for #140),
 // the new-field assertion is left as a `// TODO(#N)` comment block. The
 // developer landing the schema un-comments it as part of their PR.
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
 
-// ──────────────────────────────────────────────────────────────────────────
-// Lot persistence — #139
-// ──────────────────────────────────────────────────────────────────────────
+// --------------------------------------------------------------------------
+// Lot persistence -- #139
+// --------------------------------------------------------------------------
 
 #[test]
 fn lot_persistence_cost() {
@@ -533,7 +533,7 @@ fn lot_persistence_cost() {
     //
     // Cost basis ($150/share) is the historical lot annotation; price
     // ($155) is the actual transaction value. The cash side balances
-    // against the price, not the cost — the `@` price wins over `{cost}`
+    // against the price, not the cost -- the `@` price wins over `{cost}`
     // when both are present.
     let j = compile("lot_persistence_cost.ledger");
     let t = &j.transactions[0];
@@ -554,7 +554,7 @@ fn lot_persistence_date() {
     let j = compile("lot_persistence_date.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-    // No `@ price` — cash side null posting balances against cost ($150 * 10 = $1500).
+    // No `@ price` -- cash side null posting balances against cost ($150 * 10 = $1500).
     assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
     let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
     assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
@@ -620,7 +620,7 @@ fn lot_persistence_cost_vs_price() {
 
 #[test]
 fn lot_persistence_date_only() {
-    // Fixture: 10 AAPL [2024-01-15] — date annotation only, no cost.
+    // Fixture: 10 AAPL [2024-01-15] -- date annotation only, no cost.
     // Exercises the cost-fallback path: no {cost} or @ price means the
     // null posting balances in the posted commodity (AAPL contributes
     // itself as -10 AAPL). The lot's date field is still preserved.
@@ -640,7 +640,7 @@ fn lot_persistence_date_only() {
 
 #[test]
 fn lot_persistence_note_only() {
-    // Fixture: 10 AAPL ((BUY-2024-01)) — note annotation only, no cost.
+    // Fixture: 10 AAPL ((BUY-2024-01)) -- note annotation only, no cost.
     // Exercises the cost-fallback path: no {cost} or @ price means the
     // null posting balances in AAPL. The lot's note field is preserved.
     let j = compile("lot_persistence_note_only.ledger");
@@ -658,7 +658,7 @@ fn lot_persistence_note_only() {
 fn virtual_posting_unbalanced() {
     // Fixture has 3 postings: Assets:Checking $100, Equity:Opening -$100,
     // (Equity:Reservations) -$25. The parens mark the third as a virtual
-    // *unbalanced* posting — excluded from the transaction's balance
+    // *unbalanced* posting -- excluded from the transaction's balance
     // check, so the two real postings must balance among themselves
     // (they do: +$100 + -$100 = 0).
     let j = compile("virtual_posting_unbalanced.ledger");
@@ -710,7 +710,7 @@ fn virtual_posting_unbalanced() {
 fn virtual_posting_balanced() {
     // Fixture has 3 postings: Assets:Checking $100, [Equity:Reservations]
     // $25, Equity:Opening -$125. Brackets mark the second as a virtual
-    // *balanced* posting — DOES participate in balance accounting (so
+    // *balanced* posting -- DOES participate in balance accounting (so
     // all three sum to 0), but is flagged so reports can hide it via
     // `--real`.
     let j = compile("virtual_posting_balanced.ledger");
@@ -760,10 +760,10 @@ fn fx_conversion_p_directive() {
         .expect("travel posting present");
     assert_eq!(travel.amount_in("EUR"), Some(dec!(100)));
 
-    // `Journal::exchange_rate_at` resolves the EUR→$ conversion from the P directive.
+    // `Journal::exchange_rate_at` resolves the EUR->$ conversion from the P directive.
     let rate = j
         .exchange_rate_at("EUR", "$", None)
-        .expect("EUR→$ quote is present in the journal");
+        .expect("EUR->$ quote is present in the journal");
     assert_eq!(rate, dec!(1.10));
 
     // Applying the rate: 100 EUR * 1.10 = $110.
@@ -774,7 +774,7 @@ fn fx_conversion_p_directive() {
 #[test]
 fn bare_d_directive() {
     // Fixture declares `D $1,000.00` (default commodity + format) then a
-    // posting using a bare amount `50` — which should pick up `$` as
+    // posting using a bare amount `50` -- which should pick up `$` as
     // its commodity via the default-commodity inference.
     let j = compile("bare_d_directive.ledger");
     let t = &j.transactions[0];
@@ -794,7 +794,7 @@ fn bare_d_directive() {
 #[test]
 fn bare_d_directive_postfix() {
     // Fixture declares `D 1,000.00 USD` (number-first / postfix form) then a
-    // posting using a bare amount `50` — which should pick up `USD` as its
+    // posting using a bare amount `50` -- which should pick up `USD` as its
     // commodity via the default-commodity inference.
     let j = compile("bare_d_directive_postfix.ledger");
     let t = &j.transactions[0];
@@ -806,7 +806,7 @@ fn bare_d_directive_postfix() {
     assert_eq!(t.postings[1].amount_in("USD"), Some(dec!(-50)));
 
     // The format string from the D directive should be stored on the
-    // commodity entry — same as a `commodity 1,000.00 USD` block would yield.
+    // commodity entry -- same as a `commodity 1,000.00 USD` block would yield.
     let usd = j.commodities.get("USD").expect("D directive declares USD");
     assert_eq!(usd.format.as_deref(), Some("1,000.00 USD"));
 }
@@ -815,8 +815,8 @@ fn bare_d_directive_postfix() {
 fn account_alias_subdir() {
     // The simplest case: `account Assets:Checking / alias Checking`,
     // then a posting using `Checking` should resolve to `Assets:Checking`.
-    // This case turns out to work end-to-end through the parse → resolve
-    // → elaborate pipeline (PR #153 surfaced it). The `🔧 Partial` flag
+    // This case turns out to work end-to-end through the parse -> resolve
+    // -> elaborate pipeline (PR #153 surfaced it). The `🔧 Partial` flag
     // in SUPPORTED_FEATURES.md was left over from before the integration
     // test corpus existed.
     let j = compile("account_alias_subdir.ledger");
@@ -897,7 +897,7 @@ fn account_alias_forward_only() {
     // before. The pre-declaration posting keeps the literal `Checking`
     // name; the post-declaration one resolves to `Assets:Checking`.
     // (In ledger-cli the pre-declaration `Checking` is just a regular
-    // account name — there's no error, just no resolution.)
+    // account name -- there's no error, just no resolution.)
     let j = compile("account_alias_forward_only.ledger");
     assert_eq!(j.transactions.len(), 2);
 
@@ -925,7 +925,7 @@ fn account_alias_forward_only() {
 #[test]
 fn account_alias_inside_block_assert() {
     // The same block carries both an `alias` and an `assert`. The assert
-    // is evaluated against postings that arrive via the alias — alias
+    // is evaluated against postings that arrive via the alias -- alias
     // resolution must happen before the assert is applied so the
     // assert sees the canonical account name (in this fixture, the
     // assert checks `commodity == "$"`, which the aliased posting

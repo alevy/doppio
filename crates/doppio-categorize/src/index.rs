@@ -17,14 +17,14 @@ pub(crate) struct Sample {
     pub amount: Decimal,
     pub date: NaiveDate,
     /// Tokens of the normalized payee (used by the token-IDF scorer).
-    /// The full normalized string isn't stored on each sample — exact-match
+    /// The full normalized string isn't stored on each sample -- exact-match
     /// lookups go through [`KnownAccountBucket::by_payee`] which keys by
     /// the full normalized string.
     pub payee_tokens: Vec<String>,
 }
 
 /// Per-known-account storage. Holds a flat sample list (for token-IDF
-/// scanning) plus a `(normalized_payee → sample-indices)` map (for the
+/// scanning) plus a `(normalized_payee -> sample-indices)` map (for the
 /// exact-match fast path).
 #[derive(Debug, Default)]
 pub(crate) struct KnownAccountBucket {
@@ -56,7 +56,7 @@ impl Index {
     /// to the empty string.
     ///
     /// Also computes per-token document frequency over the set of distinct
-    /// normalized payees in the journal — needed by the token-IDF scoring
+    /// normalized payees in the journal -- needed by the token-IDF scoring
     /// strategy.
     pub fn build<N: Normalizer + 'static>(journal: &Journal, normalizer: N) -> Self {
         let mut by_known: HashMap<String, KnownAccountBucket> = HashMap::new();

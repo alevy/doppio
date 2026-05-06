@@ -35,7 +35,7 @@ pub fn simple(n: usize) -> String {
     out
 }
 
-/// Many distinct accounts — stresses account-name interning and BTreeMap
+/// Many distinct accounts -- stresses account-name interning and BTreeMap
 /// lookups during elaboration.
 pub fn wide(n: usize) -> String {
     let mut out = String::with_capacity(n * 90);
@@ -58,7 +58,7 @@ pub fn wide(n: usize) -> String {
     out
 }
 
-/// Five postings per transaction — stresses balance resolution and the
+/// Five postings per transaction -- stresses balance resolution and the
 /// implicit-amount inference path.
 pub fn deep(n: usize) -> String {
     let accounts = [
@@ -88,7 +88,7 @@ pub fn deep(n: usize) -> String {
     out
 }
 
-/// Multiple commodities per transaction — stresses Amount handling and
+/// Multiple commodities per transaction -- stresses Amount handling and
 /// commodity string interning.
 pub fn multi_commodity(n: usize) -> String {
     let commodities = ["USD", "EUR", "GBP"];

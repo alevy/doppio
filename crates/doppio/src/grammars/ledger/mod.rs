@@ -2,18 +2,18 @@
 //!
 //! This module has three layers:
 //!
-//! 1. **[`LedgerParser`]** — a `pest`-derived parser that tokenises source
+//! 1. **[`LedgerParser`]** -- a `pest`-derived parser that tokenises source
 //!    text according to the grammar in `ledger.pest`.
-//! 2. **[`Parser<F>`]** — the public API that wraps `LedgerParser`, walks
+//! 2. **[`Parser<F>`]** -- the public API that wraps `LedgerParser`, walks
 //!    the pair tree, handles `include` directives recursively, and builds
 //!    the [`ast::Journal`].
-//! 3. **[`LedgerFrontend`]** — implements [`crate::frontend::Frontend`] so
+//! 3. **[`LedgerFrontend`]** -- implements [`crate::frontend::Frontend`] so
 //!    that the CLI can select this parser by file extension.
 //!
 //! Amount expressions (see [`ast::ValueExpr`]) are parsed using a **Pratt
 //! parser** ([`PRATT_PARSER`]) to apply operator precedence: `*` and `/`
 //! bind tighter than `+` and `-`. The grammar itself treats the token
-//! sequence as flat — precedence is applied as a post-processing step.
+//! sequence as flat -- precedence is applied as a post-processing step.
 
 use crate::ast::*;
 use pest::Parser as _;
@@ -37,7 +37,7 @@ pub(crate) struct LedgerParser;
 /// The generic parameter `F` is the file-opener: a callable that accepts a
 /// file-system path (potentially a glob pattern) and returns the concatenated
 /// contents of all matching files as a `String`, or an error. This design
-/// makes the parser testable without touching the file system — pass
+/// makes the parser testable without touching the file system -- pass
 /// `|_| Ok(String::new())` for a no-op opener.
 ///
 /// The opener receives the fully joined path (base directory + include
@@ -46,7 +46,7 @@ pub(crate) struct LedgerParser;
 /// this correctly and is the default for CLI use.
 pub struct Parser<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
     /// Called with the joined include path (or glob pattern) to load included
-    /// files. The path may be relative if `base_path` is relative — callers
+    /// files. The path may be relative if `base_path` is relative -- callers
     /// who need absolute paths should canonicalise `base_path` before parsing.
     ///
     /// Returns the concatenated file contents on success, or a boxed error
@@ -146,7 +146,7 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
 ///
 /// Regex patterns are stored as raw strings in the AST so the AST itself
 /// stays free of `regex` types. Validation here surfaces invalid patterns at
-/// parse time — without it, a typo like `assert tag("X") =~ /[unclosed/`
+/// parse time -- without it, a typo like `assert tag("X") =~ /[unclosed/`
 /// would only fail much later during elaboration, when the failing posting
 /// is encountered.
 fn validate_regexes(journal: &Journal) -> Result<(), Box<dyn std::error::Error>> {
@@ -199,9 +199,9 @@ pub(crate) fn parse_ledger(input: &str) -> Result<Journal, Box<dyn std::error::E
     .parse(input)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // Frontend impl
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 
 /// The ledger-cli file-format frontend.
 ///
@@ -333,7 +333,7 @@ fn parse_define_directive(pair: Pair<Rule>) -> Directive {
     let body = match inner.as_rule() {
         Rule::bool_expr => {
             let bool_expr = parse_bool_expr(inner);
-            // Unwrap a trivial bool_expr (no comparison, no chain) → Value.
+            // Unwrap a trivial bool_expr (no comparison, no chain) -> Value.
             if bool_expr.cmp.is_none() && bool_expr.chain.is_none() {
                 DefineBody::Value(bool_expr.lhs)
             } else {
@@ -383,7 +383,7 @@ fn parse_tag_directive(pair: Pair<Rule>) -> Directive {
     for p in inner {
         match p.as_rule() {
             Rule::note => {
-                // Header-level note on the tag directive line — discarded.
+                // Header-level note on the tag directive line -- discarded.
             }
             Rule::tag_assert => {
                 let expr = parse_bool_expr(p.into_inner().next().unwrap());
@@ -436,7 +436,7 @@ fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
 /// ```
 ///
 /// The commodity symbol is extracted from the value expression. If the expression
-/// carries no commodity (e.g. `D 1000.00` — a bare number), an error is returned
+/// carries no commodity (e.g. `D 1000.00` -- a bare number), an error is returned
 /// because there is no symbol to register as the default.
 fn parse_default_directive(pair: Pair<Rule>) -> Result<Directive, Box<dyn std::error::Error>> {
     // The single inner child of `default_directive` is the `value_expr`.
@@ -445,7 +445,7 @@ fn parse_default_directive(pair: Pair<Rule>) -> Result<Directive, Box<dyn std::e
         .next()
         .expect("default_directive must contain a value_expr");
 
-    // Capture the raw source text *before* consuming the pair — this becomes the
+    // Capture the raw source text *before* consuming the pair -- this becomes the
     // format string. Trim trailing whitespace and newline.
     let format_str = value_expr_pair.as_str().trim().to_string();
 
@@ -681,7 +681,7 @@ fn parse_posting(pair: Pair<Rule>) -> Result<Posting, Box<dyn std::error::Error>
                 match inner_pair.as_rule() {
                     Rule::virtual_unbalanced_account => {
                         kind = PostingKind::VirtualUnbalanced;
-                        // Inner child is virtual_account_inner — the bare account name.
+                        // Inner child is virtual_account_inner -- the bare account name.
                         account = inner_pair
                             .into_inner()
                             .next()
@@ -814,7 +814,7 @@ fn parse_lot_annotation_into(
                         .into(),
                 );
             }
-            // lot_cost inner: value_expr — per-unit cost.
+            // lot_cost inner: value_expr -- per-unit cost.
             let expr_pair = child.into_inner().next().unwrap();
             acc.cost = Some(parse_expr(expr_pair));
         }
@@ -872,7 +872,7 @@ static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
 /// parser handles the `expr` part (operator precedence), and then we check
 /// for a trailing commodity annotation *after* Pratt parsing completes.
 /// This two-step approach is necessary because the trailing commodity is
-/// outside the `expr` rule and therefore invisible to the Pratt parser —
+/// outside the `expr` rule and therefore invisible to the Pratt parser --
 /// it needs to be lifted into a `ValueExpr::Typed` wrapper here.
 pub(crate) fn parse_expr(pair: Pair<Rule>) -> ValueExpr {
     let mut inner = pair.into_inner();
@@ -922,7 +922,7 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
                 let mut inner = pair.into_inner();
                 let first = inner.next().unwrap();
                 match first.as_rule() {
-                    // Prefix-commodity form: "$100" — commodity comes first
+                    // Prefix-commodity form: "$100" -- commodity comes first
                     Rule::commodity => {
                         let comm = first.as_str().to_string();
                         let val_str = inner.next().unwrap().as_str();
@@ -947,7 +947,7 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
             Rule::function_call => {
                 let mut inner = pair.into_inner();
                 let name = inner.next().unwrap().as_str().to_string();
-                // Each argument is a full `expr` — recurse via run_pratt so
+                // Each argument is a full `expr` -- recurse via run_pratt so
                 // arithmetic inside function arguments is also parsed correctly.
                 let args = inner.map(|p| run_pratt(p.into_inner())).collect();
                 ValueExpr::Function { name, args }
@@ -1203,9 +1203,9 @@ mod tests {
         assert_eq!(clean_parse_decimal(pairs.as_str()), dec!(1234.56));
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Lot annotation grammar tests
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     #[test]
     fn test_lot_annotation_cost_only() {
@@ -1508,7 +1508,7 @@ mod directed_tests {
     #[test]
     fn test_date_parsing_day_differs_from_month() {
         // Regression test for a parse_date bug where day was not read from the
-        // third token — both month and date were set to the same monthdate pair.
+        // third token -- both month and date were set to the same monthdate pair.
         let input = "P 2024-03-17 AAPL $100\n";
         let journal = parse_ledger(input).unwrap();
         let Entry::HistoricalPrice(ref hp) = journal.entries[0] else {
@@ -1570,10 +1570,10 @@ account Assets:Savings
         let AccountItem::Assert(bool_expr) = assert_item else {
             unreachable!()
         };
-        // The chain must be present — if it's None, the grammar still drops `and`.
+        // The chain must be present -- if it's None, the grammar still drops `and`.
         assert!(
             bool_expr.chain.is_some(),
-            "bool_expr.chain should be Some(And, ...), got None — grammar fix may not be applied"
+            "bool_expr.chain should be Some(And, ...), got None -- grammar fix may not be applied"
         );
         assert!(
             matches!(bool_expr.chain.as_ref().unwrap().0, BoolOp::And),
@@ -1596,7 +1596,7 @@ account Assets:Savings
         else {
             unreachable!()
         };
-        // The lhs of the outer bool_expr is a Group — the paren bool.
+        // The lhs of the outer bool_expr is a Group -- the paren bool.
         assert!(
             matches!(expr.lhs, ValueExpr::Group(_)),
             "expected ValueExpr::Group, got {:?}",
@@ -1662,7 +1662,7 @@ account Assets:Savings
         };
         assert_eq!(name, "inRange");
         assert_eq!(params, &["x"]);
-        // The body may be Value(Group(...)) or Bool(...) — either carries the
+        // The body may be Value(Group(...)) or Bool(...) -- either carries the
         // boolean logic correctly. Just verify it parsed without error and that
         // a Group is present somewhere in the body.
         match body {
@@ -1674,7 +1674,7 @@ account Assets:Savings
 
     #[test]
     fn d_directive_rejects_bare_number() {
-        // `D 1000.00` carries no commodity — the parser must reject it with a
+        // `D 1000.00` carries no commodity -- the parser must reject it with a
         // message that mentions "commodity" so the user knows what is missing.
         let err = parse_ledger("D 1000.00\n").unwrap_err();
         assert!(

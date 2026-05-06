@@ -63,7 +63,7 @@
 // handling: `sint64` uses ZigZag encoding for the high half so that small
 // negative numbers stay compact on the wire, but consumers see a normal
 // signed 64-bit value after decoding. `uint64` for the low half is intentional
-// — it carries the lower bits of the two's-complement representation, not a
+// -- it carries the lower bits of the two's-complement representation, not a
 // magnitude. This is why the language recipes mask `mantissaLow` defensively
 // rather than treating it as signed.
 //
@@ -73,7 +73,7 @@
 //
 // Exchange rates are stored verbatim in `Journal.prices` as `HistoricalPrice`
 // entries. Consumers compute a rate from `from_commodity` to `to_commodity`
-// as of a given date with the algorithm below — direct + inverse only, no
+// as of a given date with the algorithm below -- direct + inverse only, no
 // chaining through intermediate commodities. This is doppio's normative
 // contract; consumers in any language MUST implement it identically when
 // returning a "default" rate for cross-language parity. (Consumers MAY
@@ -184,7 +184,7 @@
 //
 // 3. **Header-version bumps are rare.** The 8-byte `.dop` header carries a
 //    u16 format version (currently 3). It bumps ONLY when a change is
-//    breaking for old readers — e.g. changing an existing field's wire
+//    breaking for old readers -- e.g. changing an existing field's wire
 //    encoding, repurposing a tag, or adding a new compression byte. Adding
 //    new optional fields, message types, or enum variants does NOT bump
 //    the version (old readers ignore unknowns).
@@ -222,28 +222,28 @@ enum TransactionState {
 // Ledger-cli supports two virtual-posting markers that change balance-rule
 // semantics:
 //
-//   Real (default)            — normal posting; participates in balance check.
-//   VirtualUnbalanced  `(A)` — excluded from the transaction balance check.
+//   Real (default)            -- normal posting; participates in balance check.
+//   VirtualUnbalanced  `(A)` -- excluded from the transaction balance check.
 //                               Reports include it by default; omit with --real.
-//   VirtualBalanced    `[A]` — included in the balance check but flagged so
+//   VirtualBalanced    `[A]` -- included in the balance check but flagged so
 //                               reports can include/exclude via --real.
 //
 // Proto3 evolution note: the default zero value (UNSPECIFIED) is intentionally
 // treated as REAL by all consumers, so older `.dop` files that pre-date this
-// field continue to behave as if every posting is REAL on read — no format-
+// field continue to behave as if every posting is REAL on read -- no format-
 // version bump required.
 enum PostingKind {
   POSTING_KIND_UNSPECIFIED = 0;        // Treated as REAL by all consumers.
   POSTING_KIND_REAL = 1;
-  POSTING_KIND_VIRTUAL_UNBALANCED = 2; // `(Account)` — excluded from balance.
-  POSTING_KIND_VIRTUAL_BALANCED = 3;   // `[Account]` — included in balance, flagged.
+  POSTING_KIND_VIRTUAL_UNBALANCED = 2; // `(Account)` -- excluded from balance.
+  POSTING_KIND_VIRTUAL_BALANCED = 3;   // `[Account]` -- included in balance, flagged.
 }
 
 // A multi-commodity balance: commodity symbol -> Decimal value.
 //
 // Iteration-order note: `by_commodity` is a protobuf `map<string, Decimal>`.
 // The protobuf specification explicitly does not guarantee map field
-// ordering — bindings in language X may iterate this map in any order. The
+// ordering -- bindings in language X may iterate this map in any order. The
 // same applies to `Posting.metadata`, `Transaction.metadata`,
 // `Journal.accounts`, and `Journal.commodities`.
 //
@@ -288,10 +288,10 @@ message Lot {
 // A posting with a fully evaluated, concrete amount.
 message Posting {
   // The canonical account name (after alias resolution). For virtual postings
-  // the surrounding markers (`(` `)` or `[` `]`) are stripped — only the bare
+  // the surrounding markers (`(` `)` or `[` `]`) are stripped -- only the bare
   // account name is stored here; the marker semantics live in `kind`.
   string account = 1;
-  // Payee for this posting — taken from posting-level `payee:` metadata if
+  // Payee for this posting -- taken from posting-level `payee:` metadata if
   // present, otherwise inherited from the transaction description.
   string payee = 2;
   // The posting amount, keyed by commodity.
@@ -333,7 +333,7 @@ message Transaction {
 // Properties of an account declared with an `account` directive.
 //
 // Note: `assert` / `check` expressions declared on accounts are evaluated
-// during elaboration and are not persisted — they are a compile-time check,
+// during elaboration and are not persisted -- they are a compile-time check,
 // not runtime data.
 //
 // Metadata is extracted from `; key: value` notes on the account
@@ -347,7 +347,7 @@ message Transaction {
 // makes `Journal.accounts["Income:Salary"].metadata["type"] = "R"` even
 // when `Income:Salary` itself has no directive.
 //
-// The schema deliberately stays generic — meaning is up to the
+// The schema deliberately stays generic -- meaning is up to the
 // consumer. `type:` is the only key carried by convention (see
 // hledger's account-type tag) but no other key is reserved.
 message AccountProperties {

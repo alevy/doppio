@@ -31,7 +31,7 @@ impl elaboration::Amount {
     /// `by_commodity` field is a `BTreeMap` (configured via prost's
     /// `btree_map` build option in `build.rs`), so iteration is
     /// deterministic and sorted. Note that this guarantee is specific to
-    /// doppio's Rust binding — bindings in other languages may iterate
+    /// doppio's Rust binding -- bindings in other languages may iterate
     /// protobuf maps in unspecified order per the protobuf spec.
     pub fn iter(&self) -> impl Iterator<Item = (&str, rust_decimal::Decimal)> + '_ {
         self.by_commodity
@@ -55,7 +55,7 @@ impl elaboration::Posting {
     /// variant) are mapped to `Real` via the `unwrap_or` fallback, preserving
     /// forward-compatibility. `UNSPECIFIED` (wire value 0, field absent in
     /// older `.dop` files) passes through as `PostingKind::Unspecified` and is
-    /// treated as real by [`Self::is_real`] — so pre-#140 archives that don't
+    /// treated as real by [`Self::is_real`] -- so pre-#140 archives that don't
     /// carry this field are read as all-real without a format version bump.
     pub fn posting_kind(&self) -> elaboration::PostingKind {
         elaboration::PostingKind::try_from(self.kind).unwrap_or(elaboration::PostingKind::Real)
@@ -65,7 +65,7 @@ impl elaboration::Posting {
     ///
     /// Both `POSTING_KIND_UNSPECIFIED` and `POSTING_KIND_REAL` are treated as
     /// real. Older `.dop` files that don't carry the `kind` field (field value
-    /// = 0 = UNSPECIFIED) are therefore treated as all-real on read — no format
+    /// = 0 = UNSPECIFIED) are therefore treated as all-real on read -- no format
     /// version bump required.
     pub fn is_real(&self) -> bool {
         matches!(
@@ -79,7 +79,7 @@ impl elaboration::Posting {
     ///
     /// `elaboration::Posting.amount` is `Option<Amount>` because proto3 wraps
     /// every nested message in `Option`, but in practice doppio's elaboration
-    /// stage always populates `amount: Some(_)` — null postings are filled
+    /// stage always populates `amount: Some(_)` -- null postings are filled
     /// in during balancing rather than left as `None`. This accessor papers
     /// over the proto3 quirk so consumers don't need to thread `Option`
     /// through every call site, while still being defensive: a malformed
@@ -99,7 +99,7 @@ impl elaboration::Posting {
     ///
     /// Yields nothing if `self.amount` is `None` or the amount's
     /// `by_commodity` map is empty. Pairs are yielded in commodity-symbol
-    /// order — see [`elaboration::Amount::iter`] for the iteration-order
+    /// order -- see [`elaboration::Amount::iter`] for the iteration-order
     /// guarantee.
     pub fn amounts(&self) -> impl Iterator<Item = (&str, rust_decimal::Decimal)> + '_ {
         self.amount.iter().flat_map(|a| {
@@ -177,18 +177,18 @@ impl elaboration::Journal {
     /// Return the conversion rate from `from_commodity` to `to_commodity` as
     /// of `as_of` (or the latest available if `as_of` is `None`).
     ///
-    /// **Direct + inverse only — no chaining through intermediate
+    /// **Direct + inverse only -- no chaining through intermediate
     /// commodities.** Scans `self.prices` for entries that directly relate
     /// the requested pair, in either direction. The most-recent eligible
     /// quote (date ≤ `as_of`, in either direction) wins. If the winning
-    /// quote was declared as the inverse pair (`to → from`), the returned
+    /// quote was declared as the inverse pair (`to -> from`), the returned
     /// rate is `1 / quoted`.
     ///
     /// This is a deliberate design choice; see `docs/exchange-rates.md`
     /// for rationale and comparison with hledger (chains with a depth
     /// limit) and Beancount (also refuses to chain). The short version:
-    /// each chain hop accumulates uncertainty — different vendor, different
-    /// time of day, different bid-ask spread — and silently fabricating
+    /// each chain hop accumulates uncertainty -- different vendor, different
+    /// time of day, different bid-ask spread -- and silently fabricating
     /// rates from chains hides missing P directives that the user should
     /// see and fill in.
     ///
@@ -228,7 +228,7 @@ impl elaboration::Journal {
             .filter(|(_, _, raw)| !raw.is_zero())
             // Apply inversion when the entry was matched in reverse direction.
             .map(|(date, direct, raw)| (date, if direct { raw } else { Decimal::ONE / raw }))
-            // Latest by date wins. Ties resolve in source order — `max_by_key`
+            // Latest by date wins. Ties resolve in source order -- `max_by_key`
             // returns the last equal element, matching "more-recently-declared".
             .max_by_key(|(date, _)| *date)
             .map(|(_, rate)| rate)
@@ -266,23 +266,23 @@ mod tests {
         }
     }
 
-    /// `elaboration::Decimal` for 7.58 — mantissa 758, scale 2.
+    /// `elaboration::Decimal` for 7.58 -- mantissa 758, scale 2.
     fn dec_7_58() -> elaboration::Decimal {
         make_decimal(0, 758, 2)
     }
 
-    /// `elaboration::Decimal` for 1.23 — mantissa 123, scale 2.
+    /// `elaboration::Decimal` for 1.23 -- mantissa 123, scale 2.
     fn dec_1_23() -> elaboration::Decimal {
         make_decimal(0, 123, 2)
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Decimal::to_decimal
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     #[test]
     fn to_decimal_positive() {
-        // $7.58 → mantissa 758, scale 2
+        // $7.58 -> mantissa 758, scale 2
         let d = make_decimal(0, 758, 2);
         let expected = Decimal::new(758, 2);
         assert_eq!(d.to_decimal(), expected);
@@ -314,9 +314,9 @@ mod tests {
         assert_eq!(d.to_decimal(), decimal_from_proto(&d));
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Decimal: Display
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     /// The Display contract: `format!("{}", proto_decimal)` must produce
     /// exactly the same string as `format!("{}", rust_decimal::Decimal)` for
@@ -358,9 +358,9 @@ mod tests {
         }
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Amount::iter
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     #[test]
     fn amount_iter_empty_map_yields_nothing() {
@@ -398,9 +398,9 @@ mod tests {
         assert_eq!(pairs[1], ("USD", Decimal::new(758, 2)));
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Amount::get
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     #[test]
     fn amount_get_hit_returns_decimal() {
@@ -418,9 +418,9 @@ mod tests {
         assert_eq!(amount.get("EUR"), None);
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Posting::amounts
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     #[test]
     fn posting_amounts_none_amount_yields_nothing() {
@@ -479,9 +479,9 @@ mod tests {
         assert_eq!(pairs[1], ("USD", Decimal::new(758, 2)));
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Posting::amount_in
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     #[test]
     fn posting_amount_in_none_amount_returns_none() {
@@ -517,10 +517,10 @@ mod tests {
         assert_eq!(posting.amount_in("USD"), Some(Decimal::new(758, 2)));
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Transaction::date_naive / secondary_date_naive
     // HistoricalPrice::date_naive
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     use chrono::NaiveDate;
 
@@ -601,9 +601,9 @@ mod tests {
         );
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Posting::is_real / Posting::posting_kind
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     #[test]
     fn is_real_kind_zero_unspecified_treated_as_real() {
@@ -692,9 +692,9 @@ mod tests {
         assert!(p.is_real(), "unknown wire values must be treated as real");
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Lot accessor unit tests
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     fn posting_with_lot(lot: elaboration::Lot) -> elaboration::Posting {
         elaboration::Posting {
@@ -807,9 +807,9 @@ mod tests {
         assert_eq!(posting.lot_note(), Some("BUY-2024-01"));
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Journal::exchange_rate_at
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
 
     /// Build a minimal `HistoricalPrice` proto entry.
     fn make_price(
@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(
             j.exchange_rate_at("USD", "USD", None),
             Some(Decimal::ONE),
-            "same commodity → rate 1"
+            "same commodity -> rate 1"
         );
     }
 
@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn exchange_rate_at_inverse_quote() {
-        // Only USD→EUR declared; querying EUR→USD should give 1/rate.
+        // Only USD->EUR declared; querying EUR->USD should give 1/rate.
         let j = journal_with_prices(vec![make_price(
             2024,
             1,
@@ -889,8 +889,8 @@ mod tests {
 
     #[test]
     fn exchange_rate_at_chained_path_not_traversed() {
-        // EUR→GBP and GBP→USD declared, but there is no direct or inverse
-        // EUR↔USD quote. Doppio's contract is direct + inverse only — it
+        // EUR->GBP and GBP->USD declared, but there is no direct or inverse
+        // EUR<->USD quote. Doppio's contract is direct + inverse only -- it
         // refuses to chain through intermediates. See docs/exchange-rates.md
         // for rationale; aligns with Beancount's "non-transitive" choice.
         let j = journal_with_prices(vec![
@@ -906,7 +906,7 @@ mod tests {
 
     #[test]
     fn exchange_rate_at_no_quote_returns_none() {
-        // Only EUR→GBP exists; nothing relates EUR and USD in either direction.
+        // Only EUR->GBP exists; nothing relates EUR and USD in either direction.
         let j = journal_with_prices(vec![make_price(
             2024,
             1,
@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn exchange_rate_at_as_of_filtering_excludes_future_quote() {
-        // Quote dated 2024-01-01; as_of is 2023-12-31 — should not be visible.
+        // Quote dated 2024-01-01; as_of is 2023-12-31 -- should not be visible.
         let j = journal_with_prices(vec![make_price(
             2024,
             1,
@@ -964,12 +964,12 @@ mod tests {
 
     #[test]
     fn exchange_rate_at_cross_directional_quote_collision_most_recent_wins() {
-        // P 2024-01-01 A B 1.0   → explicit A→B at 1.0, derived B→A at 1.0
-        // P 2024-06-01 B A 0.8   → explicit B→A at 0.8 (newer), derived A→B at 1/0.8 = 1.25
+        // P 2024-01-01 A B 1.0   -> explicit A->B at 1.0, derived B->A at 1.0
+        // P 2024-06-01 B A 0.8   -> explicit B->A at 0.8 (newer), derived A->B at 1/0.8 = 1.25
         //
-        // The more recent B→A quote (0.8) beats the older explicit A→B quote
+        // The more recent B->A quote (0.8) beats the older explicit A->B quote
         // (1.0) because both the explicit and derived (inverse) edges compete
-        // on the same (A→B / B→A) adjacency slots and the most-recent-date
+        // on the same (A->B / B->A) adjacency slots and the most-recent-date
         // rule applies uniformly.  exchange_rate_at("A","B",None) should therefore
         // return 1/0.8 = 1.25, not 1.0.
         let j = journal_with_prices(vec![
@@ -979,7 +979,7 @@ mod tests {
         let expected = Decimal::ONE / "0.8".parse::<Decimal>().unwrap();
         let rate = j
             .exchange_rate_at("A", "B", None)
-            .expect("path exists via inverse of B→A");
+            .expect("path exists via inverse of B->A");
         assert_eq!(rate, expected);
     }
 }

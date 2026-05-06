@@ -42,7 +42,7 @@ onMounted(() => {
             target="_blank"
             rel="noopener"
           >a fictional sample journal</a>
-          via a JS-native protobuf decoder — no Rust or WASM at runtime.
+          via a JS-native protobuf decoder -- no Rust or WASM at runtime.
         </p>
       </div>
       <div v-if="summary" class="hero-meta">

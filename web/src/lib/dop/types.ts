@@ -1,8 +1,8 @@
 // Public TS shape of an elaborated journal. Mirrors the Rust
 // `doppio::elaboration::Journal` structure, with the only substitutions:
-//   - protobuf Decimal     → decimal.js Decimal
-//   - epoch-days sint32    → LocalDate
-//   - protobuf maps        → Record<string, T>  (already what Buf emits)
+//   - protobuf Decimal     -> decimal.js Decimal
+//   - epoch-days sint32    -> LocalDate
+//   - protobuf maps        -> Record<string, T>  (already what Buf emits)
 // Field names follow camelCase per TypeScript convention; the wire is
 // lower_snake_case but Buf's TS plugin already converts it for us.
 //

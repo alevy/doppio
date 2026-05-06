@@ -2,14 +2,14 @@
 //!
 //! These tests exercise the public [`doppio::write_dop`] /
 //! [`doppio::read_dop`] API: header parsing, error paths for bad
-//! magic / empty file / wrong version, and the full compile → load
+//! magic / empty file / wrong version, and the full compile -> load
 //! round-trip.
 
 use std::{io::Write as _, path::Path};
 
 use tempfile::NamedTempFile;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// -- helpers ------------------------------------------------------------------
 
 /// Compile a small ledger source string into a temp `.dop` file (deflate
 /// compressed) and return the file handle (positioned at offset 0).
@@ -49,9 +49,9 @@ fn load_dop(path: &Path) -> doppio::Journal {
     doppio::read_dop(&mut f, path).expect("read_dop")
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
+// -- tests --------------------------------------------------------------------─
 
-/// A full compile → load round-trip using deflate compression: the deserialized
+/// A full compile -> load round-trip using deflate compression: the deserialized
 /// journal should contain the same transactions as the original source.
 #[test]
 fn round_trip_compile_and_load() {

@@ -42,7 +42,7 @@ describe("incomeExpenseByMonth", () => {
   it("aggregates expenses per month against ledger-cli-equivalent totals", () => {
     const buckets = incomeExpenseByMonth(journal, null, null);
     // Total expenses across all six months sums to the journal's grand
-    // expense total — cross-checks against dop balance Expenses output.
+    // expense total -- cross-checks against dop balance Expenses output.
     const total = buckets.reduce((acc, b) => acc.plus(b.expense), new Decimal(0));
     // Sample journal aggregate expenses (USD only): rent 6×1800 + groceries
     // 474.57 + restaurants 153.35 + utilities 434 + transit 528 + travel

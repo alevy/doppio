@@ -1,12 +1,12 @@
 # doppio
 
-**A typed compiler pipeline and CLI for [Ledger](https://ledger-cli.org/) plain-text accounting — built to be embedded.**
+**A typed compiler pipeline and CLI for [Ledger](https://ledger-cli.org/) plain-text accounting -- built to be embedded.**
 
-doppio parses `.ledger` files through a four-stage compiler (parse → resolution → elaboration → binary serialization), enforces double-entry balance and balance assertions, and exposes every stage as a first-class Rust library API. Use the `dop` CLI to query your journals directly, or embed the library to build importers, reporting tools, and accounting applications on a correct, type-safe foundation.
+doppio parses `.ledger` files through a four-stage compiler (parse -> resolution -> elaboration -> binary serialization), enforces double-entry balance and balance assertions, and exposes every stage as a first-class Rust library API. Use the `dop` CLI to query your journals directly, or embed the library to build importers, reporting tools, and accounting applications on a correct, type-safe foundation.
 
 ## Why doppio?
 
-Most Ledger tooling treats the format as a parsing problem. doppio treats it as a compilation problem: source text goes in, a fully elaborated, validated journal comes out — along with a compact binary (`.dop`) for fast repeated queries without re-parsing.
+Most Ledger tooling treats the format as a parsing problem. doppio treats it as a compilation problem: source text goes in, a fully elaborated, validated journal comes out -- along with a compact binary (`.dop`) for fast repeated queries without re-parsing.
 
 **For library users:** Construct transactions programmatically with a fluent builder API, run them through elaboration to validate balance, and serialize back to Ledger source text or the binary format. The library exposes the full pipeline at each stage (`ast`, `resolution`, `elaboration`) so you work at the right level of abstraction.
 
@@ -52,7 +52,7 @@ for txn in &journal.transactions {
 
 ## CLI reference
 
-### `compile` — pre-process a journal file
+### `compile` -- pre-process a journal file
 
 ```
 dop compile --output my-journal.dop my-journal.ledger
@@ -60,7 +60,7 @@ dop compile --output my-journal.dop my-journal.ledger
 
 Parses the source file, runs it through the full compilation pipeline, and writes the result as a postcard-serialized, XZ-compressed `.dop` file. Use this for large journals to avoid re-parsing on every query.
 
-### `balance` — account balances
+### `balance` -- account balances
 
 ```
 dop balance my-journal.ledger
@@ -70,7 +70,7 @@ dop balance my-journal.dop --pattern "^Expenses" --format json
 
 Prints account balances grouped by commodity. Flags: `--depth N` (truncate hierarchy), `--flat` (single-line output), `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--tag KEY` (transactions tagged with `KEY`), `--pattern REGEX` (filter accounts), `--format text|json|csv`.
 
-### `register` — posting register
+### `register` -- posting register
 
 ```
 dop register my-journal.ledger
@@ -79,15 +79,15 @@ dop register my-journal.dop Expenses --format csv
 
 Lists individual postings with running totals per commodity, optionally filtered to accounts matching a regex pattern. Flags: `--begin`/`--end` (date range), `--cleared`, `--tag KEY`, `--format text|json|csv`.
 
-### `print` — re-emit canonical Ledger source
+### `print` -- re-emit canonical Ledger source
 
 ```
 dop print my-journal.ledger
 ```
 
-Parses and re-emits the journal in canonical Ledger source format — useful for normalizing formatting or verifying round-trip fidelity.
+Parses and re-emits the journal in canonical Ledger source format -- useful for normalizing formatting or verifying round-trip fidelity.
 
-### `stats` — journal summary
+### `stats` -- journal summary
 
 ```
 dop stats my-journal.ledger
@@ -95,7 +95,7 @@ dop stats my-journal.ledger
 
 Prints transaction count, account count, commodity count, and date range.
 
-### `accounts` — list account names
+### `accounts` -- list account names
 
 ```
 dop accounts my-journal.ledger
@@ -109,8 +109,8 @@ The library exposes four modules corresponding to the pipeline stages, plus top-
 
 | Function | Description |
 |---|---|
-| `compile(source, parser)` | Full pipeline: source text → elaborated `Journal` |
-| `eval_transaction(txn, ctx)` | Elaborate a single `resolution::Transaction` — validate balance, infer null posting, apply aliases |
+| `compile(source, parser)` | Full pipeline: source text -> elaborated `Journal` |
+| `eval_transaction(txn, ctx)` | Elaborate a single `resolution::Transaction` -- validate balance, infer null posting, apply aliases |
 | `write_ledger(txns, writer)` | Serialize `resolution::Transaction` values to canonical Ledger source text |
 | `dop_write_header` / `dop_read_header` | Portable `.dop` header I/O with clear version-mismatch errors |
 
@@ -148,7 +148,7 @@ The hledger frontend parses the same core constructs as the ledger-cli frontend
 prices, account/commodity directives, include) and adds hledger-specific
 extensions (`/` and `.` date separators, `#` comment lines). Automated posting
 rule arithmetic bodies (`*N` multipliers) are stubbed out and produce a parse
-error if encountered — see issue #103.
+error if encountered -- see issue #103.
 
 ## Supported Ledger features
 
@@ -159,10 +159,10 @@ At a glance:
 | Category | Status |
 |---|---|
 | Transactions, postings, balance assertions/assignments | Supported |
-| Directives — `include` (incl. globs), `account`, `commodity`, `alias`, `define` (with parameters), `tag` (with `assert`/`check`), `P` historical price | Supported |
-| Expressions — arithmetic, comparisons, regex `=~`/`!~`, `tag()`, parameterised function calls | Supported |
-| CLI — `compile`, `balance`, `register`, `print`, `stats`, `accounts`, `commodities`; text / JSON / CSV output | Supported |
-| Library API — `compile`, `eval_transaction`, `write_ledger`, `.dop` binary format | Supported |
+| Directives -- `include` (incl. globs), `account`, `commodity`, `alias`, `define` (with parameters), `tag` (with `assert`/`check`), `P` historical price | Supported |
+| Expressions -- arithmetic, comparisons, regex `=~`/`!~`, `tag()`, parameterised function calls | Supported |
+| CLI -- `compile`, `balance`, `register`, `print`, `stats`, `accounts`, `commodities`; text / JSON / CSV output | Supported |
+| Library API -- `compile`, `eval_transaction`, `write_ledger`, `.dop` binary format | Supported |
 | hledger input format (`.hledger`, `.journal`) | Supported (v0.3.0, issue #103) |
 | Budgets (`~`), automated transactions (`= payee expr`), Lisp-style scripting | Not supported |
 
@@ -203,7 +203,7 @@ doppio processes source text through four sequential stages:
 
 **Resolution** (`crates/doppio/src/resolution.rs`): Converts `ast::Journal` to a Higher-level Intermediate Representation (`HIR`). Dates are resolved to `NaiveDate` (a full year is required). Commodity and account aliases are accumulated into a versioned `Context` stack so each transaction sees the aliases that were in effect when it was defined. Structured metadata and tags are extracted from freeform notes.
 
-**Elaboration** (`crates/doppio/src/elaboration.rs`): Converts `HIR` to the final `elaboration::Journal`. `ValueExpr` trees are evaluated to `(Decimal, commodity)` pairs, commodity aliases are applied, and each transaction is balanced — if exactly one posting has no explicit amount, its value is inferred as the negation of the sum of the rest. Balance assertions (`= amount`) and balance assignments (`=amount`) are checked or applied at this stage.
+**Elaboration** (`crates/doppio/src/elaboration.rs`): Converts `HIR` to the final `elaboration::Journal`. `ValueExpr` trees are evaluated to `(Decimal, commodity)` pairs, commodity aliases are applied, and each transaction is balanced -- if exactly one posting has no explicit amount, its value is inferred as the negation of the sum of the rest. Balance assertions (`= amount`) and balance assignments (`=amount`) are checked or applied at this stage.
 
 **Serialization**: The `Journal` implements `serde::Serialize`/`Deserialize`. The `compile` command writes it through [postcard](https://github.com/jamesmunns/postcard) into an XZ-compressed stream; the `balance` and `register` commands decompress and deserialize it in the reverse direction.
 
@@ -217,7 +217,7 @@ The resulting binary is `target/release/dop`.
 
 ## Web demo
 
-A small browser app under [`web/`](./web/) renders balance, register, and chart views over a `.dop` file using a JS-native protobuf decoder — no Rust or WASM at runtime. It serves as the working validator of doppio's format-as-API claim: any non-Rust language can read `.dop` files via the published [`proto/doppio.proto`](./proto/doppio.proto) schema.
+A small browser app under [`web/`](./web/) renders balance, register, and chart views over a `.dop` file using a JS-native protobuf decoder -- no Rust or WASM at runtime. It serves as the working validator of doppio's format-as-API claim: any non-Rust language can read `.dop` files via the published [`proto/doppio.proto`](./proto/doppio.proto) schema.
 
 Live preview: <https://alevy.github.io/doppio/> (deployed automatically from `main`).
 

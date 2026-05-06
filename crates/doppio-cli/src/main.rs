@@ -173,12 +173,12 @@ impl OutputFormat {
 }
 
 /// Load a [`doppio::elaboration::Journal`] from either a compiled `.dop` file or a
-/// raw source file, without performing the `proto::Journal → elaboration::Journal`
+/// raw source file, without performing the `proto::Journal -> elaboration::Journal`
 /// reverse conversion.
 ///
 /// The file type is detected by extension:
-/// - `.dop` — validate header, decompress (if needed), and decode protobuf directly.
-/// - anything else — select a [`doppio::Frontend`] via
+/// - `.dop` -- validate header, decompress (if needed), and decode protobuf directly.
+/// - anything else -- select a [`doppio::Frontend`] via
 ///   [`doppio::frontend_for_extension`], parse and elaborate, then convert the
 ///   resulting [`doppio::Journal`] to [`doppio::elaboration::Journal`] (the cheaper
 ///   forward direction).
@@ -611,7 +611,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Accounts { source, pattern } => {
             let journal = load_proto_journal(&source)?;
             let pattern = pattern.map(|p| p.to_lowercase()).unwrap_or_default();
-            // Sort account names — proto uses HashMap, so we must sort explicitly.
+            // Sort account names -- proto uses HashMap, so we must sort explicitly.
             let mut accounts: Vec<&String> = journal.accounts.keys().collect();
             accounts.sort();
             for account in accounts {
@@ -825,9 +825,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// format string cannot be parsed.
 ///
 /// Examples:
-/// - `"$1,000.00"` → prefix `$`, thousands `,`, decimal `.`, 2 places
-/// - `"1.000,00 EUR"` → suffix ` EUR`, thousands `.`, decimal `,`, 2 places
-/// - `"100 USD"` → suffix ` USD`, no thousands, no decimal
+/// - `"$1,000.00"` -> prefix `$`, thousands `,`, decimal `.`, 2 places
+/// - `"1.000,00 EUR"` -> suffix ` EUR`, thousands `.`, decimal `,`, 2 places
+/// - `"100 USD"` -> suffix ` USD`, no thousands, no decimal
 fn format_amount(commodity: &str, value: rust_decimal::Decimal, format: &str) -> String {
     // Determine prefix vs suffix by scanning for digit/sign characters.
     // Everything before the first digit/sign is the prefix; after the last
@@ -864,18 +864,18 @@ fn format_amount(commodity: &str, value: rust_decimal::Decimal, format: &str) ->
 /// Returns `(decimal_sep, thousand_sep, decimal_places)` by inspecting the
 /// example number in the format string.
 fn detect_separators(number: &str) -> (Option<char>, Option<char>, usize) {
-    // Find the last occurrence of '.' or ',' — that's the decimal separator.
+    // Find the last occurrence of '.' or ',' -- that's the decimal separator.
     let last_dot = number.rfind('.');
     let last_comma = number.rfind(',');
 
     let (decimal_sep, decimal_places) = match (last_dot, last_comma) {
         (Some(di), Some(ci)) if di > ci => {
-            // dot comes last → decimal separator is '.', thousands is ','
+            // dot comes last -> decimal separator is '.', thousands is ','
             let places = number.len() - di - 1;
             (Some('.'), places)
         }
         (Some(di), Some(ci)) if ci > di => {
-            // comma comes last → decimal separator is ',', thousands is '.'
+            // comma comes last -> decimal separator is ',', thousands is '.'
             let places = number.len() - ci - 1;
             (Some(','), places)
         }
@@ -891,7 +891,7 @@ fn detect_separators(number: &str) -> (Option<char>, Option<char>, usize) {
             }
         }
         (None, Some(ci)) => {
-            // Same logic for a lone ',': `1,000` → thousands sep.
+            // Same logic for a lone ',': `1,000` -> thousands sep.
             let trailing = number.len() - ci - 1;
             if trailing == 3 {
                 (None, 0)

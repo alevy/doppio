@@ -118,7 +118,7 @@ describe("readDop error paths", () => {
     // Keep the header valid (so we get past version + compression checks)
     // but corrupt the body so deflate fails to decode it.
     const buf = new Uint8Array(sampleBytes);
-    // Stomp every byte after the header with 0xFF — guaranteed-invalid
+    // Stomp every byte after the header with 0xFF -- guaranteed-invalid
     // raw deflate stream.
     for (let i = 8; i < buf.length; i++) buf[i] = 0xff;
     try {

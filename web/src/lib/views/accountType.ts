@@ -21,7 +21,7 @@ const TOP_LEVEL_TYPE: Record<string, AccountType> = {
 };
 
 // hledger uses one-letter codes (A/L/E/R/X) and full words; doppio
-// itself doesn't assign meaning to the value of `type:` — the
+// itself doesn't assign meaning to the value of `type:` -- the
 // dashboard interprets it. We accept the codes hledger documents plus
 // the spelled-out forms (case-insensitive) so a user reading the
 // hledger manual gets the result they expect.
@@ -48,7 +48,7 @@ function typeFromTag(value: string | undefined): AccountType | null {
 /**
  * Resolve an account's type from an explicit `; type:` tag on its
  * AccountProperties (or an ancestor's, since the compiler denormalises
- * the metadata) — falling back to the top-level-segment heuristic when
+ * the metadata) -- falling back to the top-level-segment heuristic when
  * no tag is present.
  *
  * Returns null when neither layer recognises the account, leaving the

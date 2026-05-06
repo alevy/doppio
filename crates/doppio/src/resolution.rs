@@ -3,16 +3,16 @@
 //!
 //! This stage performs three things:
 //!
-//! 1. **Date resolution** — partial dates (missing year) are rejected unless
+//! 1. **Date resolution** -- partial dates (missing year) are rejected unless
 //!    a fallback year is available. Dates are converted to [`chrono::NaiveDate`].
 //!
-//! 2. **Alias indexing** — `commodity` and `account` directives that introduce
+//! 2. **Alias indexing** -- `commodity` and `account` directives that introduce
 //!    aliases (or set a default commodity) are accumulated into a versioned
 //!    [`Context`] stack. Each transaction records which context was active when
 //!    it appeared in the source; the [`crate::elaboration`] stage uses this to
 //!    resolve aliases at evaluation time.
 //!
-//! 3. **Metadata extraction** — freeform note strings attached to transactions
+//! 3. **Metadata extraction** -- freeform note strings attached to transactions
 //!    and postings are parsed for structured data: `:tag:` syntax yields tags,
 //!    and `key: value` syntax yields metadata key-value pairs.
 //!
@@ -46,7 +46,7 @@ pub struct HIR {
     ///
     /// A new [`Context`] is pushed every time a directive changes the alias
     /// table or default commodity. Entries that preceded the change continue to
-    /// reference the earlier context by index — the contexts vector is
+    /// reference the earlier context by index -- the contexts vector is
     /// append-only so old indices remain valid.
     pub contexts: Vec<Context>,
     /// Global commodity and account properties that are not context-sensitive
@@ -89,7 +89,7 @@ impl Default for HIR {
 /// Contexts form an immutable history: when a directive changes the state a
 /// *new* `Context` is pushed rather than mutating the existing one. This means
 /// each transaction can reference the context that was active when it was
-/// defined — important because an alias that appears *after* a transaction
+/// defined -- important because an alias that appears *after* a transaction
 /// must not retroactively affect that transaction's interpretation.
 #[derive(Default, Debug, Clone)]
 pub struct Context {
@@ -160,7 +160,7 @@ pub struct AccountProperties {
     /// Non-fatal checks: if any fail, a warning is printed to stderr but
     /// elaboration continues.
     pub(crate) checks: Vec<ast::BoolExpr>,
-    /// Key-value metadata declared on this account directive only — not
+    /// Key-value metadata declared on this account directive only -- not
     /// yet inherited from ancestors. Sources include `; key: value`
     /// notes on the directive header and `key: value` sub-items inside
     /// the block. Elaboration denormalises by walking ancestors.
@@ -495,15 +495,15 @@ impl HIR {
             if let Some(note) = note.strip_prefix(":")
                 && let Some(note) = note.strip_suffix(":")
             {
-                // ":tag1:tag2:" — split on ":" to get individual tags
+                // ":tag1:tag2:" -- split on ":" to get individual tags
                 for tag in note.split(":") {
                     tags.push(tag.into());
                 }
             } else if let Some((key, value)) = note.split_once(":") {
-                // "key: value" — insert as metadata
+                // "key: value" -- insert as metadata
                 metadata.insert(key.trim().into(), value.trim().into());
             } else {
-                // Plain comment — preserve rather than discard
+                // Plain comment -- preserve rather than discard
                 comments.push(note.to_string());
             }
         }
@@ -573,7 +573,7 @@ impl TryFrom<ast::Journal> for HIR {
                                 global_context.note = Some(note);
                             }
                             // The `Note` arm above now handles all note values;
-                            // the `Unknown("note", …)` path is superseded.
+                            // the `Unknown("note", ...)` path is superseded.
                             ast::CommodityItem::Unknown(key, value) => {
                                 // Unrecognised commodity sub-key: skip with a
                                 // warning rather than panicking on user input.
@@ -595,7 +595,7 @@ impl TryFrom<ast::Journal> for HIR {
                     // Header-line and trailing `; key: value` notes contribute
                     // metadata via the same parser that handles transaction
                     // and posting notes. Bare `:tag1:tag2:` forms and free-
-                    // form comments on accounts are dropped — they have no
+                    // form comments on accounts are dropped -- they have no
                     // current consumer and the wire schema only carries
                     // metadata.
                     let (_tags, header_metadata, _comments) = Self::resolve_metadata(notes);

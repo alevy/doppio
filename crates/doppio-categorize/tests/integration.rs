@@ -108,7 +108,7 @@ fn single_payee_single_account_confidence_one() {
 
 #[test]
 fn two_payee_history_concentrates_on_dominant_counter() {
-    // 8 Starbucks → Coffee, 2 Local Coffee → Coffee. All on Visa.
+    // 8 Starbucks -> Coffee, 2 Local Coffee -> Coffee. All on Visa.
     // Querying with payee "Starbucks" should only see Starbucks samples;
     // sample_count=8, confidence=1.0 (single counter_account).
     let mut j = empty_journal();
@@ -147,8 +147,8 @@ fn two_payee_history_concentrates_on_dominant_counter() {
 
 #[test]
 fn pcc_amount_split_picks_correct_cluster() {
-    // Half the history: PCC $14 → Expenses:PreparedFoods (lunch from prepared bar)
-    // Half the history: PCC $200 → Expenses:Groceries
+    // Half the history: PCC $14 -> Expenses:PreparedFoods (lunch from prepared bar)
+    // Half the history: PCC $200 -> Expenses:Groceries
     let mut j = empty_journal();
     for day in 1..=8 {
         j.transactions.push(txn(
@@ -172,7 +172,7 @@ fn pcc_amount_split_picks_correct_cluster() {
     }
     let idx = Index::build(&j, DefaultNormalizer);
 
-    // Query at $14 → PreparedFoods rank 1
+    // Query at $14 -> PreparedFoods rank 1
     let q14 = Query {
         date: date(2024, 2, 1),
         payee: "PCC".into(),
@@ -188,7 +188,7 @@ fn pcc_amount_split_picks_correct_cluster() {
         s14
     );
 
-    // Query at $200 → Groceries rank 1
+    // Query at $200 -> Groceries rank 1
     let q200 = Query {
         date: date(2024, 2, 1),
         payee: "PCC".into(),
@@ -207,8 +207,8 @@ fn pcc_amount_split_picks_correct_cluster() {
 
 #[test]
 fn sign_filter_separates_charges_and_refunds() {
-    // 5 charges: Visa -7.58 → Expenses:Coffee
-    // 1 refund: Visa +7.58 → Income:Refunds
+    // 5 charges: Visa -7.58 -> Expenses:Coffee
+    // 1 refund: Visa +7.58 -> Income:Refunds
     let mut j = empty_journal();
     for day in 1..=5 {
         j.transactions.push(txn(
@@ -312,7 +312,7 @@ fn payee_normalization_collides_starbucks_variants() {
         ],
     ));
     let idx = Index::build(&j, DefaultNormalizer);
-    // Different store number, different formatting — same normalized payee.
+    // Different store number, different formatting -- same normalized payee.
     let q = Query {
         date: date(2024, 2, 1),
         payee: "Starbucks #5678 Seattle WA".into(),
@@ -371,7 +371,7 @@ fn use_amount_weighting_disabled_makes_clusters_equal() {
 #[test]
 fn token_idf_rescues_unseen_payee_variant() {
     // Training: Starbucks Seattle WA, multiple times.
-    // Query: Starbucks Portland OR — no exact normalized match.
+    // Query: Starbucks Portland OR -- no exact normalized match.
     // Default Hybrid strategy should fall back to token-IDF, which sees
     // the shared "starbucks" token (rare-ish, since the rest of the corpus
     // doesn't use it) and recovers the right counter.
@@ -400,7 +400,7 @@ fn token_idf_rescues_unseen_payee_variant() {
     }
     let idx = Index::build(&j, DefaultNormalizer);
 
-    // Variant query — "starbucks portland or" doesn't appear in training.
+    // Variant query -- "starbucks portland or" doesn't appear in training.
     let q = Query {
         date: date(2024, 2, 1),
         payee: "Starbucks Portland OR".into(),
@@ -427,9 +427,9 @@ fn token_idf_rescues_unseen_payee_variant() {
 #[test]
 fn token_idf_filters_high_df_tokens() {
     // Three distinct vendors:
-    //   - "MEGA RETAILER SEATTLE WA" (10x) → Shopping
-    //   - "RESTAURANT A SEATTLE WA"   (2x)  → Dining
-    //   - "GUSTO PAYROLL"             (5x)  → Wages (no Seattle)
+    //   - "MEGA RETAILER SEATTLE WA" (10x) -> Shopping
+    //   - "RESTAURANT A SEATTLE WA"   (2x)  -> Dining
+    //   - "GUSTO PAYROLL"             (5x)  -> Wages (no Seattle)
     //
     // Distinct normalized payees: 3. The token "seattle" appears in 2 of 3
     // (df=2), as does "wa" (df=2). The non-geographic tokens have df=1.
@@ -476,7 +476,7 @@ fn token_idf_filters_high_df_tokens() {
     };
 
     // df_threshold=2: filters "seattle" and "wa" (df=2 >= threshold).
-    // No other shared tokens → cold-start.
+    // No other shared tokens -- cold-start.
     let cfg_strict = Config {
         strategy: ScoringStrategy::TokenIdf { df_threshold: 2 },
         ..Config::default()

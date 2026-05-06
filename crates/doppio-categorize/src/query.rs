@@ -30,7 +30,7 @@ pub struct Suggestion {
     /// The suggested counter-account.
     pub account: String,
     /// `weighted_votes_for_account / total_weighted_votes`. Higher is better;
-    /// always in `[0.0, 1.0]`. Not a probability — purely relative ranking
+    /// always in `[0.0, 1.0]`. Not a probability -- purely relative ranking
     /// among the surviving candidates.
     pub confidence: f64,
     /// Unweighted count of historical samples backing this suggestion.
@@ -63,7 +63,7 @@ pub enum ScoringStrategy {
     TokenIdf { df_threshold: u32 },
     /// Try [`ScoringStrategy::ExactMatch`] first; if no candidates are
     /// found, fall back to [`ScoringStrategy::TokenIdf`]. This is the
-    /// recommended default — exact matches are still the strongest signal
+    /// recommended default -- exact matches are still the strongest signal
     /// when available, and IDF rescues the cold-start cases.
     Hybrid {
         /// Currently always `true`. Reserved for future extension.
@@ -107,7 +107,7 @@ impl Index {
     ///
     /// Algorithm:
     /// 1. Normalize the query's payee, look up the bucket for
-    ///    `query.known_account`. (No bucket → empty vec.)
+    ///    `query.known_account`. (No bucket -> empty vec.)
     /// 2. Use the configured [`ScoringStrategy`] to produce
     ///    `(sample_index, match_score)` candidates.
     /// 3. For each candidate, apply the sign filter (sample sign must match
@@ -319,9 +319,9 @@ mod tests {
         (index, bucket)
     }
 
-    // ──────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------
     // log_abs
-    // ──────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------
 
     #[test]
     fn log_abs_positive_matches_ln() {
@@ -344,9 +344,9 @@ mod tests {
         assert!(log_abs(Decimal::ZERO).is_none());
     }
 
-    // ──────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------
     // exact_match_candidates
-    // ──────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------
 
     #[test]
     fn exact_match_miss_returns_empty() {
@@ -368,9 +368,9 @@ mod tests {
         assert_eq!(cands, vec![(0, 1.0), (2, 1.0), (5, 1.0)]);
     }
 
-    // ──────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------
     // token_idf_candidates
-    // ──────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------
 
     #[test]
     fn token_idf_empty_query_returns_empty() {
@@ -456,9 +456,9 @@ mod tests {
         );
     }
 
-    // ──────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------
     // suggest end-to-end (rank_candidates aggregation)
-    // ──────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------
 
     fn install_bucket(index: &mut Index, key: &str, bucket: KnownAccountBucket) {
         index.by_known.insert(key.to_string(), bucket);
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn rank_orders_by_confidence_descending() {
-        // 3 samples → Expenses:Common, 1 sample → Expenses:Rare.
+        // 3 samples -> Expenses:Common, 1 sample -> Expenses:Rare.
         // Common should rank first.
         let mut by_payee = HashMap::new();
         by_payee.insert("acme".to_string(), vec![0usize, 1, 2, 3]);
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn amount_weighting_decays_with_log_distance() {
-        // Two samples for the same counter — one at $10, one at $1000.
+        // Two samples for the same counter -- one at $10, one at $1000.
         // Querying at $10 should give the $10 sample much more weight than
         // the $1000 sample, since |ln(10) - ln(1000)| = ln(100) ≈ 4.6.
         // With amount weighting on, sample_count is still 2 but the
@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(s_on[0].account, "Expenses:Match");
         let ratio = s_on[0].confidence / s_on[1].confidence;
         // 1.0 / (1.0 + 0) = 1.0 for the close sample, vs
-        // 1.0 / (1.0 + ln(100)) ≈ 0.179 for the far sample → ratio ≈ 5.6.
+        // 1.0 / (1.0 + ln(100)) ≈ 0.179 for the far sample -> ratio ≈ 5.6.
         assert!(
             ratio > 4.0,
             "amount weighting should heavily favor the close sample, ratio={ratio}"
@@ -696,7 +696,7 @@ mod tests {
         };
         // Sign of 0 is non-negative, so the sign filter excludes the
         // negative sample anyway. Use a positive-amount sample to isolate
-        // the log_abs(0) → 0-weight path.
+        // the log_abs(0) -> 0-weight path.
         let mut by_payee_pos = HashMap::new();
         by_payee_pos.insert("acme".to_string(), vec![0usize]);
         let bucket_pos = KnownAccountBucket {

@@ -26,10 +26,10 @@ import type {
 } from "./types.js";
 
 // 8-byte header layout, matching `dop_write_header` in the Rust crate:
-//   bytes 0..4  — magic "DOP\0"
-//   bytes 4..6  — format version, little-endian u16
-//   byte  6     — compression method (0 = none, 1 = deflate)
-//   byte  7     — reserved
+//   bytes 0..4  -- magic "DOP\0"
+//   bytes 4..6  -- format version, little-endian u16
+//   byte  6     -- compression method (0 = none, 1 = deflate)
+//   byte  7     -- reserved
 const MAGIC = Uint8Array.of(0x44, 0x4f, 0x50, 0x00); // "DOP\0"
 const SUPPORTED_VERSION = 3;
 const HEADER_LEN = 8;
