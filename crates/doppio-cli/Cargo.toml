@@ -1,6 +1,7 @@
 [package]
 name = "doppio-cli"
 description = "Command-line interface for the doppio Ledger compiler. Provides the `dop` binary."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

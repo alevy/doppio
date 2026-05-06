@@ -17,11 +17,14 @@ Most Ledger tooling treats the format as a parsing problem. doppio treats it as 
 **CLI:**
 
 ```sh
-cargo install doppio
+cargo install doppio-cli
 dop compile --output my-journal.dop my-journal.ledger
 dop balance my-journal.dop
 dop register my-journal.dop Expenses
 ```
+
+The `doppio-cli` crate ships the `dop` binary; `doppio` itself is the
+library.
 
 **Library:**
 
@@ -40,13 +43,13 @@ let resolved = doppio::eval_transaction(txn, &Context::default())?;
 
 // Or compile a full journal from source. The opener returns
 // Result<String, Box<dyn Error>> so it can surface I/O failures.
-let journal = doppio::compile(&source_text, doppio::parser::Parser {
+let journal = doppio::compile(&source_text, doppio::grammars::ledger::Parser {
     opener: doppio::file_opener, // built-in glob-aware opener
     base_path: std::path::PathBuf::from("."),
 })?;
 
 for txn in &journal.transactions {
-    println!("{}: {}", txn.date, txn.description);
+    println!("{}: {}", txn.date_naive(), txn.description);
 }
 ```
 
@@ -58,7 +61,7 @@ for txn in &journal.transactions {
 dop compile --output my-journal.dop my-journal.ledger
 ```
 
-Parses the source file, runs it through the full compilation pipeline, and writes the result as a postcard-serialized, XZ-compressed `.dop` file. Use this for large journals to avoid re-parsing on every query.
+Parses the source file, runs it through the full compilation pipeline, and writes the result as a Protocol Buffers payload, deflate-compressed by default. Use this for large journals to avoid re-parsing on every query. Pass `--no-compression` for raw protobuf.
 
 ### `balance` -- account balances
 
@@ -103,16 +106,24 @@ dop accounts my-journal.ledger
 
 Lists all account names found in the journal.
 
+### `commodities` -- list commodity symbols
+
+```
+dop commodities my-journal.ledger
+```
+
+Lists every commodity symbol used in the journal, sorted and deduplicated.
+
 ## Library API
 
-The library exposes four modules corresponding to the pipeline stages, plus top-level entry points:
+The library exposes the pipeline stages as modules, plus top-level entry points:
 
 | Function | Description |
 |---|---|
 | `compile(source, parser)` | Full pipeline: source text -> elaborated `Journal` |
 | `eval_transaction(txn, ctx)` | Elaborate a single `resolution::Transaction` -- validate balance, infer null posting, apply aliases |
 | `write_ledger(txns, writer)` | Serialize `resolution::Transaction` values to canonical Ledger source text |
-| `dop_write_header` / `dop_read_header` | Portable `.dop` header I/O with clear version-mismatch errors |
+| `write_dop` / `read_dop` | Round-trip an `elaboration::Journal` to/from a `.dop` file (8-byte header + optional deflate + protobuf) |
 
 The `resolution::Transaction` and `resolution::Posting` builder APIs are the intended construction layer for programmatic use:
 
@@ -163,7 +174,7 @@ At a glance:
 | Expressions -- arithmetic, comparisons, regex `=~`/`!~`, `tag()`, parameterised function calls | Supported |
 | CLI -- `compile`, `balance`, `register`, `print`, `stats`, `accounts`, `commodities`; text / JSON / CSV output | Supported |
 | Library API -- `compile`, `eval_transaction`, `write_ledger`, `.dop` binary format | Supported |
-| hledger input format (`.hledger`, `.journal`) | Supported (v0.3.0, issue #103) |
+| hledger input format (`.hledger`, `.journal`) | Supported |
 | Budgets (`~`), automated transactions (`= payee expr`), Lisp-style scripting | Not supported |
 
 See [`docs/SUPPORTED_FEATURES.md`](./docs/SUPPORTED_FEATURES.md) for the full
@@ -193,19 +204,34 @@ doppio processes source text through four sequential stages:
       │  amounts evaluated, transactions balanced, accounts registered
       ▼
  ┌──────────────┐
- │ serialization│  postcard + XZ → .dop
+ │ serialization│  protobuf + deflate → .dop
  └──────────────┘
 ```
 
 ### Stage details
 
-**Parse** (`crates/doppio/src/parser.rs`, `crates/doppio/src/ledger.pest`): A [pest](https://pest.rs/) PEG grammar tokenizes the source into an `ast::Journal` containing transactions, directives, and comments. Amount expressions are kept as unevaluated `ValueExpr` trees. `include` directives are resolved recursively here.
+**Parse** (`crates/doppio/src/grammars/ledger/`, `crates/doppio/src/grammars/hledger/`): A [pest](https://pest.rs/) PEG grammar tokenizes the source into an `ast::Journal` containing transactions, directives, and comments. Amount expressions are kept as unevaluated `ValueExpr` trees. `include` directives are resolved recursively here. The `Frontend` trait dispatches on file extension between the ledger-cli and hledger grammars.
 
 **Resolution** (`crates/doppio/src/resolution.rs`): Converts `ast::Journal` to a Higher-level Intermediate Representation (`HIR`). Dates are resolved to `NaiveDate` (a full year is required). Commodity and account aliases are accumulated into a versioned `Context` stack so each transaction sees the aliases that were in effect when it was defined. Structured metadata and tags are extracted from freeform notes.
 
-**Elaboration** (`crates/doppio/src/elaboration.rs`): Converts `HIR` to the final `elaboration::Journal`. `ValueExpr` trees are evaluated to `(Decimal, commodity)` pairs, commodity aliases are applied, and each transaction is balanced -- if exactly one posting has no explicit amount, its value is inferred as the negation of the sum of the rest. Balance assertions (`= amount`) and balance assignments (`=amount`) are checked or applied at this stage.
+**Elaboration** (`crates/doppio/src/elaborator.rs`): Converts `HIR` to the final `elaboration::Journal`. `ValueExpr` trees are evaluated to `(Decimal, commodity)` pairs, commodity aliases are applied, and each transaction is balanced -- if exactly one posting has no explicit amount, its value is inferred as the negation of the sum of the rest. Balance assertions (`= amount`) and balance assignments (`=amount`) are checked or applied at this stage.
 
-**Serialization**: The `Journal` implements `serde::Serialize`/`Deserialize`. The `compile` command writes it through [postcard](https://github.com/jamesmunns/postcard) into an XZ-compressed stream; the `balance` and `register` commands decompress and deserialize it in the reverse direction.
+**Serialization**: The `elaboration::Journal` is a [prost](https://github.com/tokio-rs/prost)-generated Protocol Buffers message defined in [`proto/doppio.proto`](./proto/doppio.proto). `write_dop` writes an 8-byte header followed by the protobuf body, deflate-compressed by default; `read_dop` is the reverse. The format is the canonical `.dop` artifact, designed as a language-agnostic API -- non-Rust consumers read it directly via the published proto schema.
+
+## Companion crates
+
+The workspace publishes three crates:
+
+- **[`doppio`](./crates/doppio/)** -- the library. Parse, resolve,
+  elaborate. The `Journal` type, the `Frontend` trait, the `.dop`
+  format I/O.
+- **[`doppio-cli`](./crates/doppio-cli/)** -- the `dop` binary. What
+  you get from `cargo install doppio-cli`.
+- **[`doppio-categorize`](./crates/doppio-categorize/)** --
+  counter-account suggestions for new transactions, given an existing
+  journal as the training corpus. Used by import flows like Mercury
+  and SimpleFIN to fill in the second posting of a transaction
+  automatically.
 
 ## Build from source
 
