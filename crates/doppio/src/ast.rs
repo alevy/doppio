@@ -50,8 +50,31 @@ pub(crate) enum Entry {
     ///
     /// Example: `2024-01-15 = Assets:Checking  $1000.00`
     Assertion(AssertionDirective),
+    /// A Beancount `pad` directive: backfill the difference between two
+    /// accounts up to the next balance assertion. Emitted by the
+    /// Beancount frontend as a marker; the elaboration semantics are
+    /// the subject of #147.
+    Pad(PadDirective),
     /// A comment line starting with `;`, `#`, `*`, `%`, or `|`.
     Comment(String),
+}
+
+/// A Beancount `pad` directive marker.
+///
+/// `<date> pad <target_account> <source_account>` instructs Beancount to
+/// post a balancing transaction from `source_account` to `target_account`
+/// that brings `target_account`'s balance to whatever the next `balance`
+/// assertion against it expects. The resolver does not act on this today
+/// (see #147 for the evaluator design); it is preserved here so that
+/// downstream consumers can see pads exist.
+#[derive(Debug, Clone)]
+pub(crate) struct PadDirective {
+    /// The date the pad applies on.
+    pub date: Date,
+    /// The account whose balance will be brought to the next assertion.
+    pub target_account: String,
+    /// The counter-account that absorbs the padding amount.
+    pub source_account: String,
 }
 
 /// A standalone balance assertion directive outside of any transaction.

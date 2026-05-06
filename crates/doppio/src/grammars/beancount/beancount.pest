@@ -116,12 +116,14 @@ posting_meta = _{ metadata_line }
 
 // --- Metadata ---
 //
-// Indented `key: value` lines under a directive or posting. Keys are
-// lowercase identifiers (Beancount enforces lowercase; we accept any
-// identifier here and let the resolver decide).
+// Indented `key: value` lines under a directive or posting. Beancount
+// requires the key to be lowercase-led; we enforce that here so a
+// posting like `  Assets:Bank:Checking 100 USD` (uppercase-led) is
+// not mis-parsed as a metadata line.
 metadata_line = ${
-    indent+ ~ identifier ~ ":" ~ ws* ~ metadata_value ~ (NEWLINE | EOI)
+    indent+ ~ metadata_key ~ ":" ~ ws* ~ metadata_value ~ (NEWLINE | EOI)
 }
+metadata_key = @{ (ASCII_ALPHA_LOWER | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 metadata_value = @{ (!NEWLINE ~ ANY)* }
 
 empty_indented_line = _{ indent+ ~ NEWLINE }
