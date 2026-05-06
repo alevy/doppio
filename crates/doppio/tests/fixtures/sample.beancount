@@ -65,6 +65,18 @@ include "secondary.beancount"
   Assets:Cash:EUR              500.00 EUR @ 1.07 USD
   Assets:Bank:Checking        -535.00 USD
 
+;; --- Lexically-scoped tags + metadata (pushtag/pushmeta) ---
+
+pushtag #household
+pushmeta phase: "Q1"
+
+2024-03-15 * "Recurring grocery run"
+  Expenses:Food                   42.10 USD
+  Liabilities:CreditCard         -42.10 USD
+
+popmeta phase:
+poptag #household
+
 ;; --- Per-posting metadata + bare numbers + arithmetic ---
 
 2024-03-01 * "Mixed-detail transaction"
