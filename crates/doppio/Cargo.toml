@@ -1,6 +1,7 @@
 [package]
 name = "doppio"
-description = "A typed compiler pipeline for plain-text Ledger accounting — parse, resolve, and elaborate .ledger files with a library API built for programmatic use."
+description = "A typed compiler pipeline for plain-text Ledger accounting -- parse, resolve, and elaborate .ledger files with a library API built for programmatic use."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
