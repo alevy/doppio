@@ -32,10 +32,12 @@
 //!
 //! ## Known limitations / stubs
 //!
-//! - The lot syntax `{cost, date, label}` is parsed best-effort: comma-split
-//!   parts are classified as cost (first amount-looking part), date (ISO),
-//!   or quoted label. Beancount's wildcard `{*}` and `{*, ...}` forms are
-//!   accepted but the wildcard is dropped (no AST representation today).
+//! - The lot syntax `{cost, date, label}` is parsed best-effort (TODO #185):
+//!   comma-split parts are classified as cost (first amount-looking part),
+//!   date (ISO), or quoted label. The wildcard `{*}` form is accepted but
+//!   the wildcard is silently dropped, the total-cost `{{total}}` form is
+//!   not distinguished from per-unit `{cost}`, and the cost commodity vs
+//!   held commodity distinction is collapsed.
 //! - `pad` is preserved as an [`Entry::Pad`] marker but the elaborator does
 //!   not yet act on it; the algorithm is the subject of #147.
 //! - String escape sequences inside quoted strings are not interpreted.
@@ -311,8 +313,21 @@ fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::er
 /// - First ISO date becomes the lot date.
 /// - First quoted string becomes the lot label.
 ///
-/// Beancount's wildcard `*` (alone or as the first part) is silently dropped:
-/// "automatic cost" semantics are not yet modelled.
+/// # Known gaps (TODO #185)
+///
+/// - The wildcard `{*}` / `{*, ...}` form ("automatic cost") is silently
+///   dropped: there is no AST representation for "infer this lot's cost
+///   from the inventory."
+/// - The total-cost form `{{total}}` is parsed identically to the
+///   per-unit form `{cost}`. Both feed the cost into
+///   `LotAnnotation::cost` regardless of which brace form was used,
+///   which silently misrepresents the lot basis when the source uses
+///   `{{...}}`.
+/// - The cost commodity is not distinguished from the held commodity:
+///   `10 AAPL {150 USD}` should let downstream consumers tell which
+///   commodity is the basis vs the held lot, but today the inner cost
+///   expression is captured as a single `ValueExpr` with no extra
+///   structural hint.
 fn merge_lot_annotation_into(pair: Pair<Rule>, acc: &mut LotAnnotation) {
     // lot_annotation = ${ ("{{" ~ lot_inner_total ~ "}}") | ("{" ~ lot_inner ~ "}") }
     let inner = pair
