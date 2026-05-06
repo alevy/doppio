@@ -1,0 +1,294 @@
+// ============================================================
+// beancount.pest -- PEG grammar for the Beancount journal format.
+//
+// Conventions from pest (https://pest.rs/):
+//   UPPERCASE  -- built-in rules (NEWLINE, EOI, ANY, ASCII_DIGIT, ...)
+//   _{ ... }   -- silent rule: matched but not included in the pair tree
+//   @{ ... }   -- atomic rule: inner tokens are NOT individually paired
+//   ${ ... }   -- compound-atomic: inner named rules ARE paired but
+//                 implicit whitespace skipping is disabled
+//
+// Key differences from ledger.pest / hledger.pest:
+//   - Date format is strict ISO `YYYY-MM-DD` (no `/` or `.` separators).
+//   - Currencies are bare uppercase identifiers (`USD`, `EUR`, `AAPL`),
+//     not `$`-prefixed.
+//   - String literals `"..."` are explicit on most directives.
+//   - Tags `#tag` and links `^link` appear after a transaction's
+//     description.
+//   - Comments start with `;` only (Beancount uses `#` for tags).
+//   - The directive set is keyword-led after the date:
+//     `<date> open|close|commodity|pad|balance|price|note|document
+//      |event|query|custom <args...>`.
+//   - Transactions are flagged with `*` (complete), `!` (flagged),
+//     or the literal `txn`.
+//
+// NOT YET SUPPORTED:
+//   - String escape sequences (`\"`, `\n`, etc) inside quoted strings.
+//   - The `pushtag`/`poptag` and `pushmeta`/`popmeta` scoping forms.
+//   - Org-mode `*` headings at column 0 (treated as parse errors;
+//     prefix with `;` to comment out).
+//   - Beancount's lot syntax inside `{...}` is captured as raw text;
+//     the AST adapter (#146) is responsible for parsing the inner
+//     fields (cost, date, label).
+// ============================================================
+
+// --- Top Level ---
+
+journal = ${ (entry | NEWLINE)* ~ EOI }
+
+entry = _{
+    transaction
+    | open_directive
+    | close_directive
+    | commodity_directive
+    | pad_directive
+    | balance_directive
+    | price_directive
+    | note_directive
+    | document_directive
+    | event_directive
+    | query_directive
+    | custom_directive
+    | include_directive
+    | option_directive
+    | plugin_directive
+    | comment_line
+}
+
+// --- Transactions ---
+//
+// A transaction header is `<date> <flag> [<payee> <description> | <description>]
+// [#tag]* [^link]*`, optionally followed by indented metadata and posting lines.
+
+transaction = ${
+    txn_header ~ NEWLINE ~
+    (metadata_line | posting | empty_indented_line)*
+}
+
+txn_header = ${
+    date
+    ~ ws+ ~ flag
+    ~ (ws+ ~ string)?
+    ~ (ws+ ~ string)?
+    ~ (ws+ ~ tag_or_link)*
+    ~ (ws* ~ note)?
+}
+
+// Beancount transaction flags. `*` = complete, `!` = flagged for review,
+// `txn` = literal keyword form. Single-letter custom flags (P/S/T/C/U/R/M)
+// are technically valid but rarely used; not modelled here.
+flag = @{ "*" | "!" | "txn" }
+
+tag_or_link = _{ tag | link }
+tag  = @{ "#" ~ tag_or_link_chars }
+link = @{ "^" ~ tag_or_link_chars }
+tag_or_link_chars = @{ (ASCII_ALPHANUMERIC | "_" | "-" | ".")+ }
+
+// --- Postings ---
+
+posting = ${
+    indent+ ~ !NEWLINE ~
+    (flag ~ ws+)? ~
+    posting_account ~
+    (amount_logic)? ~
+    (ws* ~ note)? ~
+    (NEWLINE | EOI) ~
+    posting_meta*
+}
+
+posting_account = ${ account }
+
+// Two or more spaces (or a tab) separate the account from the amount.
+amount_logic = ${
+    (ws{2,} | "\t") ~ value_expr ~ (ws* ~ lot_annotation_or_price)*
+}
+
+// `{...}` is a Beancount lot specification (cost, date, label).
+// `{{...}}` is a total-cost variant. `@`/`@@` are inline price annotations
+// (per-unit / total). Try `{{` before `{` and `@@` before `@`.
+lot_annotation_or_price = _{ lot_annotation | lot_price }
+lot_annotation = ${ ("{{" ~ lot_inner_total ~ "}}") | ("{" ~ lot_inner ~ "}") }
+lot_inner       = @{ (!"}"  ~ ANY)* }
+lot_inner_total = @{ (!"}}" ~ ANY)* }
+lot_price = ${ ("@@" | "@") ~ ws* ~ value_expr }
+
+posting_meta = _{ metadata_line }
+
+// --- Metadata ---
+//
+// Indented `key: value` lines under a directive or posting. Keys are
+// lowercase identifiers (Beancount enforces lowercase; we accept any
+// identifier here and let the resolver decide).
+metadata_line = ${
+    indent+ ~ identifier ~ ":" ~ ws* ~ metadata_value ~ (NEWLINE | EOI)
+}
+metadata_value = @{ (!NEWLINE ~ ANY)* }
+
+empty_indented_line = _{ indent+ ~ NEWLINE }
+
+// --- Directives ---
+//
+// All Beancount directives except `include`/`option`/`plugin` lead with
+// the date. Each may carry indented metadata lines under it.
+
+open_directive = ${
+    date ~ ws+ ~ "open" ~ ws+ ~ account
+    ~ (ws+ ~ commodity_list)?
+    ~ (ws+ ~ booking_method)?
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+// Comma-separated currency list on `open Account USD,EUR`.
+commodity_list = ${ commodity ~ (ws* ~ "," ~ ws* ~ commodity)* }
+
+// Booking method on `open` directives: `STRICT`, `NONE`, `FIFO`, `LIFO`,
+// `AVERAGE`, etc. Quoted because they appear after the currency list.
+booking_method = ${ "\"" ~ booking_method_chars ~ "\"" }
+booking_method_chars = @{ (!"\"" ~ ANY)* }
+
+close_directive = ${
+    date ~ ws+ ~ "close" ~ ws+ ~ account
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+commodity_directive = ${
+    date ~ ws+ ~ "commodity" ~ ws+ ~ commodity
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+pad_directive = ${
+    date ~ ws+ ~ "pad" ~ ws+ ~ account ~ ws+ ~ account
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+balance_directive = ${
+    date ~ ws+ ~ "balance" ~ ws+ ~ account ~ ws+ ~ value_expr
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+price_directive = ${
+    date ~ ws+ ~ "price" ~ ws+ ~ commodity ~ ws+ ~ value_expr
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+note_directive = ${
+    date ~ ws+ ~ "note" ~ ws+ ~ account ~ ws+ ~ string
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+document_directive = ${
+    date ~ ws+ ~ "document" ~ ws+ ~ account ~ ws+ ~ string
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+event_directive = ${
+    date ~ ws+ ~ "event" ~ ws+ ~ string ~ ws+ ~ string
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+query_directive = ${
+    date ~ ws+ ~ "query" ~ ws+ ~ string ~ ws+ ~ string
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+
+// `<date> custom "type-name" <arg> <arg> ...` -- arguments may be strings,
+// numbers, accounts, commodities, dates, or booleans.
+custom_directive = ${
+    date ~ ws+ ~ "custom" ~ ws+ ~ string ~ (ws+ ~ custom_arg)*
+    ~ (ws* ~ note)?
+    ~ (NEWLINE | EOI)
+    ~ metadata_line*
+}
+custom_arg = _{ string | value_expr | account | commodity | date | bool_literal }
+bool_literal = @{ "TRUE" | "FALSE" }
+
+include_directive = ${ "include" ~ ws+ ~ string ~ (NEWLINE | EOI) }
+option_directive  = ${ "option"  ~ ws+ ~ string ~ ws+ ~ string ~ (NEWLINE | EOI) }
+plugin_directive  = ${
+    "plugin" ~ ws+ ~ string ~ (ws+ ~ string)? ~ (NEWLINE | EOI)
+}
+
+// --- Atoms ---
+
+date = ${ year ~ "-" ~ monthdate ~ "-" ~ monthdate }
+year = @{ ASCII_DIGIT{4} }
+monthdate = @{ ASCII_DIGIT{2} }
+
+// String literal: simple double-quoted form. Escape sequences are not
+// modelled (see header note).
+string = ${ "\"" ~ string_inner ~ "\"" }
+string_inner = @{ (!"\"" ~ ANY)* }
+
+// Account: colon-separated segments. Beancount accepts segments
+// starting with an uppercase letter or digit; we accept either case
+// to be permissive. Stops at whitespace, semicolon, or newline.
+account = @{ account_segment ~ (":" ~ account_segment)+ }
+account_segment = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+
+indent = _{ " " | "\t" }
+ws = _{ " " | "\t" }
+
+note = ${ ";" ~ note_str }
+note_str = ${ (!NEWLINE ~ ANY)* }
+
+comment_line = @{ ";" ~ (!NEWLINE ~ ANY)* }
+
+identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+
+// --- Value expressions ---
+//
+// Beancount amounts are `<number> <currency>`. Bare numbers and infix
+// arithmetic via parentheses are also accepted (Beancount itself
+// permits expression-level arithmetic on totals).
+
+value_expr = ${ expr ~ (ws+ ~ commodity)? }
+expr = ${ term ~ (ws* ~ infix_op ~ ws* ~ term)* }
+term = ${ (prefix_op ~ ws*)? ~ primary }
+primary = { base_primary }
+
+base_primary = _{
+    "(" ~ expr ~ ")"
+    | amount
+}
+
+amount = ${
+    (number ~ ws+ ~ commodity)
+    | number
+}
+
+number = @{
+    "-"? ~ ASCII_DIGIT+ ~ ("," ~ ASCII_DIGIT{3})* ~ ("." ~ ASCII_DIGIT+)?
+    | "-"? ~ "." ~ ASCII_DIGIT+
+}
+
+// Beancount currency: must start with an uppercase letter; subsequent
+// characters may be uppercase, digits, or any of `'._-`. Length 1+
+// (Beancount itself enforces 2..24, but we don't need to here).
+commodity = @{ ASCII_ALPHA_UPPER ~ (ASCII_ALPHA_UPPER | ASCII_DIGIT | "'" | "." | "_" | "-")* }
+
+infix_op = _{ add | sub | mul | div }
+    add = { "+" }
+    sub = { "-" }
+    mul = { "*" }
+    div = { "/" }
+prefix_op = { "-" | "+" }

@@ -1,0 +1,89 @@
+; Sample Beancount journal exercising every directive the grammar
+; supports. Used by the grammar smoke test in
+; `crates/doppio/src/grammars/beancount/mod.rs::tests::sample_fixture_parses`.
+;
+; Names, payees, and amounts are entirely synthetic. The file is
+; intended for parser tests only; do not use it as a real-bookkeeping
+; template.
+
+option "title" "Sample Journal"
+option "operating_currency" "USD"
+
+plugin "beancount.plugins.implicit_prices"
+plugin "beancount.plugins.auto" "argument-string"
+
+include "secondary.beancount"
+
+;; --- Account lifecycle ---
+
+2024-01-01 open Assets:Bank:Checking USD
+2024-01-01 open Assets:Brokerage AAPL,USD "FIFO"
+2024-01-01 open Liabilities:CreditCard USD
+2024-01-01 open Income:Salary USD
+2024-01-01 open Expenses:Food
+2024-01-01 open Equity:Opening-Balances
+
+;; --- Commodity declarations + metadata ---
+
+2024-01-01 commodity USD
+  name: "US Dollar"
+  asset-class: "cash"
+
+2024-01-01 commodity AAPL
+  name: "Apple Inc."
+  asset-class: "stock"
+
+;; --- Pad + balance reconciliation ---
+
+2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances
+2024-01-15 balance Assets:Bank:Checking 5000.00 USD
+
+;; --- Transactions: complete (`*`), flagged (`!`), and `txn` keyword ---
+
+2024-01-12 * "Acme Studio" "Invoice 0123" #work ^invoice-0123
+  Assets:Bank:Checking          3400.00 USD
+  Income:Salary                -3400.00 USD
+
+2024-01-15 ! "Whole Foods Market" "Groceries"
+  Liabilities:CreditCard         -87.43 USD
+  Expenses:Food                   87.43 USD
+
+2024-02-15 txn "Apple lot purchase"
+  Assets:Brokerage              10 AAPL {182.50 USD, 2024-02-15, "buy-2024-02"}
+  Assets:Bank:Checking       -1825.00 USD
+
+2024-05-15 * "Buy euros at airport kiosk"
+  Assets:Cash:EUR              500.00 EUR @ 1.07 USD
+  Assets:Bank:Checking        -535.00 USD
+
+;; --- Per-posting metadata + bare numbers + arithmetic ---
+
+2024-03-01 * "Mixed-detail transaction"
+  description: "Demonstrates posting metadata and per-posting flags"
+  reference: "RX-1234"
+  ! Liabilities:CreditCard      -100.00 USD
+    statement-line: "ACH-77821"
+  * Expenses:Food               (50.00 + 50.00) USD
+
+;; --- Historical price ---
+
+2024-01-02 price USD 0.92 EUR
+2024-02-15 price AAPL 182.50 USD
+
+;; --- Notes, documents, events, queries, custom ---
+
+2024-01-20 note Assets:Bank:Checking "Need to verify January statement"
+
+2024-01-22 document Assets:Bank:Checking "/scans/jan-statement.pdf"
+
+2024-01-01 event "location" "Berlin"
+2024-06-30 event "location" "Lisbon"
+
+2024-06-30 query "lunches-q2" "SELECT date, payee, amount WHERE account ~ 'Expenses:Food'"
+
+2024-01-01 custom "budget" "Expenses:Food" 200.00 USD
+2024-01-01 custom "fava-option" "language" "en"
+
+;; --- Account closure ---
+
+2024-12-31 close Liabilities:CreditCard
