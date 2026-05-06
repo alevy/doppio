@@ -85,6 +85,7 @@ mod elaboration_ext;
 
 pub use elaboration::Journal;
 pub use frontend::Frontend;
+pub use grammars::beancount::BeancountFrontend;
 pub use grammars::hledger::HledgerFrontend;
 pub use grammars::ledger::LedgerFrontend;
 
@@ -98,6 +99,7 @@ pub use grammars::ledger::LedgerFrontend;
 /// | `"ledger"` | [`LedgerFrontend`] |
 /// | `"hledger"` | [`HledgerFrontend`] |
 /// | `"journal"` | [`HledgerFrontend`] |
+/// | `"beancount"` | [`BeancountFrontend`] (experimental) |
 /// | anything else / `None` | [`LedgerFrontend`] (default) |
 ///
 /// # Example
@@ -112,27 +114,28 @@ pub use grammars::ledger::LedgerFrontend;
 /// let fe3 = doppio::frontend_for_extension(Some("journal"));
 /// assert!(fe3.extensions().contains(&"journal"));
 ///
+/// let fe5 = doppio::frontend_for_extension(Some("beancount"));
+/// assert!(fe5.extensions().contains(&"beancount"));
+///
 /// // Unknown extensions fall back to the ledger frontend.
 /// let fe4 = doppio::frontend_for_extension(None);
 /// assert!(fe4.extensions().contains(&"ledger"));
 /// ```
 pub fn frontend_for_extension(ext: Option<&str>) -> Box<dyn Frontend> {
-    let frontends: &[&dyn Frontend] = &[&HledgerFrontend, &LedgerFrontend];
-    for fe in frontends {
-        if ext.is_some_and(|e| fe.extensions().contains(&e)) {
-            // Construct an owned Box of the concrete type matched above.
-            // We iterate over trait-object refs to find the right frontend,
-            // then return a fresh Box of the concrete type.  This avoids
-            // cloning or storing the Frontend behind Arc.
-            if fe.extensions().contains(&"hledger") || fe.extensions().contains(&"journal") {
-                return Box::new(HledgerFrontend);
-            } else {
-                return Box::new(LedgerFrontend);
-            }
-        }
+    let Some(e) = ext else {
+        return Box::new(LedgerFrontend);
+    };
+    if HledgerFrontend.extensions().contains(&e) {
+        Box::new(HledgerFrontend)
+    } else if BeancountFrontend.extensions().contains(&e) {
+        Box::new(BeancountFrontend)
+    } else if LedgerFrontend.extensions().contains(&e) {
+        Box::new(LedgerFrontend)
+    } else {
+        // Preserve existing fall-through behaviour: unknown extensions
+        // dispatch to the ledger frontend.
+        Box::new(LedgerFrontend)
     }
-    // Default: ledger frontend (preserves existing behaviour for unknown extensions).
-    Box::new(LedgerFrontend)
 }
 
 // ---

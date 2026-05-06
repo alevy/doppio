@@ -534,6 +534,12 @@ impl TryFrom<ast::Journal> for HIR {
                 ast::Entry::Directive(ast::Directive::Unknown(_)) | ast::Entry::Comment(_) => {
                     // Discard unrecognised directives and comments.
                 }
+                ast::Entry::Pad(_) => {
+                    // Beancount `pad` directive. The evaluator that fills in
+                    // a balancing transaction up to the next balance assertion
+                    // is the subject of #147; for now resolution preserves
+                    // the rest of the journal but ignores the pad itself.
+                }
                 ast::Entry::Directive(ast::Directive::Commodity {
                     name,
                     notes: _,

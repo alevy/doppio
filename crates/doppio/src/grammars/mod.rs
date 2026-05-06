@@ -7,10 +7,11 @@
 //! - [`ledger`] -- the ledger-cli plain-text accounting format (`.ledger`).
 //! - [`hledger`] -- the hledger dialect (`.hledger`, `.journal`).
 //! - [`beancount`] -- the Beancount format (`.beancount`).
-//!   **Experimental**: ships the grammar (#145); the `Frontend` trait
-//!   impl (#146) and the `pad` directive evaluator (#147) are
-//!   in-flight.
+//!   **Experimental**: the grammar (#145) and Frontend trait impl
+//!   (#146) ship; the `pad` directive evaluator (#147) is still
+//!   in-flight, so pads are preserved as markers but produce no
+//!   balancing transaction during elaboration.
 
-pub(crate) mod beancount;
+pub mod beancount;
 pub mod hledger;
 pub mod ledger;
