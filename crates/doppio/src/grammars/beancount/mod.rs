@@ -41,9 +41,18 @@
 //! - `pad` is preserved as an [`Entry::Pad`] marker but the elaborator does
 //!   not yet act on it; the algorithm is the subject of #147.
 //! - String escape sequences inside quoted strings are not interpreted.
-//! - `pushtag`/`poptag` and `pushmeta`/`popmeta` are not yet parsed.
 //! - Org-mode outline headings (`*`, `**`, `***`, ... at column 0) are
 //!   accepted and silently dropped, matching Beancount itself.
+//!
+//! ## Lexically-scoped tag and metadata directives
+//!
+//! `pushtag #foo` / `poptag #foo` and `pushmeta key: value` /
+//! `popmeta key:` are supported. The active set persists across
+//! `include` directives (matching Beancount). Mismatched pops are
+//! silently ignored. Active pushtags are unioned with each
+//! transaction's own `#tag`/`^link` set; active pushmetas are added
+//! to the transaction's metadata map (where most-recent-pushed wins
+//! per key).
 
 use crate::ast::*;
 use pest::Parser as _;
@@ -65,6 +74,15 @@ pub(crate) struct BeancountParser;
 struct Parser<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
     opener: F,
     base_path: PathBuf,
+    /// Lexically-scoped tags pushed by `pushtag` and removed by
+    /// `poptag`. Stored as a stack so multiple pushes of the same tag
+    /// are independent (each pop removes the most recent occurrence).
+    /// Persists across recursive `include` resolution.
+    active_tags: Vec<String>,
+    /// Lexically-scoped metadata key/value pairs pushed by `pushmeta`
+    /// and removed by `popmeta`. Stack semantics mirror `active_tags`
+    /// so the most-recent value wins for a given key.
+    active_meta: Vec<(String, String)>,
 }
 
 impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
@@ -75,7 +93,21 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
         for pair in pairs.into_iter().next().unwrap().into_inner() {
             match pair.as_rule() {
                 Rule::transaction => {
-                    entries.push(Entry::Transaction(parse_transaction(pair)?));
+                    let mut tx = parse_transaction(pair)?;
+                    // Apply active pushtags as an additional bare-tag note
+                    // (resolve_metadata splits each `:a:b:` note independently
+                    // so multiple tag-bearing notes union cleanly).
+                    if !self.active_tags.is_empty() {
+                        tx.notes.push(format!(":{}:", self.active_tags.join(":")));
+                    }
+                    // Apply active pushmetas as additional `key: value` notes.
+                    // Iterate in stack order so the most recently pushed value
+                    // for any given key wins (resolve_metadata's BTreeMap
+                    // overwrites on duplicate insert).
+                    for (k, v) in &self.active_meta {
+                        tx.notes.push(format!("{k}: {v}"));
+                    }
+                    entries.push(Entry::Transaction(tx));
                 }
                 Rule::open_directive => {
                     entries.push(Entry::Directive(parse_open_directive(pair)));
@@ -105,6 +137,47 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                 | Rule::option_directive
                 | Rule::plugin_directive => {
                     entries.push(Entry::Comment(pair.as_str().trim().to_string()));
+                }
+                Rule::pushtag_directive => {
+                    // `pushtag #name`: capture the tag (skipping the `#`).
+                    let tag_pair = pair
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::tag)
+                        .expect("pushtag must contain a tag");
+                    self.active_tags.push(tag_pair.as_str()[1..].to_string());
+                }
+                Rule::poptag_directive => {
+                    // `poptag #name`: remove the most recent matching tag.
+                    // Mismatched pops are silently ignored (Beancount itself
+                    // emits a warning, but we don't have a warning channel).
+                    let tag_pair = pair
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::tag)
+                        .expect("poptag must contain a tag");
+                    let name = &tag_pair.as_str()[1..];
+                    if let Some(idx) = self.active_tags.iter().rposition(|t| t == name) {
+                        self.active_tags.remove(idx);
+                    }
+                }
+                Rule::pushmeta_directive => {
+                    // `pushmeta key: value`: capture the key and the
+                    // verbatim value text.
+                    let mut inner = pair.into_inner();
+                    let key = inner.next().unwrap().as_str().to_string();
+                    let value = inner
+                        .next()
+                        .map(|v| v.as_str().trim().to_string())
+                        .unwrap_or_default();
+                    self.active_meta.push((key, value));
+                }
+                Rule::popmeta_directive => {
+                    // `popmeta key:`: remove the most recent value pushed
+                    // for that key.
+                    let mut inner = pair.into_inner();
+                    let key = inner.next().unwrap().as_str();
+                    if let Some(idx) = self.active_meta.iter().rposition(|(k, _)| k == key) {
+                        self.active_meta.remove(idx);
+                    }
                 }
                 Rule::comment_line => {
                     entries.push(Entry::Comment(pair.as_str().to_string()));
@@ -615,6 +688,8 @@ pub(crate) fn parse_beancount(input: &str) -> Result<Journal, Box<dyn std::error
     let mut journal = Parser {
         opener: |_| Ok(String::new()),
         base_path: PathBuf::new(),
+        active_tags: Vec::new(),
+        active_meta: Vec::new(),
     }
     .parse(input)?;
     sort_entries_by_date(&mut journal.entries);
@@ -659,6 +734,8 @@ impl crate::frontend::Frontend for BeancountFrontend {
         let mut ast_journal = Parser {
             opener: |path: &str| opener(path),
             base_path: base_path.to_path_buf(),
+            active_tags: Vec::new(),
+            active_meta: Vec::new(),
         }
         .parse(input)?;
         // Beancount is date-ordered, not source-ordered. Sort once at the
@@ -1144,6 +1221,254 @@ mod tests {
             .filter(|e| matches!(e.data, crate::resolution::Entry::Transaction(_)))
             .count();
         assert_eq!(resolved_txn_count, 1);
+    }
+
+    // -- pushtag/poptag, pushmeta/popmeta (#188 / #189) ---------------------
+
+    fn resolved_tx<'a>(hir: &'a crate::resolution::HIR) -> Vec<&'a crate::resolution::Transaction> {
+        hir.entries
+            .iter()
+            .filter_map(|e| match &e.data {
+                crate::resolution::Entry::Transaction(t) => Some(t),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pushtag_scopes_tag_to_subsequent_transactions() {
+        let input = "\
+2024-01-01 open Expenses:Travel
+2024-01-01 open Assets:Cash USD
+
+pushtag #trip-2024
+
+2024-06-15 * \"Hotel\"
+  Expenses:Travel    100.00 USD
+  Assets:Cash       -100.00 USD
+
+2024-06-16 * \"Dinner\"
+  Expenses:Travel     40.00 USD
+  Assets:Cash        -40.00 USD
+
+poptag #trip-2024
+
+2024-07-01 * \"Outside the trip\"
+  Expenses:Travel     20.00 USD
+  Assets:Cash        -20.00 USD
+";
+        let journal = parse_beancount(input).expect("parse");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let txs = resolved_tx(&hir);
+        assert_eq!(txs.len(), 3);
+        // First two transactions inherit the pushtag, third does not.
+        assert!(
+            txs[0].tags.iter().any(|t| t == "trip-2024"),
+            "txs[0]={:?}",
+            txs[0].tags
+        );
+        assert!(
+            txs[1].tags.iter().any(|t| t == "trip-2024"),
+            "txs[1]={:?}",
+            txs[1].tags
+        );
+        assert!(
+            !txs[2].tags.iter().any(|t| t == "trip-2024"),
+            "third transaction must NOT have the popped tag, got: {:?}",
+            txs[2].tags
+        );
+    }
+
+    #[test]
+    fn nested_pushtags_compose() {
+        let input = "\
+2024-01-01 open Expenses:Travel
+2024-01-01 open Assets:Cash USD
+
+pushtag #project-acme
+pushtag #travel
+
+2024-02-15 * \"Site visit\"
+  Expenses:Travel    300.00 USD
+  Assets:Cash       -300.00 USD
+
+poptag #travel
+
+2024-02-20 * \"Project meeting (no travel)\"
+  Expenses:Travel     50.00 USD
+  Assets:Cash        -50.00 USD
+
+poptag #project-acme
+";
+        let journal = parse_beancount(input).expect("parse");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let txs = resolved_tx(&hir);
+        assert_eq!(txs.len(), 2);
+        // First transaction has BOTH active pushtags.
+        let t0_tags: std::collections::HashSet<&str> =
+            txs[0].tags.iter().map(String::as_str).collect();
+        assert!(
+            t0_tags.contains("project-acme"),
+            "tx0 tags={:?}",
+            txs[0].tags
+        );
+        assert!(t0_tags.contains("travel"), "tx0 tags={:?}", txs[0].tags);
+        // Second has only `project-acme` -- `travel` was popped.
+        let t1_tags: std::collections::HashSet<&str> =
+            txs[1].tags.iter().map(String::as_str).collect();
+        assert!(t1_tags.contains("project-acme"));
+        assert!(!t1_tags.contains("travel"));
+    }
+
+    #[test]
+    fn pushtag_unions_with_transaction_local_tags() {
+        // The transaction's own #tags coexist with pushtags.
+        let input = "\
+2024-01-01 open Expenses:Food
+2024-01-01 open Assets:Cash USD
+
+pushtag #household
+
+2024-03-10 * \"Groceries\" #weekly
+  Expenses:Food      50.00 USD
+  Assets:Cash       -50.00 USD
+
+poptag #household
+";
+        let journal = parse_beancount(input).expect("parse");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let txs = resolved_tx(&hir);
+        let tags: std::collections::HashSet<&str> =
+            txs[0].tags.iter().map(String::as_str).collect();
+        assert!(
+            tags.contains("household"),
+            "pushtag missing: {:?}",
+            txs[0].tags
+        );
+        assert!(
+            tags.contains("weekly"),
+            "transaction-local tag missing: {:?}",
+            txs[0].tags
+        );
+    }
+
+    #[test]
+    fn poptag_with_no_matching_push_is_silently_ignored() {
+        // Beancount itself emits a warning on a mismatched pop; we just
+        // ignore it (no warning channel today). The journal must still
+        // parse and resolve cleanly.
+        let input = "\
+2024-01-01 open Expenses:Food
+2024-01-01 open Assets:Cash USD
+
+poptag #never-pushed
+
+2024-03-10 * \"Lunch\"
+  Expenses:Food      10.00 USD
+  Assets:Cash       -10.00 USD
+";
+        let journal = parse_beancount(input).expect("parse");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let txs = resolved_tx(&hir);
+        assert_eq!(txs.len(), 1);
+        assert!(
+            txs[0].tags.is_empty(),
+            "transaction should have no tags, got {:?}",
+            txs[0].tags
+        );
+    }
+
+    #[test]
+    fn pushmeta_scopes_metadata_to_subsequent_transactions() {
+        let input = "\
+2024-01-01 open Expenses:Consulting
+2024-01-01 open Assets:Cash USD
+
+pushmeta project: \"acme-rebrand\"
+
+2024-06-15 * \"Design review\"
+  Expenses:Consulting   500.00 USD
+  Assets:Cash          -500.00 USD
+
+popmeta project:
+
+2024-07-01 * \"Outside the project\"
+  Expenses:Consulting   100.00 USD
+  Assets:Cash          -100.00 USD
+";
+        let journal = parse_beancount(input).expect("parse");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let txs = resolved_tx(&hir);
+        assert_eq!(txs.len(), 2);
+        // First inherits the pushmeta. Resolution captures metadata values
+        // verbatim from the note text, so the value retains the surrounding
+        // quotes.
+        assert_eq!(
+            txs[0].metadata.get("project").map(String::as_str),
+            Some("\"acme-rebrand\""),
+            "pushmeta missing on tx0: {:?}",
+            txs[0].metadata
+        );
+        // Second does NOT have the popped metadata key.
+        assert!(
+            !txs[1].metadata.contains_key("project"),
+            "popped metadata leaked: {:?}",
+            txs[1].metadata
+        );
+    }
+
+    #[test]
+    fn pushmeta_most_recent_value_wins_for_same_key() {
+        // Two pushes of the same key without an intervening pop -- the
+        // later push wins.
+        let input = "\
+2024-01-01 open Expenses:Consulting
+2024-01-01 open Assets:Cash USD
+
+pushmeta phase: \"discovery\"
+pushmeta phase: \"delivery\"
+
+2024-08-15 * \"Sprint\"
+  Expenses:Consulting   1000.00 USD
+  Assets:Cash         -1000.00 USD
+";
+        let journal = parse_beancount(input).expect("parse");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let txs = resolved_tx(&hir);
+        assert_eq!(
+            txs[0].metadata.get("phase").map(String::as_str),
+            Some("\"delivery\""),
+            "later pushmeta should win: {:?}",
+            txs[0].metadata
+        );
+    }
+
+    #[test]
+    fn pushmeta_does_not_leak_into_transactions_before_the_push() {
+        // Date-sort puts a Jan 5 transaction before a Mar 1 pushmeta even
+        // when source order has the push first. Pushmeta is a *parse-time*
+        // construct and must be applied at parse time -- the active set at
+        // the moment a transaction is parsed is what the transaction inherits.
+        // (Source order: open, push, txn -- so the txn DOES inherit.)
+        let input = "\
+2024-01-01 open Expenses:Food
+2024-01-01 open Assets:Cash USD
+
+pushmeta tag: \"taxable\"
+
+2024-01-05 * \"Lunch\"
+  Expenses:Food     10.00 USD
+  Assets:Cash      -10.00 USD
+
+popmeta tag:
+";
+        let journal = parse_beancount(input).expect("parse");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let txs = resolved_tx(&hir);
+        assert_eq!(
+            txs[0].metadata.get("tag").map(String::as_str),
+            Some("\"taxable\"")
+        );
     }
 
     // -- pad evaluator (#147) -----------------------------------------------

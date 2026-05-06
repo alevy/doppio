@@ -24,7 +24,6 @@
 //
 // NOT YET SUPPORTED:
 //   - String escape sequences (`\"`, `\n`, etc) inside quoted strings.
-//   - The `pushtag`/`poptag` and `pushmeta`/`popmeta` scoping forms.
 //   - Beancount's lot syntax inside `{...}` is captured as raw text;
 //     the AST adapter (#146) is responsible for parsing the inner
 //     fields (cost, date, label).
@@ -50,6 +49,10 @@ entry = _{
     | include_directive
     | option_directive
     | plugin_directive
+    | pushtag_directive
+    | poptag_directive
+    | pushmeta_directive
+    | popmeta_directive
     | comment_line
     | org_mode_heading
 }
@@ -227,6 +230,29 @@ include_directive = ${ "include" ~ ws+ ~ string ~ (NEWLINE | EOI) }
 option_directive  = ${ "option"  ~ ws+ ~ string ~ ws+ ~ string ~ (NEWLINE | EOI) }
 plugin_directive  = ${
     "plugin" ~ ws+ ~ string ~ (ws+ ~ string)? ~ (NEWLINE | EOI)
+}
+
+// --- pushtag / poptag (lexical tag scoping) ---
+//
+// `pushtag #foo` adds `#foo` to the active set; every subsequent
+// transaction parsed before the matching `poptag #foo` inherits it as
+// if it were written on the transaction header. `poptag` removes the
+// most-recent matching entry from the active set; mismatched pops are
+// silently ignored.
+pushtag_directive = ${ "pushtag" ~ ws+ ~ tag ~ (NEWLINE | EOI) }
+poptag_directive  = ${ "poptag"  ~ ws+ ~ tag ~ (NEWLINE | EOI) }
+
+// --- pushmeta / popmeta (lexical metadata scoping) ---
+//
+// `pushmeta key: value-expr` adds the key/value pair to the active
+// metadata stack; every subsequent transaction inherits it. `popmeta
+// key:` removes the most-recent value pushed for that key. The
+// trailing colon on `popmeta` matches Beancount's own syntax.
+pushmeta_directive = ${
+    "pushmeta" ~ ws+ ~ metadata_key ~ ":" ~ ws* ~ metadata_value ~ (NEWLINE | EOI)
+}
+popmeta_directive = ${
+    "popmeta" ~ ws+ ~ metadata_key ~ ":" ~ (NEWLINE | EOI)
 }
 
 // --- Atoms ---
