@@ -129,6 +129,161 @@ surface.
 
 ## [Unreleased]
 
+### Breaking changes -- public Rust API surface (Phase E, milestone 11)
+
+The 1.0 cut commits to a curated public API. The audit (#159) demoted
+items used only internally to `pub(crate)`; what stays public is the
+documented surface that downstream consumers (`bb-ledger`, `bookie`,
+`betterbytes-org/ledger`) actually use.
+
+- **`pub mod parser` removed.** The backwards-compat shim at
+  `doppio::parser::*` is gone. Reach for `doppio::grammars::ledger::*`
+  directly.
+- **`Frontend::parse` now returns `resolution::HIR`** (was
+  `ast::Journal`). Every external caller drops the intermediate
+  `try_into()` step. `LedgerFrontend` and `HledgerFrontend` impls do
+  the resolution step internally.
+- **`pub mod ast` items demoted.** `Entry`, `Directive`,
+  `CommodityItem`, `AccountItem`, `AssertionDirective`,
+  `HistoricalPrice` (parser-stage), `Transaction` / `Posting`
+  (parser-stage), `DefineBody`, `Date` -> `pub(crate)`.
+  `Journal.entries` is now `pub(crate)` (the `Entry` enum is
+  internal). `BoolExpr` / `CmpOp` / `BoolOp` stay public because
+  `ValueExpr::Group` carries a boxed `BoolExpr`. Public types
+  reachable transitively (`ValueExpr`, `AmountDetails`,
+  `TransactionState`, `PostingKind`, `LotPricing`, `LotAnnotation`,
+  `Op`) stay.
+- **`pub mod resolution` items demoted.** `Entry`, `ResolutionEntry`,
+  `AssertionDirective`, `Define` -> `pub(crate)`.
+  `AccountProperties.{asserts,checks}` and
+  `TagProperties.{asserts,checks}` -> `pub(crate)` (these were the
+  only fields exposing `BoolExpr` from outside `ast`). The builder
+  API on `resolution::Transaction` / `Posting` is unchanged.
+- **`lib.rs` format internals demoted.** `DOP_MAGIC`,
+  `DOP_FORMAT_VERSION`, `dop_write_header`, `dop_read_header`,
+  `decimal_from_proto` -> `pub(crate)`. Use `read_dop` / `write_dop`
+  for the format I/O and the inherent `Decimal::to_decimal()` method
+  on the proto type.
+- **Grammar internals demoted.** `LedgerParser` / `HledgerParser`
+  (pest-derived) -> `pub(crate)`. `parse_ledger` / `parse_hledger`
+  are now `#[cfg(test)] pub(crate)` test-only convenience wrappers.
+- **`#[non_exhaustive]` on `ast::ValueExpr` and `ast::AmountDetails`.**
+  External `match` arms must include a wildcard `_` arm. 1.x can grow
+  new variants without bumping the major version.
+- **Examples removed**: `examples/parse_and_print.rs` and
+  `load_and_print.rs` (parser-development tools that printed AST
+  Debug -- kept the AST visibility wider than the audit recommended).
+
+### Breaking changes -- semantic
+
+- **`Journal::exchange_rate_at` no longer chains through intermediate
+  commodities (#158).** It returns a direct or inverse quote only,
+  matching Beancount's non-transitive design. Multi-hop FX (e.g.
+  EUR -> USD via JPY) returns `None`; consumers who want chaining
+  implement it explicitly. Rationale and a comparison with hledger /
+  Beancount / ledger-cli is in `docs/exchange-rates.md`.
+- The library function previously named `Journal::price_at` is now
+  `Journal::exchange_rate_at`.
+
+### Added -- ledger feature parity (Phase D, milestone 8)
+
+Filling in the parity gaps surfaced by the parity test corpus
+introduced as part of this release (#138):
+
+- **Bare `D` default-commodity directive** (#142). `D $1,000.00`
+  declares a default commodity for amounts that don't carry one.
+- **`--exchange` / `-X` CLI flag** (#141) on `balance` and
+  `register`. Converts amounts to a target commodity using `P`
+  directives. Equivalent to ledger-cli's `--exchange`. If no FX
+  path exists for a given commodity, the original amount is kept
+  and a warning is printed to stderr.
+- **Virtual postings** (#140). `(Account)` is unbalanced (excluded
+  from the balance check); `[Account]` is balanced (included in the
+  balance check). The new `Posting.kind` enum
+  (`REAL` / `VIRTUAL_UNBALANCED` / `VIRTUAL_BALANCED`) carries the
+  semantic. CLI gains `-R` / `--real` to exclude virtual postings
+  from reports.
+- **Lot persistence annotations** (#139). `{cost}`, `[date]`, and
+  `((note))` annotations on a posting persist into the elaborated
+  journal as a new `Lot` message on `Posting`. `{{total}}` is
+  rejected at parse time (was previously silently accepted, then
+  miscomputed).
+- **Account-directive metadata, denormalised by inheritance**
+  (#168). `; type:` and other `; key: value` notes on `account`
+  directives flow into a new `metadata` field on
+  `AccountProperties`, with metadata inherited down the
+  colon-separated hierarchy at compile time. Consumers see a
+  fully-resolved per-account map without doing the inheritance walk
+  themselves. Used by the web demo's natural-sign heuristic to let
+  journals override the default Income/Assets/Liabilities/Equity
+  classification.
+
+### Added -- web demo (Phase E, milestone 11)
+
+A working browser demo at `web/`, validating the format-as-API claim
+end to end:
+
+- **JS-native `.dop` reader** (#151). Reads `.dop` artifacts in the
+  browser via a Buf-generated TypeScript decoder, with no Rust or
+  WASM at runtime. Public TS shape mirrors the Rust
+  `elaboration::Journal` with `decimal.js` for Decimal and an opaque
+  `LocalDate` for dates. Single-pass conversion. 28+ vitest specs
+  including a balance-assertion-equivalent round-trip on the
+  committed sample.
+- **Single-page dashboard** (#150 / #169). KPI strip (Net Worth,
+  Cash on Hand, Period Net, Avg Monthly Expense), Income vs Expense
+  bars by month, current-month category donut, Net Worth Trend line.
+  Pure-function utilities under `web/src/lib/views/`. Filter bar
+  (date range + cleared-only) shared across the views.
+- **Vue 3 + Vite + TS bootstrap** (#148). Lives at `web/` (subdir
+  rather than separate repo for proto-schema co-location). Build
+  pipeline runs `buf generate` for TS stubs from
+  `proto/doppio.proto`, then vue-tsc + vite build. GitHub Pages
+  deploy on push to `main` via `.github/workflows/web.yml`.
+
+### Added -- categorizer crate
+
+- **`doppio-categorize`** graduated from research prototype to
+  workspace crate. Public types: `Index`, `Query`, `Suggestion`,
+  `Config`, `Normalizer` trait, `DefaultNormalizer`,
+  `ScoringStrategy`. Surface counter-account suggestions for new
+  transactions based on payee tokenisation + frequency / recency /
+  amount weighting. Used by `bb-ledger` and `bookie` import flows.
+
+### Documentation
+
+- **`docs/exchange-rates.md`** -- captures the FX algorithm and
+  rationale.
+- **`docs/proto-evolution.md`** -- normative wire-format evolution
+  rules (additive only, reserved on deprecation, header-version
+  bump rules, behaviour preservation). Enforced mechanically by a
+  new CI test (`crates/doppio/tests/proto_evolution.rs`) that
+  rejects a PR which removes a field without `reserved` covering
+  the tag, or which reuses a tag.
+- **`proto/doppio.proto` top comment** gains an "Evolution policy"
+  section summarising the rules.
+- **Repo-wide ASCII pass.** Replaced unicode oddities (em-dashes,
+  arrows, ellipses, smart quotes, status emoji, decorative
+  box-drawing dividers) with ASCII equivalents across all
+  documentation surfaces. Markdown renderers convert `--` back to
+  a typographic em-dash, so visual output is preserved while the
+  source stays plain ASCII.
+
+### Removed
+
+- The `Journal::price_at` helper (renamed to `exchange_rate_at` -- see
+  Breaking changes).
+- `parse_ledger` / `parse_hledger` no longer reachable in non-test
+  builds; use `compile()` or `Frontend::parse` instead.
+
+### Internal
+
+- **Dependency audit** (#125). Pruned unused features: `serde`'s
+  `derive` feature is no longer enabled at the workspace level;
+  `chrono`'s `serde` feature dropped; `serde_json` scoped to the
+  CLI crate only. Downstream crates that relied on transitively
+  enabled features must enable them explicitly.
+
 ---
 
 ## [0.2.0] - 2026-04-27
