@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-doppio = { path = "../doppio" }
+doppio = { path = "../doppio", version = "1.0.0" }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }
 

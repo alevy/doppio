@@ -25,7 +25,7 @@
 
 use std::path::PathBuf;
 
-const PROTO_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../proto/doppio.proto");
+const PROTO_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/proto/doppio.proto");
 
 #[derive(Debug, Default)]
 struct Message {

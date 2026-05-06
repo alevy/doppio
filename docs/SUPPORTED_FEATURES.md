@@ -1,6 +1,6 @@
 # doppio: Supported Ledger features
 
-**Last updated**: 2026-04-29 (doppio v0.4.0-rc.1)
+**Last updated**: 2026-05-06 (doppio v1.0.0)
 
 Feature-by-feature comparison of doppio's syntax surface against
 [ledger-cli](https://ledger-cli.org/) and [hledger](https://hledger.org/).
