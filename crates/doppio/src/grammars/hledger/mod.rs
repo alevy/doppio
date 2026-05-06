@@ -3,11 +3,11 @@
 //!
 //! This module follows the same three-layer structure as [`crate::grammars::ledger`]:
 //!
-//! 1. **[`HledgerParser`]** — a `pest`-derived parser generated from
+//! 1. **[`HledgerParser`]** -- a `pest`-derived parser generated from
 //!    `hledger.pest`.
-//! 2. **[`parse_hledger`]** — convenience function that wraps the parser with a
+//! 2. **[`parse_hledger`]** -- convenience function that wraps the parser with a
 //!    no-op include opener; useful in tests.
-//! 3. **[`HledgerFrontend`]** — implements [`crate::frontend::Frontend`] so the
+//! 3. **[`HledgerFrontend`]** -- implements [`crate::frontend::Frontend`] so the
 //!    CLI can select this parser by file extension (`.hledger`, `.journal`).
 //!
 //! ## Known limitations / stubs
@@ -31,10 +31,9 @@ use std::path::PathBuf;
 #[grammar = "grammars/hledger/hledger.pest"]
 pub(crate) struct HledgerParser;
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // Internal parser state
-// ──────────────────────────────────────────────────────────────────────────────
-
+// ---
 struct Parser<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
     opener: F,
     base_path: PathBuf,
@@ -77,7 +76,7 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     let _ = std::mem::replace(&mut self.base_path, old_base_path);
                 }
                 Rule::periodic_transaction => {
-                    // Periodic transactions (`~ monthly …`) share the same
+                    // Periodic transactions (`~ monthly ...`) share the same
                     // shape as ledger-cli budget entries: captured but not
                     // elaborated. The postings are intentionally dropped.
                 }
@@ -93,10 +92,9 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // AST construction helpers
-// ──────────────────────────────────────────────────────────────────────────────
-
+// ---
 fn parse_date(pair: Pair<Rule>) -> Date {
     // date = ${ year ~ date_sep ~ monthdate ~ date_sep ~ monthdate }
     let mut inner = pair.into_inner();
@@ -426,7 +424,7 @@ fn parse_account_item(pair: Pair<Rule>) -> AccountItem {
 /// ```
 ///
 /// Both symbol-first (`D $1,000.00`) and number-first (`D 1,000.00 USD`) forms
-/// are accepted. If the expression carries no commodity (e.g. `D 1000.00` — a
+/// are accepted. If the expression carries no commodity (e.g. `D 1000.00` -- a
 /// bare number), an error is returned because there is no symbol to register.
 fn parse_default_directive(pair: Pair<Rule>) -> Result<Directive, Box<dyn std::error::Error>> {
     let value_expr_pair = pair
@@ -459,7 +457,7 @@ fn parse_default_directive(pair: Pair<Rule>) -> Result<Directive, Box<dyn std::e
 
 fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
     let mut inner = pair.into_inner();
-    // commodity_format is the first child — the raw format string.
+    // commodity_format is the first child -- the raw format string.
     let raw = inner.next().unwrap().as_str().trim().to_string();
 
     // Derive the canonical commodity name from the format string by stripping
@@ -526,10 +524,9 @@ fn parse_commodity_item(pair: Pair<Rule>) -> CommodityItem {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // Value expression parser (Pratt)
-// ──────────────────────────────────────────────────────────────────────────────
-
+// ---
 use pest::iterators::Pairs;
 use pest::pratt_parser::PrattParser;
 use std::sync::LazyLock;
@@ -619,10 +616,9 @@ fn clean_decimal(s: &str) -> Decimal {
     cleaned.parse().unwrap_or(Decimal::ZERO)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // Convenience function
-// ──────────────────────────────────────────────────────────────────────────────
-
+// ---
 /// Parse hledger source with no `include` support.
 ///
 /// Any `include` directives in the input are silently resolved to empty (no
@@ -636,10 +632,9 @@ pub(crate) fn parse_hledger(input: &str) -> Result<Journal, Box<dyn std::error::
     .parse(input)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // Frontend impl
-// ──────────────────────────────────────────────────────────────────────────────
-
+// ---
 /// The hledger file-format frontend.
 ///
 /// Recognises `.hledger` and `.journal` files and converts them to
@@ -679,17 +674,16 @@ impl crate::frontend::Frontend for HledgerFrontend {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // Unit tests
-// ──────────────────────────────────────────────────────────────────────────────
-
+// ---
 #[cfg(test)]
 mod tests {
     use rust_decimal::dec;
 
     use super::*;
 
-    // ── simple transaction ────────────────────────────────────────────────────
+    // -- simple transaction ----------------------------------------------------
 
     #[test]
     fn simple_cleared_transaction() {
@@ -713,7 +707,7 @@ mod tests {
         assert!(tx.postings[1].amount.is_none(), "null posting");
     }
 
-    // ── pending status, code, inline comment, posting note ───────────────────
+    // -- pending status, code, inline comment, posting note ------------------─
 
     #[test]
     fn pending_with_code_and_comments() {
@@ -736,7 +730,7 @@ mod tests {
         assert!(tx.postings[0].notes[0].contains("vendor"));
     }
 
-    // ── balance assertion (=) ─────────────────────────────────────────────────
+    // -- balance assertion (=) ------------------------------------------------─
 
     #[test]
     fn balance_assertion_single_commodity() {
@@ -762,7 +756,7 @@ mod tests {
         );
     }
 
-    // ── strict balance assertion (==) ─────────────────────────────────────────
+    // -- strict balance assertion (==) ----------------------------------------─
 
     #[test]
     fn balance_assertion_strict() {
@@ -788,7 +782,7 @@ mod tests {
         );
     }
 
-    // ── balance assignment (= target, no LHS amount) ──────────────────────────
+    // -- balance assignment (= target, no LHS amount) --------------------------
 
     #[test]
     fn balance_assignment() {
@@ -809,7 +803,7 @@ mod tests {
         );
     }
 
-    // ── lot pricing @ ─────────────────────────────────────────────────────────
+    // -- lot pricing @ --------------------------------------------------------─
 
     #[test]
     fn lot_pricing_unit() {
@@ -835,7 +829,7 @@ mod tests {
         );
     }
 
-    // ── lot pricing @@ ────────────────────────────────────────────────────────
+    // -- lot pricing @@ --------------------------------------------------------
 
     #[test]
     fn lot_pricing_total() {
@@ -861,7 +855,7 @@ mod tests {
         );
     }
 
-    // ── historical price ──────────────────────────────────────────────────────
+    // -- historical price ------------------------------------------------------
 
     #[test]
     fn historical_price() {
@@ -882,7 +876,7 @@ mod tests {
         ));
     }
 
-    // ── account directive ─────────────────────────────────────────────────────
+    // -- account directive ----------------------------------------------------─
 
     #[test]
     fn account_directive_with_note() {
@@ -896,7 +890,7 @@ mod tests {
         assert!(!notes.is_empty(), "should capture the note");
     }
 
-    // ── commodity directive ───────────────────────────────────────────────────
+    // -- commodity directive --------------------------------------------------─
 
     #[test]
     fn commodity_directive_prefix_symbol() {
@@ -923,7 +917,7 @@ mod tests {
         assert_eq!(name, "EUR");
     }
 
-    // ── date separators ───────────────────────────────────────────────────────
+    // -- date separators ------------------------------------------------------─
 
     #[test]
     fn date_slash_separator() {
@@ -948,7 +942,7 @@ mod tests {
         assert_eq!(tx.date.date, 1);
     }
 
-    // ── hash comment ─────────────────────────────────────────────────────────
+    // -- hash comment --------------------------------------------------------─
 
     #[test]
     fn hash_comment_line() {
@@ -958,7 +952,7 @@ mod tests {
         assert!(matches!(journal.entries[0], Entry::Comment(_)));
     }
 
-    // ── negative amount ───────────────────────────────────────────────────────
+    // -- negative amount ------------------------------------------------------─
 
     #[test]
     fn negative_prefix_amount() {
@@ -968,11 +962,11 @@ mod tests {
             panic!();
         };
         let p = &tx.postings[0];
-        // $-110.00 → Unary(Sub, Amount($, 110.00))
+        // $-110.00 -> Unary(Sub, Amount($, 110.00))
         assert!(p.amount.is_some());
     }
 
-    // ── amount with comma thousands separator ─────────────────────────────────
+    // -- amount with comma thousands separator --------------------------------─
 
     #[test]
     fn amount_comma_thousands() {
@@ -990,7 +984,7 @@ mod tests {
         );
     }
 
-    // ── arithmetic in posting amount ──────────────────────────────────────────
+    // -- arithmetic in posting amount ------------------------------------------
 
     #[test]
     fn arithmetic_amount() {
@@ -1008,7 +1002,7 @@ mod tests {
         );
     }
 
-    // ── D default-commodity directive ─────────────────────────────────────────
+    // -- D default-commodity directive ----------------------------------------─
 
     #[test]
     fn d_directive_prefix_symbol() {
@@ -1040,7 +1034,7 @@ mod tests {
 
     #[test]
     fn d_directive_rejects_bare_number() {
-        // `D 1000.00` carries no commodity — the parser must reject it with a
+        // `D 1000.00` carries no commodity -- the parser must reject it with a
         // message that mentions "commodity" so the user knows what is missing.
         let err = parse_hledger("D 1000.00\n").unwrap_err();
         assert!(
@@ -1049,7 +1043,7 @@ mod tests {
         );
     }
 
-    // ── periodic transaction is silently ignored ──────────────────────────────
+    // -- periodic transaction is silently ignored ------------------------------
 
     #[test]
     fn periodic_transaction_ignored() {
@@ -1072,11 +1066,11 @@ mod tests {
         assert_eq!(txns.len(), 1);
     }
 
-    // ── virtual postings ──────────────────────────────────────────────────────
+    // -- virtual postings ------------------------------------------------------
 
     #[test]
     fn virtual_unbalanced_posting_parses_to_correct_kind() {
-        // `(Equity:Reservations)` — parentheses denote a virtual-unbalanced
+        // `(Equity:Reservations)` -- parentheses denote a virtual-unbalanced
         // posting. The account name must have the parens stripped and the kind
         // must be `PostingKind::VirtualUnbalanced`.
         let input = "\
@@ -1103,7 +1097,7 @@ mod tests {
 
     #[test]
     fn virtual_balanced_posting_parses_to_correct_kind() {
-        // `[Equity:Reservations]` — square brackets denote a virtual-balanced posting.
+        // `[Equity:Reservations]` -- square brackets denote a virtual-balanced posting.
         let input = "\
 2024-01-15 Setup
     Assets:Checking          $100
@@ -1126,7 +1120,7 @@ mod tests {
         );
     }
 
-    // ── full sample-journal smoke test ────────────────────────────────────────
+    // -- full sample-journal smoke test ----------------------------------------
 
     #[test]
     fn sample_journal_parses_without_error() {
@@ -1176,10 +1170,9 @@ P 2024-02-15 AAPL $182.50
         parse_hledger(input).expect("sample journal should parse without error");
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ---
     // Lot annotation grammar tests
-    // ──────────────────────────────────────────────────────────────────────
-
+    // ---
     #[test]
     fn test_lot_annotation_cost_only() {
         let input = "2024-03-01 Buy\n    assets:brokerage   10 AAPL {$150}\n    assets:cash\n";

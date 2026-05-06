@@ -13,7 +13,7 @@ const MONTH_NAMES_LONG = [
 
 /**
  * Render a MonthKey as a short label like "Apr 24". Hand-built rather
- * than going through Date + toLocaleDateString — that path treats the
+ * than going through Date + toLocaleDateString -- that path treats the
  * Date as UTC and formats in local time, which off-by-one's the month
  * label for any viewer west of UTC.
  */
@@ -35,7 +35,7 @@ export function monthLabelLong(m: MonthKey): string {
  * are suffixed with a space, mirroring ledger-cli's typical output.
  *
  * The numeric portion is rendered with 2 decimal places and
- * comma thousands separators (US convention) — e.g.
+ * comma thousands separators (US convention) -- e.g.
  * `$10,318.88`, `1,234.50 EUR`. The sign sits outside any currency
  * marker: `-$10,318.88`.
  */

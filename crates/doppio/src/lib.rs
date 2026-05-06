@@ -1,4 +1,4 @@
-//! doppio — a compiler and query library for the Ledger plain-text
+//! doppio -- a compiler and query library for the Ledger plain-text
 //! accounting format.
 //!
 //! # `.dop` binary format
@@ -36,12 +36,12 @@
 //!
 //! # Modules
 //!
-//! - [`frontend`] — the [`Frontend`] trait for pluggable file-format support.
-//! - [`grammars`] — grammar implementations ([`grammars::ledger`] for
+//! - [`frontend`] -- the [`Frontend`] trait for pluggable file-format support.
+//! - [`grammars`] -- grammar implementations ([`grammars::ledger`] for
 //!   ledger-cli, [`grammars::hledger`] for hledger).
-//! - [`resolution`] — alias resolution, date normalisation, metadata
+//! - [`resolution`] -- alias resolution, date normalisation, metadata
 //!   extraction.
-//! - [`elaboration`] — prost-generated Protocol Buffers types
+//! - [`elaboration`] -- prost-generated Protocol Buffers types
 //!   (`Journal`, `Transaction`, `Posting`, `Amount`, `Decimal`); this is the
 //!   canonical read-side public surface and the wire shape of `.dop` bodies.
 //!
@@ -76,7 +76,7 @@ pub mod frontend;
 pub mod grammars;
 pub mod resolution;
 
-/// Prost-generated Protocol Buffers types — canonical wire shape of `.dop` bodies.
+/// Prost-generated Protocol Buffers types -- canonical wire shape of `.dop` bodies.
 pub mod elaboration {
     include!(concat!(env!("OUT_DIR"), "/doppio.rs"));
 }
@@ -135,9 +135,9 @@ pub fn frontend_for_extension(ext: Option<&str>) -> Box<dyn Frontend> {
     Box::new(LedgerFrontend)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Proto conversion: elaboration types ↔ proto wire types
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
+// Proto conversion: elaboration types <-> proto wire types
+// ---
 
 /// Convert a `rust_decimal::Decimal` to the proto [`elaboration::Decimal`] encoding.
 ///
@@ -184,14 +184,14 @@ pub(crate) fn posting_kind_to_proto(kind: ast::PostingKind) -> i32 {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // Public write/read API
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 
 /// Compression algorithm used in the `.dop` payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
-    /// No compression — raw protobuf bytes.
+    /// No compression -- raw protobuf bytes.
     None,
     /// Deflate compression via `miniz_oxide`.
     Deflate,
@@ -274,7 +274,7 @@ pub fn read_dop<R: std::io::Read>(
 /// Each transaction is formatted using its [`std::fmt::Display`] impl and
 /// separated from the next by a blank line. The output is suitable for
 /// appending to or creating a `.ledger` source file and round-trips correctly
-/// through the parser: `write_ledger(txns)` → parse → resolve should yield
+/// through the parser: `write_ledger(txns)` -> parse -> resolve should yield
 /// semantically equivalent transactions.
 ///
 /// # Errors
@@ -327,7 +327,7 @@ where
 /// files are read in **lexicographic order** (sorted by path after expansion)
 /// and concatenated into a single string.
 ///
-/// A glob pattern that matches **zero** files is an error — it almost always
+/// A glob pattern that matches **zero** files is an error -- it almost always
 /// indicates a misconfigured `include` directive or a missing file tree.
 ///
 /// ## Literal paths
@@ -386,7 +386,7 @@ pub fn file_opener(pattern: &str) -> Result<String, Box<dyn std::error::Error>> 
 
 /// Compile Ledger source text into a fully elaborated [`Journal`].
 ///
-/// Runs the three in-memory pipeline stages in sequence — parse,
+/// Runs the three in-memory pipeline stages in sequence -- parse,
 /// resolve, elaborate. The `parser` argument supplies the file-opener
 /// for `include` directives and the base path for relative path
 /// resolution.
@@ -423,7 +423,7 @@ pub fn elaborate(
 /// This is the bridge between programmatic transaction construction (via the
 /// [`resolution::Transaction`] builder API) and full elaboration. It resolves
 /// aliases, evaluates amount expressions, balances postings, and applies cost
-/// basis — returning a fully resolved transaction or an error.
+/// basis -- returning a fully resolved transaction or an error.
 ///
 /// The `context` parameter supplies alias definitions, commodity aliases, and
 /// the default commodity. Use [`resolution::Context::default()`] when no
@@ -479,9 +479,9 @@ pub fn eval_transaction(
         .expect("journal should contain exactly one transaction"))
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 // .dop header helpers
-// ──────────────────────────────────────────────────────────────────────────────
+// ---
 
 /// Four-byte magic that identifies every `.dop` file.
 pub(crate) const DOP_MAGIC: [u8; 4] = *b"DOP\0";
@@ -558,7 +558,7 @@ pub(crate) fn dop_read_header<R: std::io::Read>(
             compression_reserved[0],
         )
     })?;
-    // byte 7 is reserved — ignored on read.
+    // byte 7 is reserved -- ignored on read.
 
     Ok(compression)
 }
@@ -951,5 +951,5 @@ mod eval_transaction_tests {
 // (proto_from_journal_tests module removed: it tested the
 // `From<&pipeline::Journal> for elaboration::Journal` impls that are being
 // deleted in this PR. Equivalent end-to-end coverage is provided by the
-// CLI's dop_format integration tests, which exercise the same compile →
-// write → read round-trip on the new direct path.)
+// CLI's dop_format integration tests, which exercise the same compile ->
+// write -> read round-trip on the new direct path.)

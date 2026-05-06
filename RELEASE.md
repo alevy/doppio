@@ -15,7 +15,7 @@ Breaking surfaces include:
 - The library API exposed from `lib.rs` (functions, public types, public
   trait impls).
 - The `.dop` binary format (`DOP_FORMAT_VERSION`).
-- The CLI's flag/subcommand contract — removing or renaming a flag is
+- The CLI's flag/subcommand contract -- removing or renaming a flag is
   breaking; adding one is additive.
 
 The MSRV is declared in `Cargo.toml` as `rust-version`. Bumping it is a
@@ -25,19 +25,19 @@ minor-version-only change.
 
 In dependency order. Each is a separate commit on a `release/v$NEW` branch.
 
-1. **Cargo.toml** — bump `version`. Bump `rust-version` only if MSRV
+1. **Cargo.toml** -- bump `version`. Bump `rust-version` only if MSRV
    actually changed (release notes the bump).
-2. **CHANGELOG.md** — replace the leading `## [Unreleased]` heading with
+2. **CHANGELOG.md** -- replace the leading `## [Unreleased]` heading with
    `## [$NEW] - YYYY-MM-DD` (today's ISO date). Add a fresh empty
    `## [Unreleased]` heading above. Audit recent commits to ensure no
    notable change was missed.
-3. **README.md** — sync any feature descriptions, CLI flag listings, or
+3. **README.md** -- sync any feature descriptions, CLI flag listings, or
    library examples affected by the release. The "Supported Ledger
    features" table should still be accurate.
-4. **docs/SUPPORTED_FEATURES.md** — bump the "Last updated" stamp; flip
-   any `🔧 Partial` / `🚫 Not supported` rows that became supported, and
-   add new rows for any new syntax/CLI surface.
-5. **docs/requirements.md** — bump "Last updated"; flip any REQ-GAP
+4. **docs/SUPPORTED_FEATURES.md** -- bump the "Last updated" stamp; flip
+   any `~` / `-` rows that became supported to `+`, and add new rows for
+   any new syntax/CLI surface.
+5. **docs/requirements.md** -- bump "Last updated"; flip any REQ-GAP
    markers that closed.
 
 ## Local quality gate
@@ -73,12 +73,12 @@ Against a real downstream books fixture. The reference target is
 ```sh
 cargo build --release
 
-# Source-path entry point — exercises path resolution and the full pipeline.
+# Source-path entry point -- exercises path resolution and the full pipeline.
 ./target/release/dop balance /path/to/bb-ledger/accounts/books.ledger
 # Expect: exit 0, full balance report on stdout, only legitimate `tag check`
 # warnings on stderr (data-driven, not a doppio bug).
 
-# .dop round-trip — exercises serialisation and the .dop reader.
+# .dop round-trip -- exercises serialisation and the .dop reader.
 ./target/release/dop compile /path/to/bb-ledger/accounts/books.ledger -o /tmp/bb.dop
 ./target/release/dop balance /tmp/bb.dop
 # Expect: same balance report.
@@ -96,8 +96,8 @@ Verify that `.dop` files produced by older releases fail cleanly with a
 clear "recompile" message rather than mis-parsing. Fixtures for each old
 format version live under `crates/doppio-cli/tests/fixtures/`:
 
-- `v0.1.0.dop` — format version 1 (postcard + XZ), produced by v0.1.0
-- `v0.2.0.dop` — format version 2 (postcard + XZ header layout), produced by v0.2.0
+- `v0.1.0.dop` -- format version 1 (postcard + XZ), produced by v0.1.0
+- `v0.2.0.dop` -- format version 2 (postcard + XZ header layout), produced by v0.2.0
 
 ```sh
 ./target/release/dop balance crates/doppio-cli/tests/fixtures/v0.1.0.dop
@@ -127,7 +127,7 @@ The order matters: publish first, tag only on success. A failed
 
 ```sh
 git checkout main && git pull            # release PR merged first
-cargo publish                            # the real thing — irreversible
+cargo publish                            # the real thing -- irreversible
 git tag -a v$NEW -m "Release v$NEW"
 git push origin v$NEW
 ```

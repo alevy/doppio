@@ -1,6 +1,6 @@
 //! Counter-account prediction for the doppio ledger compiler.
 //!
-//! Given a partial transaction (one side known — typically a bank/credit-card
+//! Given a partial transaction (one side known -- typically a bank/credit-card
 //! account from an import), suggest the most likely counter-account from
 //! patterns in an existing journal.
 //!

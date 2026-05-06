@@ -36,7 +36,7 @@ const total = computed(() =>
 );
 
 // A small palette of muted, distinguishable colours. Chart.js cycles
-// through these in order — we only need as many as the largest
+// through these in order -- we only need as many as the largest
 // category list seen in practice.
 const PALETTE = [
   "#7e8ed1",

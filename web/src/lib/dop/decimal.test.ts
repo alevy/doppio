@@ -22,7 +22,7 @@ describe("decimalFromWire", () => {
   });
 
   it("decodes simple positive values at scale 2", () => {
-    // $1.10 — mantissa 110 with scale 2 means 110 * 10^-2 = 1.1
+    // $1.10 -- mantissa 110 with scale 2 means 110 * 10^-2 = 1.1
     expect(decimalFromWire(wire(110n, 0n, 2)).equals(new Decimal("1.10"))).toBe(true);
     // $1,825.00 from sample.ledger
     expect(decimalFromWire(wire(182500n, 0n, 2)).equals(new Decimal("1825.00"))).toBe(true);

@@ -4,24 +4,24 @@
 //! This stage converts a [`resolution::HIR`] into an [`elaborator::Journal`]
 //! by performing the following work:
 //!
-//! - **Expression evaluation** — [`ast::ValueExpr`] trees are evaluated to
+//! - **Expression evaluation** -- [`ast::ValueExpr`] trees are evaluated to
 //!   concrete `(Decimal, commodity)` pairs by the [`evaluator`] submodule.
 //!   Commodity aliases from the active [`resolution::Context`] are applied.
 //!
-//! - **Transaction balancing** — if a transaction has exactly one posting with
+//! - **Transaction balancing** -- if a transaction has exactly one posting with
 //!   no explicit amount (a "null posting"), its amount is inferred as the
 //!   negation of all other postings' sum. If all postings have amounts their
 //!   sum must be zero; otherwise [`ElaborationError::TransactionDoesNotBalance`]
 //!   is returned.
 //!
-//! - **Balance assertions / assignments** — `= expected` checks are verified
+//! - **Balance assertions / assignments** -- `= expected` checks are verified
 //!   against the running account balance. `= target` assignments set the
 //!   posting amount to `target − current_balance`.
 //!
-//! - **Lot pricing** — `@ unit` and `@@ total` cost annotations are converted
+//! - **Lot pricing** -- `@ unit` and `@@ total` cost annotations are converted
 //!   into a cash amount in the lot's commodity for the purpose of balancing.
 //!
-//! - **Account registration** — every account mentioned in a posting is added
+//! - **Account registration** -- every account mentioned in a posting is added
 //!   to [`Journal::accounts`], merging any properties declared in `account`
 //!   directives.
 
@@ -64,9 +64,9 @@ pub struct Amount(pub BTreeMap<Commodity, Decimal>);
 pub enum TransactionState {
     /// No state marker.
     Uncleared,
-    /// `!` — pending confirmation.
+    /// `!` -- pending confirmation.
     Pending,
-    /// `*` — confirmed / reconciled.
+    /// `*` -- confirmed / reconciled.
     Cleared,
 }
 
@@ -331,7 +331,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
 
         // Pre-populate the accounts map from directives so that accounts
         // declared with notes but never posted to still appear in the output.
-        // Metadata is denormalised after the entry loop — see end of fn.
+        // Metadata is denormalised after the entry loop -- see end of fn.
         let mut accounts = BTreeMap::new();
         for (name, properties) in &value.global_context.account_properties {
             accounts.insert(
@@ -413,7 +413,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                 .cloned()
                                 .unwrap_or(posting.account);
                             let account_balance = state.account_balances.get(&account_name);
-                            // `lot_cash` — the (total, commodity) pair to use for
+                            // `lot_cash` -- the (total, commodity) pair to use for
                             // transaction balancing, along with the elaborated
                             // lot annotation for the proto output.
                             let (value, commodity, lot_cash, proto_lot) = match amount {
@@ -472,9 +472,9 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                         };
 
                                     // Cash-contribution priority:
-                                    // 1. lot_pricing (@/@@) present  → price drives cash (unchanged)
-                                    // 2. lot_annotation.cost present → quantity * cost_per_unit
-                                    // 3. otherwise                   → value contributes in its own
+                                    // 1. lot_pricing (@/@@) present  -> price drives cash (unchanged)
+                                    // 2. lot_annotation.cost present -> quantity * cost_per_unit
+                                    // 3. otherwise                   -> value contributes in its own
                                     //                                  commodity (today's fallback)
                                     let lot_cash = match lot_pricing {
                                         Some(ast::LotPricing::Total(expr)) => {
@@ -491,7 +491,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                             Some((v, c))
                                         }
                                         Some(ast::LotPricing::Unit(expr)) => {
-                                            // "@ unit_price" — total cash = units * price
+                                            // "@ unit_price" -- total cash = units * price
                                             let (v, c) = evaluator::eval_and_normalize_amount(
                                                 expr,
                                                 entry_context,
@@ -516,7 +516,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                         // Assertion: current_balance + this_posting == expected.
                                         // The assertion is checked BEFORE the posting updates the
                                         // running state, so `account_balance` reflects the balance
-                                        // *before* this posting — consistent with ledger-cli.
+                                        // *before* this posting -- consistent with ledger-cli.
                                         if !(bacommodity == commodity
                                             && account_balance
                                                 .and_then(|ab| ab.commodity.get(&commodity))
@@ -530,15 +530,15 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                     (value, commodity, lot_cash, proto_lot)
                                 }
                                 AmountDetails::BalanceAssignment(assignment) => {
-                                    // "= target_balance" — compute the delta needed to reach the
+                                    // "= target_balance" -- compute the delta needed to reach the
                                     // target from the current running balance.
                                     //
                                     // If the assignment expression is bare (no commodity), try to
                                     // infer the commodity from, in order of preference:
                                     //   1. The account's existing running balance (single
-                                    //      non-zero commodity) — most common case.
+                                    //      non-zero commodity) -- most common case.
                                     //   2. Other postings already processed in the current
-                                    //      transaction (single commodity) — covers e.g. bank
+                                    //      transaction (single commodity) -- covers e.g. bank
                                     //      imports that write `Income:Salary  =0` after a
                                     //      $-bearing `Assets:Checking` posting.
                                     // Running balances are never pruned, so we filter zero
@@ -604,7 +604,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             });
                         } else {
                             // Defer processing and save for next step.
-                            // (Null postings are always REAL — you cannot write a null virtual
+                            // (Null postings are always REAL -- you cannot write a null virtual
                             // posting, so the kind is left as the default Real from the parser.)
                             null_postings.push(posting);
                         }
@@ -648,7 +648,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                         // Virtual-unbalanced postings have already been excluded from
                         // transaction_state, so a transaction consisting solely of
                         // virtual-unbalanced postings will have an empty (zero) state and
-                        // will not trigger this error — which is the correct ledger-cli behaviour.
+                        // will not trigger this error -- which is the correct ledger-cli behaviour.
                         if transaction_state.0.values().any(|value| !value.is_zero()) {
                             return Err(ElaborationError::TransactionDoesNotBalance(
                                 transaction_state,
@@ -659,7 +659,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                     // Evaluate account-level assert/check directives for each posting.
                     //
                     // `tag()` lookups inherit transaction-level metadata: a
-                    // posting with no `; Entity: …` of its own still sees the
+                    // posting with no `; Entity: ...` of its own still sees the
                     // transaction's `Entity` tag (matching OG ledger-cli
                     // semantics). Posting-level metadata wins on key collision.
                     for (posting_index, posting) in resolved_postings.iter().enumerate() {
@@ -812,7 +812,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
 
         // Denormalise account metadata by inheritance. For every account
         // in the journal (declared OR only referenced by postings), walk
-        // its colon-separated ancestor chain root→leaf, merging in any
+        // its colon-separated ancestor chain root->leaf, merging in any
         // metadata declared on each ancestor's own `account` directive.
         // Closer ancestors override more distant ones; the account's own
         // declared metadata wins last. Consumers thus see a fully
@@ -835,7 +835,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                 }
             }
             // `inherited` now holds the merged ancestor metadata in
-            // root-→-leaf order (closer wins). For declared accounts
+            // root-->-leaf order (closer wins). For declared accounts
             // their own metadata was the last entry written, so we are
             // already correct. For undeclared accounts (referenced only
             // by postings) `inherited` is purely from ancestors. Either
@@ -971,14 +971,14 @@ mod evaluator {
         match eval(val, eval_context, running_state, &empty_meta, EVAL_BUDGET)? {
             ast::ValueExpr::Amount { value, commodity } => {
                 let commodity = if let Some(commodity) = commodity {
-                    // Apply commodity alias (e.g. "Bitcoin" → "BTC")
+                    // Apply commodity alias (e.g. "Bitcoin" -> "BTC")
                     eval_context
                         .commodity_aliases
                         .get(&commodity)
                         .unwrap_or(&commodity)
                         .clone()
                 } else {
-                    // No commodity in the expression — try context default, then
+                    // No commodity in the expression -- try context default, then
                     // the caller-supplied fallback (e.g. inferred from account balance).
                     eval_context
                         .default_commodity
@@ -1000,7 +1000,7 @@ mod evaluator {
     /// refer to the current posting's values.
     ///
     /// `posting_metadata` provides the key-value tag pairs from the posting's
-    /// notes (e.g. `; Entity: Foo` → `{"Entity": "Foo"}`). This is used by
+    /// notes (e.g. `; Entity: Foo` -> `{"Entity": "Foo"}`). This is used by
     /// the `tag("name")` built-in to look up metadata values.
     ///
     /// Returns `true` if the assertion passes, `false` if it fails, or an
@@ -1117,7 +1117,7 @@ mod evaluator {
             },
             Some((cmp_op, rhs_expr)) => {
                 // For regex comparisons the RHS is already a Regex literal in
-                // the AST — pass it through to eval_cmp without re-evaluating.
+                // the AST -- pass it through to eval_cmp without re-evaluating.
                 let rhs_val = match rhs_expr {
                     ast::ValueExpr::Regex(_) => rhs_expr.clone(),
                     other => eval(other.clone(), &ctx, state, posting_metadata, EVAL_BUDGET)?,
@@ -1375,9 +1375,9 @@ mod evaluator {
     /// Compare two evaluated [`ast::ValueExpr`] values with a [`CmpOp`].
     ///
     /// Supported comparisons:
-    /// - `Str == Str` / `Str != Str` — commodity identity checks
-    /// - `Str =~ Regex` / `Str !~ Regex` — regex match against a string
-    /// - `Amount cmp Amount` — numeric comparisons (same or compatible commodities)
+    /// - `Str == Str` / `Str != Str` -- commodity identity checks
+    /// - `Str =~ Regex` / `Str !~ Regex` -- regex match against a string
+    /// - `Amount cmp Amount` -- numeric comparisons (same or compatible commodities)
     ///
     /// Regex matching is case-sensitive by default (Rust `regex` crate semantics).
     /// Returns an error for type mismatches or an invalid regex pattern.
@@ -1395,7 +1395,7 @@ mod evaluator {
                     EvaluationError::InvalidRegexPattern(pattern.clone(), e.to_string())
                 })?;
                 // The only CmpOps valid with a Regex RHS are RegexMatch and
-                // RegexNotMatch — any other combination is a parser-level bug.
+                // RegexNotMatch -- any other combination is a parser-level bug.
                 Ok(match op {
                     CmpOp::RegexMatch => re.is_match(text),
                     CmpOp::RegexNotMatch => !re.is_match(text),
@@ -1454,7 +1454,7 @@ mod evaluator {
     ///
     /// The evaluator reduces arithmetic, applies unary operators, resolves
     /// function calls, and handles type annotations. It does not resolve
-    /// commodity aliases — that is done by `eval_and_normalize_amount`.
+    /// commodity aliases -- that is done by `eval_and_normalize_amount`.
     ///
     /// `posting_metadata` carries the key-value tag pairs from the posting's
     /// notes. It is forwarded into recursive calls and is read by the `tag()`
@@ -1507,7 +1507,7 @@ mod evaluator {
                     eval(*lhs, eval_context, state, posting_metadata, budget)?,
                     eval(*rhs, eval_context, state, posting_metadata, budget)?,
                 ) {
-                    // One side has a commodity, the other is dimensionless —
+                    // One side has a commodity, the other is dimensionless --
                     // the commodity propagates to the result. Both match arms
                     // handle the two orderings (commodity first or second).
                     (
@@ -1548,7 +1548,7 @@ mod evaluator {
                         },
                     }),
 
-                    // Both sides have the same commodity — straightforward arithmetic.
+                    // Both sides have the same commodity -- straightforward arithmetic.
                     (
                         ast::ValueExpr::Amount {
                             value: v1,
@@ -1650,13 +1650,13 @@ mod evaluator {
                 }
 
                 match (name.as_str(), args.as_slice()) {
-                    // scrub(x) — identity function used by some ledger-cli extensions
+                    // scrub(x) -- identity function used by some ledger-cli extensions
                     // to mark amounts as "scrubbed" (processed). Treated as a no-op.
                     ("scrub", [arg]) => {
                         eval(arg.clone(), eval_context, state, posting_metadata, budget)
                     }
 
-                    // account("Name") — returns an object with a "total" field
+                    // account("Name") -- returns an object with a "total" field
                     // containing the current running balance of the named account.
                     // Only the primary commodity ($) is currently surfaced.
                     ("account", [account]) => {
@@ -1692,10 +1692,10 @@ mod evaluator {
                         }
                     }
 
-                    // tag("name") — looks up a metadata key on the current posting.
+                    // tag("name") -- looks up a metadata key on the current posting.
                     //
                     // The posting's notes are parsed into key-value pairs by the
-                    // resolution stage (e.g. `; Entity: Foo` → `{"Entity": "Foo"}`).
+                    // resolution stage (e.g. `; Entity: Foo` -> `{"Entity": "Foo"}`).
                     // If the key is present its value is returned as a Str; if absent
                     // an empty string is returned so that `tag("X") =~ /pattern/`
                     // works naturally (empty string never matches a non-empty pattern).
@@ -1890,7 +1890,7 @@ mod tests {
         assert_eq!(journal.prices.len(), 1, "Journal should contain one price");
         let price = &journal.prices[0];
 
-        // date: 2024-06-15 → days since epoch
+        // date: 2024-06-15 -> days since epoch
         let expected_days = chrono::NaiveDate::from_ymd_opt(2024, 6, 15)
             .unwrap()
             .to_epoch_days();
@@ -1963,7 +1963,7 @@ define base_amount = 100 USD
         // The expression `2 * base_amount` becomes `2 * 100 USD` = `200 USD`.
         // Note: `base_amount` parses as Commodity("base_amount"); after define
         // substitution it becomes Amount{100, Some("USD")}.
-        // `2` parses as Amount{2, None}. Mul of (None, USD) → 200 USD.
+        // `2` parses as Amount{2, None}. Mul of (None, USD) -> 200 USD.
         let journal = elaborate(input);
         let tx = &journal.transactions[0];
         let food = tx
@@ -1984,7 +1984,7 @@ define base_amount = 100 USD
         // appeared before it in the source file.
         //
         // We test this by parsing a transaction where `myval` is NOT yet
-        // defined — it should be treated as a bare commodity rather than an
+        // defined -- it should be treated as a bare commodity rather than an
         // alias, causing an evaluation error (non-amount commodity alone does
         // not balance). The transaction after the define succeeds.
         //
@@ -2010,10 +2010,10 @@ define myval = $99.00
 
         // There should be 2 contexts (0 = initial, 1 = after define).
         assert_eq!(hir.contexts.len(), 2);
-        // First transaction references context 0 — no defines.
+        // First transaction references context 0 -- no defines.
         assert_eq!(hir.entries[0].context_id, 0);
         assert!(hir.contexts[0].defines.is_empty());
-        // Second transaction references context 1 — has the define.
+        // Second transaction references context 1 -- has the define.
         assert_eq!(hir.entries[1].context_id, 1);
         assert!(hir.contexts[1].defines.contains_key("myval"));
 
@@ -2033,7 +2033,7 @@ define myval = $99.00
     // -----------------------------------------------------------------------
 
     /// Verify that transaction state (`*` cleared, no marker uncleared) is
-    /// preserved all the way through parse → resolution → elaboration.
+    /// preserved all the way through parse -> resolution -> elaboration.
     #[test]
     fn test_transaction_state_preserved_through_pipeline() {
         let input = "\
@@ -2143,7 +2143,7 @@ define myval = $99.00
 ";
         let journal = elaborate(input);
 
-        // No filter — sum all transactions.
+        // No filter -- sum all transactions.
         let total: rust_decimal::Decimal = journal
             .transactions
             .iter()
@@ -2264,7 +2264,7 @@ define myval = $99.00
 
 2024-01-31 = Assets:Checking  $800.00
 ";
-        // $500 + $300 = $800 — assertion should pass.
+        // $500 + $300 = $800 -- assertion should pass.
         let journal = elaborate(input);
         assert_eq!(journal.transactions.len(), 2);
     }
@@ -2278,7 +2278,7 @@ define myval = $99.00
 
 2024-01-01 = Assets:Checking  $500.00 + $500.00
 ";
-        // $500 + $500 = $1000 — assertion should pass.
+        // $500 + $500 = $1000 -- assertion should pass.
         let journal = elaborate(input);
         assert_eq!(journal.transactions.len(), 1);
     }
@@ -2286,7 +2286,7 @@ define myval = $99.00
     #[test]
     fn test_balance_assertion_weak_ignores_other_commodities() {
         // Account holds both $ and EUR. A weak assertion on $ only should pass
-        // as long as the $ balance matches — EUR is ignored.
+        // as long as the $ balance matches -- EUR is ignored.
         let input = "\
 2024-01-01 USD deposit
     Assets:Multi  $1000.00
@@ -2336,7 +2336,7 @@ define myval = $99.00
         assert_eq!(journal.transactions.len(), 1);
     }
 
-    // ── Account-level assert/check tests ─────────────────────────────────────
+    // -- Account-level assert/check tests ------------------------------------─
 
     /// Helper: attempt elaboration and expect success.
     fn elaborate_ok(input: &str) -> crate::elaboration::Journal {
@@ -2360,7 +2360,7 @@ define myval = $99.00
 
     #[test]
     fn test_account_assert_commodity_passes() {
-        // Posting to Assets:Checking with "$" commodity — assertion must pass.
+        // Posting to Assets:Checking with "$" commodity -- assertion must pass.
         let input = "\
 account Assets:Checking
     assert commodity == \"$\"
@@ -2431,7 +2431,7 @@ account Income:Salary
     fn test_account_assert_dimensionless_lhs_compares_with_amount() {
         // `0 < amount` (LHS bare, RHS commodity-bearing) must work the same as
         // `amount > 0`. The commodity-compatibility check on numeric comparisons
-        // must be symmetric — without that, this would error with
+        // must be symmetric -- without that, this would error with
         // BinaryOperationTypeError instead of evaluating cleanly.
         let input = "\
 account Assets:Savings
@@ -2441,14 +2441,14 @@ account Assets:Savings
     Assets:Savings  $100.00
     Assets:Checking
 ";
-        // 0 < $100 is true — assertion passes, elaboration succeeds.
+        // 0 < $100 is true -- assertion passes, elaboration succeeds.
         let journal = elaborate_ok(input);
         assert_eq!(journal.transactions.len(), 1);
     }
 
     #[test]
     fn test_account_assert_dimensionless_lhs_fails_when_false() {
-        // Same shape as above but the comparison evaluates false — the
+        // Same shape as above but the comparison evaluates false -- the
         // assertion should fail (not error with a type mismatch).
         let input = "\
 account Assets:Savings
@@ -2481,7 +2481,7 @@ account Assets:Savings
 
     #[test]
     fn test_multiple_asserts_all_must_pass() {
-        // Two assert lines — both must hold. First passes, second fails.
+        // Two assert lines -- both must hold. First passes, second fails.
         let input = "\
 account Assets:Savings
     assert commodity == \"$\"
@@ -2507,7 +2507,7 @@ account Expenses:Food
     Expenses:Food  $-10.00
     Assets:Checking
 ";
-        // Should NOT error — check is non-fatal.
+        // Should NOT error -- check is non-fatal.
         let journal = elaborate_ok(input);
         assert_eq!(journal.transactions.len(), 1);
     }
@@ -2538,7 +2538,7 @@ account Assets:Checking
     Expenses:Food  50 EUR
     Assets:Checking  -50 EUR
 ";
-        // The Expenses:Food posting has no assertion — no error there.
+        // The Expenses:Food posting has no assertion -- no error there.
         // The Assets:Checking posting uses EUR, which fails the assertion.
         let (account, _, _) = elaborate_assert_fails(input);
         assert_eq!(account, "Assets:Checking");
@@ -2566,7 +2566,7 @@ account Assets:Savings
 
     #[test]
     fn test_bool_expr_or_chain_passes_when_either_true() {
-        // `amount > 0 or amount < 0` — true for any nonzero amount.
+        // `amount > 0 or amount < 0` -- true for any nonzero amount.
         // $50 > 0 is true, so the OR chain should pass.
         let input = "\
 account Assets:Savings
@@ -2585,7 +2585,7 @@ account Assets:Savings
     // -----------------------------------------------------------------------
 
     /// A bare `=0` balance assignment should succeed when the account already
-    /// has a running balance in exactly one commodity — the commodity is inferred
+    /// has a running balance in exactly one commodity -- the commodity is inferred
     /// from that prior balance, so no explicit commodity or default is needed.
     #[test]
     fn test_balance_assignment_infers_commodity_from_account_balance() {
@@ -2621,7 +2621,7 @@ account Assets:Savings
     }
 
     /// A balance assignment with an explicit commodity (e.g. `=$0`) should
-    /// work exactly as before — the inferred-commodity path is not taken when
+    /// work exactly as before -- the inferred-commodity path is not taken when
     /// the expression already carries a commodity.
     #[test]
     fn test_balance_assignment_explicit_commodity_still_works() {
@@ -2776,7 +2776,7 @@ commodity $
     }
 
     // -----------------------------------------------------------------------
-    // Tests for regex match operators (`=~` / `!~`) — issue #79
+    // Tests for regex match operators (`=~` / `!~`) -- issue #79
     // -----------------------------------------------------------------------
 
     /// `assert "abc" =~ /^a/` passes: the string starts with 'a'.
@@ -2862,7 +2862,7 @@ account Expenses:Travel
     }
 
     // -----------------------------------------------------------------------
-    // Tests for `tag("name")` function — issue #80
+    // Tests for `tag("name")` function -- issue #80
     // -----------------------------------------------------------------------
 
     /// Transaction-level metadata is inherited by postings: an assert that
@@ -2896,7 +2896,7 @@ account Expenses:Food
     ; Entity: Bar LLC
     Assets:Checking
 ";
-        // Expenses:Food's Entity is Bar LLC (posting wins) → matches /^Bar/.
+        // Expenses:Food's Entity is Bar LLC (posting wins) -> matches /^Bar/.
         let journal = elaborate(input);
         assert_eq!(journal.transactions.len(), 1);
     }
@@ -2953,7 +2953,7 @@ account Expenses:Food
     }
 
     /// Chained check: `tag("A") !~ /^\s*$/ and tag("B") !~ /^\s*$/`.
-    /// Both tags present and non-blank → passes.
+    /// Both tags present and non-blank -> passes.
     #[test]
     fn test_tag_fn_chained_and_both_present() {
         let input = "\
@@ -2970,7 +2970,7 @@ account Income:Salary
         assert_eq!(journal.transactions.len(), 1);
     }
 
-    /// Chained check: one tag present, one absent → fails.
+    /// Chained check: one tag present, one absent -> fails.
     #[test]
     fn test_tag_fn_chained_and_one_missing() {
         let input = "\
@@ -3020,7 +3020,7 @@ account Expenses:Food
     }
 
     // -----------------------------------------------------------------------
-    // Tests for invalid regex error — issue #79
+    // Tests for invalid regex error -- issue #79
     // -----------------------------------------------------------------------
 
     /// An invalid regex pattern in an `assert` expression should fail at
@@ -3042,7 +3042,7 @@ account Expenses:Food
     }
 
     // -----------------------------------------------------------------------
-    // Tests for tag directive validation — issue #82
+    // Tests for tag directive validation -- issue #82
     // -----------------------------------------------------------------------
 
     /// `tag X\n    assert value =~ /^foo/` with `; X: foobar` passes.
@@ -3194,7 +3194,7 @@ tag Statement
     }
 
     /// Bare colon-tags (e.g. `; :payroll:`) have no value and are NOT validated
-    /// by `tag` directive rules — they are skipped entirely.
+    /// by `tag` directive rules -- they are skipped entirely.
     #[test]
     fn test_tag_directive_does_not_validate_bare_colon_tags() {
         let input = "\
@@ -3216,7 +3216,7 @@ tag payroll
     // Tests for parameterized defines (issue #81)
     // -----------------------------------------------------------------------
 
-    /// `define isPositive(x) = x > 0` in an account assert — passing case.
+    /// `define isPositive(x) = x > 0` in an account assert -- passing case.
     #[test]
     fn test_parameterized_define_bool_passing() {
         let input = "\
@@ -3232,7 +3232,7 @@ account Expenses:Food
         elaborate(input);
     }
 
-    /// `define isNegative(x) = x < 0` in an account assert — positive amount
+    /// `define isNegative(x) = x < 0` in an account assert -- positive amount
     /// should trigger the assertion.
     #[test]
     fn test_parameterized_define_bool_failing() {
@@ -3289,7 +3289,7 @@ account Expenses:Food
         elaborate(input);
     }
 
-    /// Same `between` define — amount outside range fails.
+    /// Same `between` define -- amount outside range fails.
     #[test]
     fn test_parameterized_define_two_args_failing() {
         let input = "\
@@ -3411,7 +3411,7 @@ define double(x) = x * 2
         assert_eq!(food.amount_in("USD"), Some(dec!(100)));
     }
 
-    // ── Issue #89: parenthesised bool expressions in value/bool positions ──
+    // -- Issue #89: parenthesised bool expressions in value/bool positions --
 
     #[test]
     fn test_paren_bool_simple_assert_passes() {
@@ -3429,7 +3429,7 @@ account Assets:Savings
 
     #[test]
     fn test_paren_bool_or_chain_passes_when_first_true() {
-        // `(amount > 0 or amount < -10)` — first arm true, should pass.
+        // `(amount > 0 or amount < -10)` -- first arm true, should pass.
         let input = "\
 account Assets:Savings
     assert (amount > 0 or amount < -10)
@@ -3443,7 +3443,7 @@ account Assets:Savings
 
     #[test]
     fn test_paren_bool_or_chain_passes_when_second_true() {
-        // `(amount > 0 or amount < -10)` — second arm true.
+        // `(amount > 0 or amount < -10)` -- second arm true.
         let input = "\
 account Assets:Savings
     assert (amount > 0 or amount < -10)
@@ -3453,7 +3453,7 @@ account Assets:Savings
     Assets:Savings  $-100.00
 ";
         // $-100 satisfies `amount < -10` (the second branch).
-        // NOTE: amount here would be -100 which is < -10 → passes.
+        // NOTE: amount here would be -100 which is < -10 -> passes.
         elaborate(input);
     }
 
@@ -3477,7 +3477,7 @@ account Assets:Savings
     #[test]
     fn test_issue_89_define_with_complex_paren_bool() {
         // The exact pattern from issue #89 (simplified to avoid needing real
-        // metadata — just verify it elaborates without error when the outer
+        // metadata -- just verify it elaborates without error when the outer
         // `or` short-circuits on the amount comparison).
         let input = "\
 define assetChecker(amt) = (amt > -100.00 or (tag(\"TaxImplication\") !~ /^\\s*$/ and tag(\"Entity\") !~ /^\\s*$/))
@@ -3489,13 +3489,13 @@ account Assets:Savings
     Assets:Savings  $500.00
     Assets:Cash
 ";
-        // amount=500 > -100 → outer `or` short-circuits to true.
+        // amount=500 > -100 -> outer `or` short-circuits to true.
         elaborate(input);
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
+    // --------------------------------------------------------------------------
     // Virtual posting unit tests (#140)
-    // ──────────────────────────────────────────────────────────────────────────
+    // --------------------------------------------------------------------------
 
     /// A transaction with a real posting, a virtual-unbalanced posting, and
     /// a null posting: the unbalanced posting must not affect the null-posting
@@ -3589,7 +3589,7 @@ account Assets:Savings
 
     /// A virtual-unbalanced posting must update the running per-account balance
     /// so that a subsequent standalone balance assertion on the same account
-    /// reflects the virtual amount — matching ledger-cli behaviour.
+    /// reflects the virtual amount -- matching ledger-cli behaviour.
     #[test]
     fn virtual_unbalanced_posting_updates_account_balance_for_assertions() {
         // The virtual posting credits $-25 to Equity:Reservations.
@@ -3604,7 +3604,7 @@ account Assets:Savings
 
 2024-01-15 = Equity:Reservations  $-25
 ";
-        // Should elaborate without error — the balance assertion sees the virtual
+        // Should elaborate without error -- the balance assertion sees the virtual
         // posting's contribution.
         let j = elaborate(input);
         assert_eq!(j.transactions.len(), 1);
@@ -3617,13 +3617,13 @@ account Assets:Savings
         assert_eq!(virt.amount_in("$"), Some(dec!(-25)));
     }
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ----------------------------------------------------------------------
     // Lot annotation elaborator tests
-    // ──────────────────────────────────────────────────────────────────────
+    // ----------------------------------------------------------------------
 
     #[test]
     fn test_lot_cost_only_drives_cash_balance() {
-        // 10 AAPL {$150} (no @ price) → cash side -$1500.
+        // 10 AAPL {$150} (no @ price) -> cash side -$1500.
         let input = "\
 2024-03-01 Buy AAPL
     Assets:Brokerage   10 AAPL {$150}
@@ -3644,7 +3644,7 @@ account Assets:Savings
 
     #[test]
     fn test_lot_cost_and_price_price_wins_cash_cost_preserved() {
-        // 10 AAPL {$150} @ $155 → cash -$1550 (price drives balance),
+        // 10 AAPL {$150} @ $155 -> cash -$1550 (price drives balance),
         // but lot.cost = $150 is still stored.
         let input = "\
 2024-03-01 Buy AAPL
@@ -3670,7 +3670,7 @@ account Assets:Savings
 
     #[test]
     fn test_lot_no_cost_no_price_value_in_own_commodity() {
-        // 10 AAPL (no annotation, no price) → the null posting balances in
+        // 10 AAPL (no annotation, no price) -> the null posting balances in
         // AAPL (today's fallback: the commodity contributes itself).
         let input = "\
 2024-03-01 Transfer

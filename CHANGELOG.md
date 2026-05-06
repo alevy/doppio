@@ -3,10 +3,10 @@
 ## [0.4.0-rc.1] - 2026-04-28
 
 This release-candidate cuts the toward-1.0 architectural surface for
-review-by-use. **Not published to crates.io** — referenced by
+review-by-use. **Not published to crates.io** -- referenced by
 downstream consumers via the `v0.4.0-rc.1` git tag.
 
-### Breaking changes — public type surface (Phase C, milestone 7)
+### Breaking changes -- public type surface (Phase C, milestone 7)
 
 - **`doppio::elaboration::*` is now the prost-generated Protocol Buffers
   namespace.** The previous BTreeMap-based wrapper types
@@ -22,7 +22,7 @@ downstream consumers via the `v0.4.0-rc.1` git tag.
   sites. `read_dop_proto()` removed (now identical to `read_dop()`).
 - **`eval_transaction()` returns `elaboration::Transaction`**
   (previously `elaboration::ResolvedTransaction`).
-- **`.dop` binary format version bumped from 2 → 3.** Body encoding
+- **`.dop` binary format version bumped from 2 -> 3.** Body encoding
   migrated from `postcard` + `xz` to canonical Protocol Buffers
   (`prost 0.13`) with optional deflate compression (`miniz_oxide
   0.8`). Header layout unchanged (8 bytes: `DOP\0` magic, u16
@@ -31,7 +31,7 @@ downstream consumers via the `v0.4.0-rc.1` git tag.
   `.dop` files compiled with v0.2.0 are **no longer readable** and
   must be recompiled with `dop compile`.
 
-### Added — Phase C ergonomic accessors
+### Added -- Phase C ergonomic accessors
 
 Inherent methods on the prost-generated `elaboration::*` types so
 consumers don't reinvent wire-shape unwrapping at every call site.
@@ -40,17 +40,17 @@ read-side public API are method-style on the generated types; free
 functions like `decimal_from_proto` exist but are not the documented
 surface.
 
-- `Decimal::to_decimal() -> rust_decimal::Decimal` — reassemble the
+- `Decimal::to_decimal() -> rust_decimal::Decimal` -- reassemble the
   proto-encoded i128 mantissa (#117).
-- `Display for Decimal` — formats via `to_decimal()` so output
+- `Display for Decimal` -- formats via `to_decimal()` so output
   matches `rust_decimal::Decimal`'s Display (#116).
-- `Amount::iter() -> impl Iterator<Item = (&str, Decimal)>` — sorted
+- `Amount::iter() -> impl Iterator<Item = (&str, Decimal)>` -- sorted
   by commodity symbol (BTreeMap-based per build.rs config) (#114).
 - `Amount::get(commodity) -> Option<Decimal>` (#114).
-- `Posting::amounts()` / `amount_in(commodity)` — same shape as
+- `Posting::amounts()` / `amount_in(commodity)` -- same shape as
   `Amount::iter` / `get`, applied through the `Option<Amount>`
   wrapper (#114).
-- `Posting::amount() -> &Amount` — infallible accessor that papers
+- `Posting::amount() -> &Amount` -- infallible accessor that papers
   over the proto3 `Option<Amount>` quirk (returns a static empty
   `Amount` if the field is `None`, which the elaborator never
   legitimately produces) (#121).
@@ -59,7 +59,7 @@ surface.
   (#122).
 - `HistoricalPrice::date_naive() -> chrono::NaiveDate` (#122).
 
-### Added — frontend / serialization
+### Added -- frontend / serialization
 
 - **hledger frontend** (#103): `.hledger` and `.journal` files are now
   parsed by a dedicated hledger frontend (`HledgerFrontend`) rather than
@@ -78,16 +78,16 @@ surface.
   - The `Frontend` trait, `frontend_for_extension()`, and
     `HledgerFrontend` are all public so library consumers can select or
     instantiate the frontend directly.
-- `doppio::write_dop(journal, writer, compression)` — public API to
+- `doppio::write_dop(journal, writer, compression)` -- public API to
   serialise a compiled journal to any `Write` sink.
-- `doppio::read_dop(reader, path)` — public API to deserialise a `.dop`
+- `doppio::read_dop(reader, path)` -- public API to deserialise a `.dop`
   file from any `Read` source with clear error messages.
-- `doppio::elaborate(hir)` — convenience function: runs the elaboration
+- `doppio::elaborate(hir)` -- convenience function: runs the elaboration
   stage on a resolved HIR, returning `elaboration::Journal`. Used by
   the CLI when dispatching to a `Frontend` manually.
-- `doppio::Compression` enum (`None` | `Deflate`) — controls the
+- `doppio::Compression` enum (`None` | `Deflate`) -- controls the
   compression algorithm used by `write_dop`.
-- `--no-compression` flag on `dop compile` — produces uncompressed `.dop`
+- `--no-compression` flag on `dop compile` -- produces uncompressed `.dop`
   files (useful for streaming or tooling that reads raw protobuf).
 - `wasm32-unknown-unknown` library build is now part of CI (#101).
 

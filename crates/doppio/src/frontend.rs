@@ -1,4 +1,4 @@
-//! The [`Frontend`] trait — the extension point for pluggable file-format
+//! The [`Frontend`] trait -- the extension point for pluggable file-format
 //! support.
 //!
 //! Each frontend recognises one or more file extensions and is responsible
@@ -47,11 +47,11 @@ pub trait Frontend {
     ///
     /// # Parameters
     ///
-    /// - `input` — the complete source text of the file being parsed.
-    /// - `base_path` — the directory of the file currently being
+    /// - `input` -- the complete source text of the file being parsed.
+    /// - `base_path` -- the directory of the file currently being
     ///   parsed. Used to resolve relative paths in `include`
     ///   directives.
-    /// - `opener` — invoked for each `include` directive with the
+    /// - `opener` -- invoked for each `include` directive with the
     ///   resolved path (or glob pattern). Must return the concatenated
     ///   file contents or an error. Pass `|_| Ok(String::new())` to
     ///   silently ignore includes.

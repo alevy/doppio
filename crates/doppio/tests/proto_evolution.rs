@@ -3,7 +3,7 @@
 //! Two invariants every PR must preserve:
 //!
 //! 1. **No tag reuse**: a tag number may appear at most once per
-//!    message — either as a live field or in a `reserved` clause, not
+//!    message -- either as a live field or in a `reserved` clause, not
 //!    both, and never twice as a field.
 //! 2. **No silent gaps**: if a message's live field tags are
 //!    `{1, 2, 5}`, then `3` and `4` must appear in a `reserved` clause
@@ -15,7 +15,7 @@
 //! a field without reserving its tag fails this test; a PR that
 //! accidentally reuses a tag also fails.
 //!
-//! The parser here is regex-based and intentionally narrow — it
+//! The parser here is regex-based and intentionally narrow -- it
 //! understands the subset of proto syntax that `doppio.proto` actually
 //! uses (top-level `message Foo { ... }` blocks; field declarations of
 //! the form `[repeated|optional]? <type> <name> = <tag>;` plus
@@ -46,7 +46,7 @@ fn parse_proto(src: &str) -> Vec<Message> {
         }
 
         if let Some(name) = parse_message_header(line) {
-            // Top-level `message X {` — start a new message scope.
+            // Top-level `message X {` -- start a new message scope.
             assert!(
                 current.is_none(),
                 "nested top-level message? at: {raw_line}",
@@ -128,7 +128,7 @@ fn parse_field_tag(line: &str) -> Option<u32> {
 }
 
 /// Parse `reserved 3, 4, 5;` style clauses. Tags as strings (`reserved "foo";`)
-/// are NOT parsed here — name reservations don't constrain tag numbers.
+/// are NOT parsed here -- name reservations don't constrain tag numbers.
 fn parse_reserved_tags(line: &str) -> Option<Vec<u32>> {
     let rest = line.strip_prefix("reserved")?.trim_start();
     let body = rest.trim_end_matches(';').trim();

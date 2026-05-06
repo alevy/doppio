@@ -3,16 +3,16 @@
 //! These tests exercise [`doppio::file_opener`] and the include-handling path
 //! of [`doppio::grammars::ledger::Parser`] against real files on disk, covering:
 //!
-//! - single-file (literal path) includes — unchanged behaviour
-//! - glob patterns matching multiple files — lexicographic ordering
-//! - recursive glob (`**`) — deep directory traversal
-//! - glob with no matches — must produce an error
+//! - single-file (literal path) includes -- unchanged behaviour
+//! - glob patterns matching multiple files -- lexicographic ordering
+//! - recursive glob (`**`) -- deep directory traversal
+//! - glob with no matches -- must produce an error
 
 use std::io::Write as _;
 
 use tempfile::TempDir;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// -- helpers ------------------------------------------------------------------
 
 /// Create a file at `dir/name` with `content` and return its path.
 fn write_file(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf {
@@ -40,7 +40,7 @@ fn compile_with_dir(
     doppio::compile(&mut input, parser)
 }
 
-// ── single-file include ───────────────────────────────────────────────────────
+// -- single-file include ------------------------------------------------------─
 
 /// A literal path `include` should work exactly as before: one file, one entry.
 #[test]
@@ -62,7 +62,7 @@ fn single_file_include() {
     assert_eq!(journal.transactions[0].description, "Single file");
 }
 
-// ── glob: multiple matches, lexicographic order ───────────────────────────────
+// -- glob: multiple matches, lexicographic order ------------------------------─
 
 /// `include *.ledger` should include all matching files in sorted order so the
 /// transaction sequence is deterministic regardless of filesystem ordering.
@@ -99,7 +99,7 @@ fn glob_multiple_files_lexicographic_order() {
     let source = "include *.ledger\n";
     let journal = compile_with_dir(source, dir.path()).expect("compile");
 
-    // Files are sorted a.ledger → b.ledger → c.ledger, so transactions appear
+    // Files are sorted a.ledger -> b.ledger -> c.ledger, so transactions appear
     // in that order.
     assert_eq!(journal.transactions.len(), 3);
     assert_eq!(journal.transactions[0].description, "Alpha");
@@ -107,14 +107,14 @@ fn glob_multiple_files_lexicographic_order() {
     assert_eq!(journal.transactions[2].description, "Charlie");
 }
 
-// ── glob: no matches is an error ─────────────────────────────────────────────
+// -- glob: no matches is an error --------------------------------------------─
 
 /// A glob pattern that matches no files must return an error containing the
 /// pattern text, not silently include nothing.
 #[test]
 fn glob_no_matches_is_error() {
     let dir = TempDir::new().unwrap();
-    // No files in the directory — the glob will match nothing.
+    // No files in the directory -- the glob will match nothing.
 
     let source = "include *.ledger\n";
     let result = compile_with_dir(source, dir.path());
@@ -130,7 +130,7 @@ fn glob_no_matches_is_error() {
     );
 }
 
-// ── literal path not found is an error ───────────────────────────────────────
+// -- literal path not found is an error --------------------------------------─
 
 /// A literal `include` path that does not exist must return an error, not
 /// silently include nothing.
@@ -148,7 +148,7 @@ fn literal_path_not_found_is_error() {
     );
 }
 
-// ── recursive glob (**) ───────────────────────────────────────────────────────
+// -- recursive glob (**) ------------------------------------------------------─
 
 /// `include people/**/*.ledger` should recurse into subdirectories and include
 /// all matching files in lexicographic (path-sorted) order.
@@ -195,20 +195,20 @@ fn recursive_glob_includes_subdirectories() {
     assert_eq!(journal.transactions[2].description, "Carol contract");
 }
 
-// ── relative base_path: nested includes should not double-prefix ──────────────
+// -- relative base_path: nested includes should not double-prefix --------------
 
 /// Regression test for issue #90: when `dop` is invoked with a relative path
 /// (e.g. `dop balance accounts/books.ledger`), each nested `include` directive
-/// must resolve against the *included file's* directory — not by re-joining the
+/// must resolve against the *included file's* directory -- not by re-joining the
 /// cumulative base_path, which would double-prefix the path at each level.
 ///
 /// Layout:
 ///   <tmp>/
-///     main.ledger            → include sub/inner.ledger
+///     main.ledger            -> include sub/inner.ledger
 ///     sub/
-///       inner.ledger         → include nested/deeper.ledger
+///       inner.ledger         -> include nested/deeper.ledger
 ///       nested/
-///         deeper.ledger      → a single transaction
+///         deeper.ledger      -> a single transaction
 ///
 /// The test invokes `dop balance main.ledger` with `current_dir` set to `<tmp>`
 /// so that both the top-level path and every `include` path are relative.
@@ -254,7 +254,7 @@ fn relative_base_path_nested_include_no_double_prefix() {
     );
 }
 
-// ── concatenation safety ─────────────────────────────────────────────────────
+// -- concatenation safety ----------------------------------------------------─
 
 /// Files included via a glob that don't end with a trailing newline must still
 /// parse correctly when concatenated. Without a separator, the next file's

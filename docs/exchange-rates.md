@@ -1,9 +1,9 @@
 # Exchange rate semantics in doppio
 
 doppio supports converting amounts between commodities using `P` directives
-declared in the journal. This document captures the **algorithm**, the
+declared in the journal. The sections below cover the **algorithm**, the
 **rationale** for the choice, and how it compares to ledger-cli, hledger, and
-Beancount. It is the normative spec for cross-language consumers of `.dop`
+Beancount. This is the normative spec for cross-language consumers of `.dop`
 files reading the `journal.prices` field.
 
 ## The algorithm in 6 lines
@@ -52,22 +52,22 @@ function exchangeRateAt(
 }
 ```
 
-10 LOC of substance. Identical structure works in Python, Go, etc. — the
+10 LOC of substance. Identical structure works in Python, Go, etc. -- the
 multilingual recipe in `proto/doppio.proto`'s top comment block expands on
 this with idiomatic versions.
 
-## Why direct + inverse only — no chaining
+## Why direct + inverse only -- no chaining
 
 doppio explicitly **refuses** to compute a rate by chaining through
-intermediate commodities. If a journal declares `EUR → GBP` and
-`GBP → USD` but no direct `EUR ↔ USD` quote, `exchange_rate_at("EUR", "USD",
-…)` returns `None`. This is intentional. Three intertwined reasons:
+intermediate commodities. If a journal declares `EUR -> GBP` and
+`GBP -> USD` but no direct `EUR <-> USD` quote, `exchange_rate_at("EUR", "USD",
+...)` returns `None`. This is intentional:
 
 ### 1. PTA exchange rates are inherently estimates
 
-Real markets do not produce a single canonical rate for any pair. EUR→USD
-on Tuesday at 09:00 from Vendor A is not the same number as EUR→USD on
-Tuesday at 17:00 from Vendor B, and neither equals the inverse of USD→EUR
+Real markets do not produce a single canonical rate for any pair. EUR->USD
+on Tuesday at 09:00 from Vendor A is not the same number as EUR->USD on
+Tuesday at 17:00 from Vendor B, and neither equals the inverse of USD->EUR
 at the same moment. Bid-ask spread alone creates non-trivial divergence.
 The journal records the user's chosen quote at a chosen moment; the
 lookup just returns it. Every conversion the journal can express is an
@@ -75,8 +75,8 @@ estimate by construction; nobody pretends otherwise.
 
 ### 2. Chaining accumulates uncertainty silently
 
-Multi-hop synthesis takes data points the user wrote down — each subject
-to the uncertainty above — and combines them through multiplication. The
+Multi-hop synthesis takes data points the user wrote down -- each subject
+to the uncertainty above -- and combines them through multiplication. The
 result is a fabricated rate the user never declared. Worse:
 
 - Each chained hop may come from a different vendor or different time of
@@ -106,18 +106,18 @@ the gap and gradually erodes the user's trust in the report's numbers.
 | | doppio (this project) | Beancount | hledger | ledger-cli |
 |---|---|---|---|---|
 | Direct quote | ✓ | ✓ | ✓ tier 1 | ✓ |
-| Inverse quote (1/B→A) | ✓ (most-recent overall wins) | ✓ | ✓ tier 2 | ✓ |
-| Chain through intermediates | ✗ — explicit decision | ✗ — explicit decision | ✓ tier 3-4 with depth limit | ✓ "as long as desired" per docs |
+| Inverse quote (1/B->A) | ✓ (most-recent overall wins) | ✓ | ✓ tier 2 | ✓ |
+| Chain through intermediates | ✗ -- explicit decision | ✗ -- explicit decision | ✓ tier 3-4 with depth limit | ✓ "as long as desired" per docs |
 | Failure mode when no rate | `None` returned | `None` (varies by tool path) | "gave up" message at depth limit | implementation-defined |
 | Algorithm complexity | linear scan | linear scan | bounded BFS | under-documented |
 
 **Beancount** explicitly treats currency conversion as **non-transitive**:
 "Commodity conversion in beancount is not transitive, so even though you
-might have mapping for XXX→GBP and GBP→EUR, beancount won't map XXX to
+might have mapping for XXX->GBP and GBP->EUR, beancount won't map XXX to
 EUR via GBP." This is the design choice doppio inherits.
 
-**hledger** chains with a tiered fallback (direct → inverse → forward
-chain → mixed forward/reverse chain), depth-limited with a "gave up"
+**hledger** chains with a tiered fallback (direct -> inverse -> forward
+chain -> mixed forward/reverse chain), depth-limited with a "gave up"
 failure mode. Documented at <https://hledger.org/currency-conversion.html>.
 hledger's depth limit acknowledges what doppio takes a step further:
 chain confidence drops with each hop.
@@ -152,26 +152,16 @@ no direct quote from JPY to USD; leaving 1,000.00 JPY unconverted
 ```
 
 The mixed-commodity total is the truthful answer when conversion is
-incomplete, not a fabricated USD figure.
-
-## What this means for downstream consumers
-
-A `.dop` file ships `journal.prices` exactly as the user authored it
-(plus any inferred prices from cost annotations). The lookup contract is
-the 10-line algorithm above. **That is the entire format-as-API contract
-for FX.**
-
-If a consumer wants chaining behaviour like ledger-cli or hledger,
-nothing in the format prevents them from implementing it on top. The
-library doesn't choose for them; the format ships the raw quotes and the
-default lookup is conservative. A consumer who does want chaining
-explicitly opts into the trade-offs documented above.
+incomplete, not a fabricated USD figure. Consumers who want chaining
+behaviour can implement it on top of `journal.prices`; the format ships
+raw quotes and the default lookup is conservative, leaving the trade-offs
+documented above as an explicit opt-in.
 
 ## History
 
 This document supersedes earlier doppio behaviour: through v0.4, the
 Rust `Journal::exchange_rate_at` did unbounded BFS chaining with inverse
-edges and alphabetical tie-breaking — strictly more aggressive than
+edges and alphabetical tie-breaking -- strictly more aggressive than
 hledger's bounded version. The decision to drop chaining was driven by:
 
 - **The "is this is good idea?" pressure test in
@@ -184,8 +174,8 @@ hledger's bounded version. The decision to drop chaining was driven by:
   and the semantic divergence of compact ones. None was clearly better
   than baseline.
 - **Recognising the BFS itself was over-engineered**, not just hard to
-  port to other languages. The reframing question — "what does the user
-  actually want when they write a P directive?" — pointed at the
+  port to other languages. The reframing question -- "what does the user
+  actually want when they write a P directive?" -- pointed at the
   Beancount answer: don't fabricate beyond what was written.
 
 The PR that landed this change closed [#158](https://github.com/alevy/doppio/issues/158)

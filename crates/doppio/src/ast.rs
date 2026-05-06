@@ -8,7 +8,7 @@
 //!
 //! Many of the structural types here are now `pub(crate)` after the 1.0
 //! API audit. They are populated by the parser and consumed by the
-//! resolver, but never inspected by external callers — the resolver
+//! resolver, but never inspected by external callers -- the resolver
 //! consumes the journal and produces a [`crate::resolution::HIR`].
 //! Enum variants and fields that the resolver doesn't observe show up
 //! as dead code under `cargo clippy`; the suppression below is
@@ -42,7 +42,7 @@ pub struct Journal {
 pub(crate) enum Entry {
     /// A double-entry accounting transaction (date, description, postings).
     Transaction(Transaction),
-    /// A configuration directive (`commodity`, `account`, `alias`, …).
+    /// A configuration directive (`commodity`, `account`, `alias`, ...).
     Directive(Directive),
     /// A `P` price directive recording the market price of a commodity.
     HistoricalPrice(HistoricalPrice),
@@ -98,7 +98,7 @@ pub(crate) enum Directive {
         name: String,
         /// Free-form notes attached to the commodity block header.
         notes: Vec<String>,
-        /// Structured sub-items (`alias`, `format`, `nomarket`, `default`, …).
+        /// Structured sub-items (`alias`, `format`, `nomarket`, `default`, ...).
         items: Vec<CommodityItem>,
     },
     /// An `account` block declaring properties of an account.
@@ -107,7 +107,7 @@ pub(crate) enum Directive {
         name: String,
         /// Free-form notes attached to the account block header.
         notes: Vec<String>,
-        /// Structured sub-items (`alias`, `note`, …).
+        /// Structured sub-items (`alias`, `note`, ...).
         items: Vec<AccountItem>,
     },
     /// A directive whose keyword was not recognised.
@@ -133,7 +133,7 @@ pub(crate) enum Directive {
         name: String,
         /// Ordered parameter names. Empty for non-parameterized defines.
         params: Vec<String>,
-        /// The body expression — either a value expression or a boolean expression.
+        /// The body expression -- either a value expression or a boolean expression.
         body: DefineBody,
     },
     /// A `tag` block declaring validation rules for a metadata tag.
@@ -213,9 +213,9 @@ pub enum CmpOp {
     Le,
     Gt,
     Ge,
-    /// `=~` — LHS string matches the regex RHS.
+    /// `=~` -- LHS string matches the regex RHS.
     RegexMatch,
-    /// `!~` — LHS string does not match the regex RHS.
+    /// `!~` -- LHS string does not match the regex RHS.
     RegexNotMatch,
 }
 
@@ -295,9 +295,9 @@ impl std::fmt::Display for DefineBody {
 pub(crate) struct Date {
     /// The calendar year, e.g. `2024`. `None` if not present in the source.
     pub year: Option<i32>,
-    /// Month of the year (1–12).
+    /// Month of the year (1-12).
     pub month: u32,
-    /// Day of the month (1–31).
+    /// Day of the month (1-31).
     pub date: u32,
 }
 
@@ -382,22 +382,22 @@ impl Display for Transaction {
 /// Ledger-cli permits two virtual-posting markers that change balance-rule
 /// semantics:
 ///
-/// - `Real` — ordinary posting; participates in the transaction balance check.
-/// - `VirtualUnbalanced` — written as `(Account)`; the posting is excluded from
+/// - `Real` -- ordinary posting; participates in the transaction balance check.
+/// - `VirtualUnbalanced` -- written as `(Account)`; the posting is excluded from
 ///   the transaction's balance check. The two "real" postings must balance among
 ///   themselves; the virtual posting is stored but contributes no balancing
 ///   obligation.
-/// - `VirtualBalanced` — written as `[Account]`; the posting is included in the
+/// - `VirtualBalanced` -- written as `[Account]`; the posting is included in the
 ///   balance check (like a real posting) but is flagged so reports can show or
 ///   hide it via `--real`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PostingKind {
-    /// Ordinary posting — participates in the transaction balance check.
+    /// Ordinary posting -- participates in the transaction balance check.
     #[default]
     Real,
-    /// `(Account)` — excluded from the balance check.
+    /// `(Account)` -- excluded from the balance check.
     VirtualUnbalanced,
-    /// `[Account]` — included in the balance check, but flagged as virtual.
+    /// `[Account]` -- included in the balance check, but flagged as virtual.
     VirtualBalanced,
 }
 
@@ -410,7 +410,7 @@ pub(crate) struct Posting {
     /// The account name, e.g. `"Expenses:Food"`.
     ///
     /// For virtual postings the surrounding markers (`(` `)` or `[` `]`) are
-    /// stripped by the parser — only the bare account name is stored here.
+    /// stripped by the parser -- only the bare account name is stored here.
     /// The marker semantics live in [`Self::kind`].
     pub account: String,
     /// The amount, or `None` if this is a "null posting" whose value should
@@ -476,7 +476,7 @@ impl Display for Posting {
 ///
 /// Marked `#[non_exhaustive]` so that doppio can grow new posting-amount
 /// shapes (e.g. for future budget directives) in 1.x without bumping
-/// the major version. Match arms must use a wildcard `_ => …` arm.
+/// the major version. Match arms must use a wildcard `_ => ...` arm.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
 pub enum AmountDetails {
@@ -612,7 +612,7 @@ impl Display for ValueExpr {
 ///
 /// Marked `#[non_exhaustive]` so that the grammar can grow new
 /// expression forms in 1.x without bumping the major version. Match
-/// arms must use a wildcard `_ => …` arm.
+/// arms must use a wildcard `_ => ...` arm.
 #[derive(PartialEq, Eq, Debug, Clone)]
 #[non_exhaustive]
 pub enum ValueExpr {
@@ -750,12 +750,12 @@ pub struct LotAnnotation {
 /// Cleared/pending state of a transaction or individual posting.
 #[derive(Clone, Debug, Default)]
 pub enum TransactionState {
-    /// No state marker — the transaction has not been reviewed.
+    /// No state marker -- the transaction has not been reviewed.
     #[default]
     Uncleared,
-    /// `!` — the transaction is pending confirmation.
+    /// `!` -- the transaction is pending confirmation.
     Pending,
-    /// `*` — the transaction has been confirmed/reconciled.
+    /// `*` -- the transaction has been confirmed/reconciled.
     Cleared,
 }
 

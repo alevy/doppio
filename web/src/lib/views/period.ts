@@ -124,7 +124,7 @@ export function incomeExpenseByMonth(
         // Income is credit-normal; flip to read positive.
         b.income = b.income.plus(v.neg());
       } else if (p.account.startsWith("Expenses:") || p.account === "Expenses") {
-        // Expenses live outside the four-name heuristic table — match
+        // Expenses live outside the four-name heuristic table -- match
         // explicitly so a journal that puts non-expense items under a
         // top-level "Expenses" account is handled the same way doppio's
         // text reports do.
@@ -235,7 +235,7 @@ export function netWorthAsOfLatest(
 }
 
 /**
- * KPI: cash on hand — sum of postings on accounts under
+ * KPI: cash on hand -- sum of postings on accounts under
  * `Assets:Bank:` or `Assets:Cash` in the primary commodity. The leaf
  * "checking-style" subset; deliberately excludes brokerage / 401k /
  * crypto so the number reflects actually-spendable balance.
@@ -284,7 +284,7 @@ export function periodNet(
 /**
  * KPI: average monthly expenses over the journal's full span (or
  * supplied [begin, end] window). Months with zero expense activity
- * still count toward the denominator — the goal is "what's typical
+ * still count toward the denominator -- the goal is "what's typical
  * monthly burn", not "average of months that had any spending".
  */
 export function avgMonthlyExpense(

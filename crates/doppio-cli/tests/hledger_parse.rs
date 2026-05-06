@@ -12,7 +12,7 @@
 
 use std::{io::Write as _, path::PathBuf, process::Command};
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// -- helpers ------------------------------------------------------------------─
 
 /// Absolute path to the `dop` binary under test.
 fn dop_bin() -> PathBuf {
@@ -62,7 +62,7 @@ fn sample_hledger_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.hledger")
 }
 
-// ── extension dispatch ────────────────────────────────────────────────────────
+// -- extension dispatch --------------------------------------------------------
 
 /// A `.hledger` file is dispatched to the hledger frontend and parses cleanly.
 #[test]
@@ -86,7 +86,7 @@ fn journal_extension_dispatches_to_hledger_frontend() {
     assert!(out.contains("10"), "amount should appear: {out}");
 }
 
-// ── sample fixture round-trips ────────────────────────────────────────────────
+// -- sample fixture round-trips ------------------------------------------------
 
 /// `dop balance sample.hledger` exits 0 (end-to-end smoke test).
 #[test]
@@ -94,7 +94,7 @@ fn sample_hledger_balance_exits_zero() {
     let path = sample_hledger_path();
     // The fixture has an `include common.journal` directive which will fail to
     // open. Run without includes by relying on the fact that the CLI passes
-    // `file_opener` which returns an error — but `include` silently fails on
+    // `file_opener` which returns an error -- but `include` silently fails on
     // missing includes only in the no-op opener.  To keep the fixture clean,
     // we make a copy without the include line.
     let content = std::fs::read_to_string(&path).expect("read sample");
@@ -148,7 +148,7 @@ fn sample_hledger_commodity_directives_parse() {
     assert!(out.contains("10"), "amount should appear: {out}");
 }
 
-// ── specific entry forms ──────────────────────────────────────────────────────
+// -- specific entry forms ------------------------------------------------------
 
 /// Simple two-posting cleared transaction (entry form 1).
 #[test]
@@ -202,7 +202,7 @@ fn entry_form_balance_assertion() {
 
 /// Strict balance assertion `==` (entry form 4): parses without error.
 ///
-/// Same as the weak assertion test — prime the account first so the
+/// Same as the weak assertion test -- prime the account first so the
 /// assertion holds during elaboration.
 #[test]
 fn entry_form_strict_balance_assertion() {
@@ -316,10 +316,10 @@ fn entry_form_hash_comment() {
     assert!(out.contains("10"), "amount should appear: {out}");
 }
 
-// ── automated posting rule stub ───────────────────────────────────────────────
+// -- automated posting rule stub ----------------------------------------------─
 
 /// An automated posting rule with a plain account posting (no `*N` arithmetic)
-/// is silently ignored — it should not crash the parser.
+/// is silently ignored -- it should not crash the parser.
 ///
 /// Note: `*N` multiplier bodies are stubbed out (TODO #103).
 #[test]
@@ -343,7 +343,7 @@ fn auto_rule_without_arithmetic_body_is_ignored() {
     );
 }
 
-// ── date formats ──────────────────────────────────────────────────────────────
+// -- date formats --------------------------------------------------------------
 
 /// `dop balance` on a minimal `.hledger` file exits 0 (pure end-to-end check).
 #[test]
@@ -374,7 +374,7 @@ fn invalid_hledger_file_returns_error() {
     );
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// -- helpers ------------------------------------------------------------------─
 
 /// Load sample.hledger, strip the include directive (which would attempt I/O).
 fn fixture_without_includes() -> String {

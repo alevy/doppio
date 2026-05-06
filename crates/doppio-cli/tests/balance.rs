@@ -103,7 +103,7 @@ fn commodity_default_sets_default_commodity() {
 
 #[test]
 fn commodity_format_prefix_symbol_applied_to_balance() {
-    // `format $1,000.00` → prefix `$`, thousands `,`, 2 decimal places.
+    // `format $1,000.00` -> prefix `$`, thousands `,`, 2 decimal places.
     // A balance of 1234.56 should render as `$1,234.56`, not `$ 1234.56`.
     let content = "commodity $
     format $1,000.00
@@ -122,7 +122,7 @@ fn commodity_format_prefix_symbol_applied_to_balance() {
 
 #[test]
 fn commodity_nomarket_stored_does_not_break_output() {
-    // `nomarket` is a flag — it should not affect output or cause an error.
+    // `nomarket` is a flag -- it should not affect output or cause an error.
     let content = "commodity USD
     nomarket
 
@@ -139,7 +139,7 @@ fn commodity_nomarket_stored_does_not_break_output() {
 
 #[test]
 fn commodity_format_suffix_symbol_applied_to_register() {
-    // `format 1.000,00 EUR` → suffix ` EUR`, thousands `.`, decimal `,`, 2 places.
+    // `format 1.000,00 EUR` -> suffix ` EUR`, thousands `.`, decimal `,`, 2 places.
     let content = "commodity EUR
     format 1.000,00 EUR
 
@@ -150,7 +150,7 @@ fn commodity_format_suffix_symbol_applied_to_register() {
     let f = tmp_journal_file(content);
     let out = run(&["register", f.path().to_str().unwrap()]);
     // The register output should show `2,500.00 EUR` ... but the format uses
-    // `.` as thousands sep and `,` as decimal — so it should be `2.500,00 EUR`.
+    // `.` as thousands sep and `,` as decimal -- so it should be `2.500,00 EUR`.
     assert!(
         out.contains("2.500,00 EUR"),
         "formatted amount should appear as '2.500,00 EUR': {out}"
@@ -213,7 +213,7 @@ fn balance_real_flag_excludes_virtual_balanced() {
 
 #[test]
 fn commodity_format_single_separator_three_digits_is_thousands() {
-    // `format $1.000` — a single separator followed by exactly 3 digits is a
+    // `format $1.000` -- a single separator followed by exactly 3 digits is a
     // *thousands* separator per ledger convention, not a decimal point.
     // A balance of 1000 should render as `$1.000`, not `$1` (which would
     // result from misinterpreting `.000` as 3 decimal places on `1.000`).
