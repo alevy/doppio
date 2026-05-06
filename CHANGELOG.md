@@ -129,6 +129,10 @@ surface.
 
 ## [Unreleased]
 
+---
+
+## [1.0.0] - 2026-05-06
+
 ### Breaking changes -- public Rust API surface (Phase E, milestone 11)
 
 The 1.0 cut commits to a curated public API. The audit (#159) demoted

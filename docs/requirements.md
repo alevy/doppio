@@ -1,6 +1,6 @@
 # doppio Requirements
 
-**Last updated**: 2026-04-27 (post-v0.2.0; toward-1.0 phasing)
+**Last updated**: 2026-05-06 (doppio v1.0.0)
 
 ---
 
