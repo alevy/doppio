@@ -40,13 +40,13 @@ let resolved = doppio::eval_transaction(txn, &Context::default())?;
 
 // Or compile a full journal from source. The opener returns
 // Result<String, Box<dyn Error>> so it can surface I/O failures.
-let journal = doppio::compile(&source_text, doppio::parser::Parser {
+let journal = doppio::compile(&source_text, doppio::grammars::ledger::Parser {
     opener: doppio::file_opener, // built-in glob-aware opener
     base_path: std::path::PathBuf::from("."),
 })?;
 
 for txn in &journal.transactions {
-    println!("{}: {}", txn.date, txn.description);
+    println!("{}: {}", txn.date_naive(), txn.description);
 }
 ```
 
@@ -224,3 +224,7 @@ Live preview: <https://alevy.github.io/doppio/> (deployed automatically from `ma
 ## Changelog
 
 See [CHANGELOG.md](./CHANGELOG.md) for release notes.
+
+## Upgrading from 0.x
+
+If you have downstream code on the `v0.4.0-rc.1` tag or on the published v0.2.0, [`docs/MIGRATION.md`](./docs/MIGRATION.md) walks through every breaking change between then and 1.0 — wire-format migration, API surface audit, and the now-private items behind their public wrappers. Most call sites only need the path renames in §1.3 and the `Frontend::parse` return-type drop-the-`try_into` change in §1.4.
