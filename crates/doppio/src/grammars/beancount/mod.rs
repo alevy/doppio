@@ -567,20 +567,50 @@ fn clean_decimal(s: &str) -> Decimal {
 }
 
 // ---
+// Date-order normalisation
+// ---
+/// Beancount evaluates entries in **date order**, not source order, which
+/// matters for `pad` + `balance` (a pad must see all transactions on its
+/// target account between its date and the next assertion's date before
+/// computing the gap to fill).
+///
+/// We stable-sort the AST entries here so the resolver and elaborator can
+/// stay source-order-agnostic. Undated entries (directives, comments)
+/// keep their original relative position and sort before any dated entry
+/// because directives are setup that should apply before the journal's
+/// time-evolving state begins.
+fn sort_entries_by_date(entries: &mut [Entry]) {
+    entries.sort_by_key(entry_date_key);
+}
+
+fn entry_date_key(entry: &Entry) -> Option<Date> {
+    match entry {
+        Entry::Transaction(t) => Some(t.date.clone()),
+        Entry::Assertion(a) => Some(a.date.clone()),
+        Entry::HistoricalPrice(hp) => Some(hp.date.clone()),
+        Entry::Pad(p) => Some(p.date.clone()),
+        Entry::Directive(_) | Entry::Comment(_) => None,
+    }
+}
+
+// ---
 // Convenience function (test-only)
 // ---
 /// Parse Beancount source with no `include` support.
 ///
 /// Any `include` directive in the input is silently resolved to an empty
 /// string (no entries pulled in). Useful for unit tests and standalone
-/// parsing.
+/// parsing. Entries are date-sorted before return (matching the
+/// Beancount language semantics).
 #[cfg(test)]
 pub(crate) fn parse_beancount(input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
-    Parser {
+    let mut journal = Parser {
         opener: |_| Ok(String::new()),
         base_path: PathBuf::new(),
     }
-    .parse(input)
+    .parse(input)?;
+    sort_entries_by_date(&mut journal.entries);
+    Ok(journal)
 }
 
 // ---
@@ -618,11 +648,16 @@ impl crate::frontend::Frontend for BeancountFrontend {
         base_path: &std::path::Path,
         opener: &crate::frontend::Opener,
     ) -> Result<crate::resolution::HIR, Box<dyn std::error::Error>> {
-        let ast_journal = Parser {
+        let mut ast_journal = Parser {
             opener: |path: &str| opener(path),
             base_path: base_path.to_path_buf(),
         }
         .parse(input)?;
+        // Beancount is date-ordered, not source-ordered. Sort once at the
+        // outermost call (after include resolution has flattened the tree)
+        // so resolver + elaborator can treat the entries as already in
+        // chronological order.
+        sort_entries_by_date(&mut ast_journal.entries);
         Ok(ast_journal.try_into()?)
     }
 }
@@ -1005,16 +1040,215 @@ mod tests {
     #[test]
     fn sample_fixture_round_trips_through_resolution() {
         // The full parity fixture should walk through parse + resolution
-        // without errors. `pad` survives as a marker; resolution drops it
-        // (#147 owns the elaboration path).
+        // without errors.
         let journal = parse_beancount(SAMPLE).expect("parse sample.beancount");
         assert!(!journal.entries.is_empty());
         let _hir: crate::resolution::HIR = journal.try_into().expect("resolve sample.beancount");
     }
 
     #[test]
+    fn sample_fixture_round_trips_through_elaboration() {
+        // End-to-end: parse + resolve + elaborate. The pad+balance pair
+        // in the fixture (`pad Assets:Bank:Checking Equity:Opening-Balances`
+        // followed by `balance Assets:Bank:Checking 5000.00 USD` after a
+        // 3400 USD deposit on Jan 12) should reconcile cleanly: the pad
+        // synthesizes a 1600 USD balancing transaction so the assertion
+        // passes.
+        let journal = parse_beancount(SAMPLE).expect("parse sample.beancount");
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve sample.beancount");
+        let elab: crate::elaboration::Journal = hir
+            .try_into()
+            .expect("elaborate sample.beancount (pad+balance must reconcile)");
+        // The synthesized pad transaction is tagged with metadata `pad: <source>`.
+        let pad_tx_count = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .count();
+        assert_eq!(
+            pad_tx_count, 1,
+            "exactly one synthesized pad transaction expected"
+        );
+    }
+
+    #[test]
     fn frontend_extensions_lists_beancount() {
         use crate::frontend::Frontend;
         assert!(BeancountFrontend.extensions().contains(&"beancount"));
+    }
+
+    // -- pad evaluator (#147) -----------------------------------------------
+
+    fn elaborate(input: &str) -> Result<crate::elaboration::Journal, Box<dyn std::error::Error>> {
+        let journal = parse_beancount(input)?;
+        let hir: crate::resolution::HIR = journal.try_into()?;
+        Ok(hir.try_into()?)
+    }
+
+    #[test]
+    fn pad_fills_gap_to_next_balance_assertion() {
+        // Pad on Jan 1, 3400 USD deposit on Jan 12, balance assertion on
+        // Jan 15 expects 5000 USD. The pad must synthesize a 1600 USD
+        // (= 5000 - 3400) balancing transaction back-dated to Jan 1.
+        let input = "\
+2024-01-01 open Assets:Bank:Checking USD
+2024-01-01 open Income:Salary USD
+2024-01-01 open Equity:Opening-Balances
+
+2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances
+2024-01-15 balance Assets:Bank:Checking 5000.00 USD
+
+2024-01-12 *
+  Assets:Bank:Checking      3400.00 USD
+  Income:Salary            -3400.00 USD
+";
+        let elab = elaborate(input).expect("elaborate (pad+balance must reconcile)");
+        let pad_txs: Vec<_> = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .collect();
+        assert_eq!(pad_txs.len(), 1, "expected exactly one synthesized pad txn");
+        let pad_tx = pad_txs[0];
+        assert_eq!(
+            pad_tx.metadata.get("pad").map(String::as_str),
+            Some("Equity:Opening-Balances"),
+            "pad provenance metadata should record the source account"
+        );
+        // Date is Jan 1 (pad's date), epoch days. NaiveDate::from_ymd(2024,1,1) -> 19723
+        assert_eq!(
+            pad_tx.date,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .unwrap()
+                .signed_duration_since(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+                .num_days() as i32,
+            "synthesized pad txn should be back-dated to the pad directive"
+        );
+        assert_eq!(pad_tx.postings.len(), 2);
+        // Target gets +1600, source gets -1600.
+        let target = pad_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Bank:Checking")
+            .expect("target posting present");
+        let source = pad_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Opening-Balances")
+            .expect("source posting present");
+        let target_usd = target
+            .amount
+            .as_ref()
+            .and_then(|a| a.by_commodity.get("USD"))
+            .expect("target amount in USD");
+        let source_usd = source
+            .amount
+            .as_ref()
+            .and_then(|a| a.by_commodity.get("USD"))
+            .expect("source amount in USD");
+        // 1600.00 -> mantissa 160000, scale 2; mantissa_high == 0 (positive)
+        assert_eq!(
+            (
+                target_usd.mantissa_low,
+                target_usd.mantissa_high,
+                target_usd.scale
+            ),
+            (160000, 0, 2),
+            "target should receive +1600.00"
+        );
+        // -1600.00 -> sign-extended high half is -1
+        assert_eq!(
+            source_usd.mantissa_high, -1,
+            "source amount should be negative"
+        );
+        assert_eq!(source_usd.scale, 2);
+    }
+
+    #[test]
+    fn pad_without_following_balance_is_silently_dropped() {
+        // No `balance` directive on Assets:Bank:Checking after the pad ->
+        // pad is silently discarded; no synthesized transaction.
+        let input = "\
+2024-01-01 open Assets:Bank:Checking USD
+2024-01-01 open Equity:Opening-Balances
+
+2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances
+";
+        let elab = elaborate(input).expect("elaborate");
+        let pad_txs = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .count();
+        assert_eq!(
+            pad_txs, 0,
+            "pad without a follow-up balance assertion must be dropped, not error"
+        );
+    }
+
+    #[test]
+    fn most_recent_pad_wins_when_multiple_precede_one_balance() {
+        // Two pads on the same target account before any balance assertion;
+        // Beancount keeps only the most recent. The Jan 5 pad's source
+        // (Equity:Late-Init) should be the synthesized txn's source, not
+        // the Jan 1 pad's (Equity:Opening-Balances).
+        let input = "\
+2024-01-01 open Assets:Bank:Checking USD
+2024-01-01 open Equity:Opening-Balances
+2024-01-01 open Equity:Late-Init
+
+2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances
+2024-01-05 pad Assets:Bank:Checking Equity:Late-Init
+2024-01-15 balance Assets:Bank:Checking 1000.00 USD
+";
+        let elab = elaborate(input).expect("elaborate");
+        let pad_txs: Vec<_> = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .collect();
+        assert_eq!(pad_txs.len(), 1, "exactly one synthesized pad txn");
+        let pad_tx = pad_txs[0];
+        assert_eq!(
+            pad_tx.metadata.get("pad").map(String::as_str),
+            Some("Equity:Late-Init"),
+            "the most recent pad's source must be used"
+        );
+        // The synthesized txn's date matches the *winning* pad's date (Jan 5).
+        assert_eq!(
+            pad_tx.date,
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 5)
+                .unwrap()
+                .signed_duration_since(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+                .num_days() as i32,
+        );
+    }
+
+    #[test]
+    fn pad_with_zero_gap_emits_no_transaction() {
+        // If the running balance already equals the asserted amount, the
+        // pad has nothing to fill -- no synthesized transaction.
+        let input = "\
+2024-01-01 open Assets:Bank:Checking USD
+2024-01-01 open Income:Salary USD
+2024-01-01 open Equity:Opening-Balances
+
+2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances
+2024-01-15 balance Assets:Bank:Checking 1000.00 USD
+
+2024-01-10 *
+  Assets:Bank:Checking      1000.00 USD
+  Income:Salary            -1000.00 USD
+";
+        let elab = elaborate(input).expect("elaborate");
+        let pad_txs = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .count();
+        assert_eq!(
+            pad_txs, 0,
+            "pad whose gap is zero should not emit a synthesized transaction"
+        );
     }
 }

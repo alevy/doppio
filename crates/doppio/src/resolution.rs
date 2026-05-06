@@ -184,6 +184,27 @@ pub(crate) enum Entry {
     Transaction(Transaction),
     /// A standalone balance assertion directive.
     Assertion(AssertionDirective),
+    /// A Beancount `pad` marker, threaded through to the elaborator.
+    ///
+    /// The resolver does not act on pads; it only resolves the date so the
+    /// elaborator can compare against the next balance assertion.
+    Pad(PadDirective),
+}
+
+/// A Beancount `pad` directive with its date resolved.
+///
+/// The elaborator interprets a pad as: "if the next balance assertion on
+/// `target_account` would otherwise fail, insert a balancing transaction
+/// (back-dated to `date`) that posts the difference between
+/// `target_account` and `source_account`."
+#[derive(Debug)]
+pub(crate) struct PadDirective {
+    /// The date the pad applies on.
+    pub date: chrono::NaiveDate,
+    /// The account whose balance will be brought to the next assertion.
+    pub target_account: String,
+    /// The counter-account that absorbs the padding amount.
+    pub source_account: String,
 }
 
 /// A resolved standalone balance assertion directive.
@@ -534,11 +555,14 @@ impl TryFrom<ast::Journal> for HIR {
                 ast::Entry::Directive(ast::Directive::Unknown(_)) | ast::Entry::Comment(_) => {
                     // Discard unrecognised directives and comments.
                 }
-                ast::Entry::Pad(_) => {
-                    // Beancount `pad` directive. The evaluator that fills in
-                    // a balancing transaction up to the next balance assertion
-                    // is the subject of #147; for now resolution preserves
-                    // the rest of the journal but ignores the pad itself.
+                ast::Entry::Pad(p) => {
+                    let date = Self::resolve_date(&p.date, current_default_year)?;
+                    let data = Entry::Pad(PadDirective {
+                        date,
+                        target_account: p.target_account,
+                        source_account: p.source_account,
+                    });
+                    result.entries.push(ResolutionEntry { context_id, data });
                 }
                 ast::Entry::Directive(ast::Directive::Commodity {
                     name,
