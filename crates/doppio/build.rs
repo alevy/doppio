@@ -10,11 +10,8 @@ fn main() {
         }
     }
 
-    let proto = std::path::Path::new("..")
-        .join("..")
-        .join("proto")
-        .join("doppio.proto");
-    let proto_dir = std::path::Path::new("..").join("..").join("proto");
+    let proto = std::path::Path::new("proto").join("doppio.proto");
+    let proto_dir = std::path::Path::new("proto");
     println!("cargo:rerun-if-changed={}", proto.display());
     prost_build::Config::new()
         .btree_map(["."])

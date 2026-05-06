@@ -5,12 +5,12 @@ on:
     branches: [main]
     paths:
       - "web/**"
-      - "proto/**"
+      - "crates/doppio/proto/**"
       - ".github/workflows/web.yml"
   pull_request:
     paths:
       - "web/**"
-      - "proto/**"
+      - "crates/doppio/proto/**"
       - ".github/workflows/web.yml"
 
 # Allow only one concurrent deployment, cancelling in-progress runs.
