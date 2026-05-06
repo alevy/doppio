@@ -25,8 +25,6 @@
 // NOT YET SUPPORTED:
 //   - String escape sequences (`\"`, `\n`, etc) inside quoted strings.
 //   - The `pushtag`/`poptag` and `pushmeta`/`popmeta` scoping forms.
-//   - Org-mode `*` headings at column 0 (treated as parse errors;
-//     prefix with `;` to comment out).
 //   - Beancount's lot syntax inside `{...}` is captured as raw text;
 //     the AST adapter (#146) is responsible for parsing the inner
 //     fields (cost, date, label).
@@ -53,6 +51,7 @@ entry = _{
     | option_directive
     | plugin_directive
     | comment_line
+    | org_mode_heading
 }
 
 // --- Transactions ---
@@ -254,6 +253,17 @@ note = ${ ";" ~ note_str }
 note_str = ${ (!NEWLINE ~ ANY)* }
 
 comment_line = @{ ";" ~ (!NEWLINE ~ ANY)* }
+
+// Org-mode outline headings: `*`, `**`, `***`, ... at column 0,
+// followed by free-form heading text. Beancount silently accepts
+// these so journals can be edited as Org-mode outlines (and the
+// outline structure is preserved for any tool that reads it).
+// Single `*` followed by a transaction header would be ambiguous
+// only if the next token were a date-like token at column 1; the
+// transaction header rule starts with a digit, so a top-level entry
+// beginning with `*` cannot be a transaction (transactions are
+// `<date> <flag> ...`, not `<flag> <date>`).
+org_mode_heading = @{ "*" ~ (!NEWLINE ~ ANY)* }
 
 identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 

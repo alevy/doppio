@@ -42,6 +42,8 @@
 //!   not yet act on it; the algorithm is the subject of #147.
 //! - String escape sequences inside quoted strings are not interpreted.
 //! - `pushtag`/`poptag` and `pushmeta`/`popmeta` are not yet parsed.
+//! - Org-mode outline headings (`*`, `**`, `***`, ... at column 0) are
+//!   accepted and silently dropped, matching Beancount itself.
 
 use crate::ast::*;
 use pest::Parser as _;
@@ -105,6 +107,12 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     entries.push(Entry::Comment(pair.as_str().trim().to_string()));
                 }
                 Rule::comment_line => {
+                    entries.push(Entry::Comment(pair.as_str().to_string()));
+                }
+                Rule::org_mode_heading => {
+                    // Beancount accepts org-mode `*` outline headings as
+                    // top-level no-ops. Preserve as a comment so the source
+                    // line survives the round-trip; resolution discards it.
                     entries.push(Entry::Comment(pair.as_str().to_string()));
                 }
                 Rule::include_directive => {
@@ -753,6 +761,13 @@ mod tests {
         );
     }
 
+    #[test]
+    fn org_mode_heading_grammar_rule() {
+        parse_one(Rule::org_mode_heading, "* Personal");
+        parse_one(Rule::org_mode_heading, "** Bank accounts");
+        parse_one(Rule::org_mode_heading, "*** Deeply nested");
+    }
+
     // -- adapter / Frontend tests --------------------------------------------
 
     #[test]
@@ -1075,6 +1090,60 @@ mod tests {
     fn frontend_extensions_lists_beancount() {
         use crate::frontend::Frontend;
         assert!(BeancountFrontend.extensions().contains(&"beancount"));
+    }
+
+    #[test]
+    fn org_mode_outline_journal_parses_and_resolves() {
+        // Beancount accepts journals edited as Org-mode outlines (Emacs
+        // org-mode is the canonical case but the language itself permits
+        // these lines anywhere -- they are top-level no-ops). The
+        // headings round-trip through parse + resolution without
+        // affecting the directives that follow.
+        let input = "\
+* Personal
+** Bank accounts
+2024-01-01 open Assets:Bank:Checking USD
+*** Transactions
+2024-01-12 * \"Salary\"
+  Assets:Bank:Checking      3400.00 USD
+  Income:Salary            -3400.00 USD
+";
+        let journal = parse_beancount(input).expect("parse with org-mode headings");
+
+        // Three headings preserved as Entry::Comment (alongside the
+        // open and the transaction).
+        let comment_count = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Comment(_)))
+            .count();
+        assert_eq!(
+            comment_count, 3,
+            "three org-mode headings preserved as comments, got entries={:?}",
+            journal.entries
+        );
+
+        let open_count = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Directive(Directive::Account { .. })))
+            .count();
+        assert_eq!(open_count, 1);
+        let txn_count = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .count();
+        assert_eq!(txn_count, 1);
+
+        // Resolution discards the headings (they are comments).
+        let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
+        let resolved_txn_count = hir
+            .entries
+            .iter()
+            .filter(|e| matches!(e.data, crate::resolution::Entry::Transaction(_)))
+            .count();
+        assert_eq!(resolved_txn_count, 1);
     }
 
     // -- pad evaluator (#147) -----------------------------------------------
