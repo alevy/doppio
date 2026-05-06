@@ -1,0 +1,2 @@
+Stub statement file referenced by sample.beancount's `document` directive.
+The contents do not matter; bean-check only verifies that the file exists.
