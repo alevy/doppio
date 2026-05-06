@@ -50,6 +50,22 @@ struct AccountBalances {
 #[derive(Default, Clone, Debug)]
 struct RunningState {
     account_balances: BTreeMap<String, AccountBalances>,
+    /// Beancount `pad` markers awaiting their next `balance` assertion,
+    /// keyed by the pad's target account. A new pad on the same target
+    /// account overwrites any earlier one (Beancount's
+    /// "most-recent-pad-wins" rule for back-to-back pads on a single
+    /// account). A pad that never sees a follow-up balance assertion is
+    /// silently discarded at end-of-journal.
+    pending_pads: BTreeMap<String, PendingPad>,
+}
+
+/// A pad directive observed but not yet consumed by a balance assertion.
+#[derive(Clone, Debug)]
+struct PendingPad {
+    /// The pad's own date -- used as the synthesized transaction's date.
+    date: chrono::NaiveDate,
+    /// The counter-account that will absorb the padding amount.
+    source_account: String,
 }
 
 /// A commodity name (e.g. `"USD"`, `"BTC"`, `"$"`).
@@ -350,6 +366,19 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
             match entry.data {
+                resolution::Entry::Pad(p) => {
+                    // Beancount `pad`: remember the (target, source) pair until
+                    // the next balance assertion on `target` consumes it. A
+                    // second pad on the same target before any assertion
+                    // overwrites the first (most-recent-pad-wins).
+                    state.pending_pads.insert(
+                        p.target_account,
+                        PendingPad {
+                            date: p.date,
+                            source_account: p.source_account,
+                        },
+                    );
+                }
                 resolution::Entry::Assertion(assertion) => {
                     // Evaluate the expected amount expression.
                     let (expected_amount, expected_commodity) =
@@ -360,12 +389,105 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                         )?;
 
                     // Look up the account's current balance for this commodity.
-                    let actual_amount = state
+                    let mut actual_amount = state
                         .account_balances
                         .get(&assertion.account)
                         .and_then(|ab| ab.commodity.get(&expected_commodity))
                         .copied()
                         .unwrap_or(Decimal::ZERO);
+
+                    // If a pad on this account is pending, synthesize a
+                    // balancing transaction (back-dated to the pad's date)
+                    // that brings `actual_amount` up to `expected_amount`,
+                    // and apply it to the running state so the assertion
+                    // below passes by construction. The synthesized
+                    // transaction is also pushed into the output journal so
+                    // downstream consumers see the inserted postings.
+                    if let Some(pad) = state.pending_pads.remove(&assertion.account) {
+                        let diff = expected_amount - actual_amount;
+                        if !diff.is_zero() {
+                            // Ensure both accounts exist in the accounts map
+                            // (so callers iterating accounts see them).
+                            for acct in [&assertion.account, &pad.source_account] {
+                                if !accounts.contains_key(acct.as_str()) {
+                                    accounts.insert(acct.clone(), Default::default());
+                                }
+                            }
+
+                            // Update running balances: target += diff, source -= diff.
+                            let target_bal = state
+                                .account_balances
+                                .entry(assertion.account.clone())
+                                .or_default();
+                            *(target_bal
+                                .commodity
+                                .entry(expected_commodity.clone())
+                                .or_default()) += diff;
+                            let source_bal = state
+                                .account_balances
+                                .entry(pad.source_account.clone())
+                                .or_default();
+                            *(source_bal
+                                .commodity
+                                .entry(expected_commodity.clone())
+                                .or_default()) -= diff;
+
+                            // Build the synthesized transaction.
+                            let pad_marker_meta: BTreeMap<String, String> =
+                                [("pad".to_string(), pad.source_account.clone())]
+                                    .into_iter()
+                                    .collect();
+                            let target_amount = crate::elaboration::Amount {
+                                by_commodity: BTreeMap::from([(
+                                    expected_commodity.clone(),
+                                    crate::decimal_to_proto(diff),
+                                )]),
+                            };
+                            let source_amount = crate::elaboration::Amount {
+                                by_commodity: BTreeMap::from([(
+                                    expected_commodity.clone(),
+                                    crate::decimal_to_proto(-diff),
+                                )]),
+                            };
+                            let synthesized_postings = vec![
+                                crate::elaboration::Posting {
+                                    account: assertion.account.clone(),
+                                    payee: String::from("(pad)"),
+                                    amount: Some(target_amount),
+                                    state: crate::state_to_proto(&TransactionState::Cleared),
+                                    tags: vec![],
+                                    metadata: BTreeMap::new(),
+                                    kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
+                                    lot: None,
+                                },
+                                crate::elaboration::Posting {
+                                    account: pad.source_account.clone(),
+                                    payee: String::from("(pad)"),
+                                    amount: Some(source_amount),
+                                    state: crate::state_to_proto(&TransactionState::Cleared),
+                                    tags: vec![],
+                                    metadata: BTreeMap::new(),
+                                    kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
+                                    lot: None,
+                                },
+                            ];
+                            transactions.push(crate::elaboration::Transaction {
+                                date: pad.date.to_epoch_days(),
+                                secondary_date: None,
+                                state: crate::state_to_proto(&TransactionState::Cleared),
+                                code: None,
+                                description: String::from(
+                                    "(padding inserted for balance assertion)",
+                                ),
+                                tags: vec![],
+                                metadata: pad_marker_meta,
+                                postings: synthesized_postings,
+                            });
+
+                            // The assertion now holds by construction.
+                            actual_amount = expected_amount;
+                        }
+                    }
 
                     // NOTE: strict (`==`) is currently treated identically to
                     // weak (`=`). Both check that the account balance for the
