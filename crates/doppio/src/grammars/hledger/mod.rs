@@ -1376,6 +1376,48 @@ nothing after this matters
         ));
     }
 
+    /// `==*` aggregates the named account's full subtree: the synthesized
+    /// posting on the parent must offset the sum across descendants.
+    /// See #207.
+    #[test]
+    fn assertion_star_aggregates_subtree() {
+        let input = "\
+2024-01-15 * Salary
+    Assets:Cash:USD          200.00 USD
+    Income:Salary           -200.00 USD
+
+2024-02-01 * Royalty
+    Assets:Cash:EUR           30.00 EUR
+    Income:Royalties         -30.00 EUR
+
+2024-12-31 * Retain earnings
+    Income                    ==* 0
+    Equity:Retained-Earnings
+";
+        let ast = parse_hledger(input).expect("parse");
+        let hir: crate::resolution::HIR = ast.try_into().expect("resolution");
+        let journal: crate::elaboration::Journal = crate::elaborate(hir).expect("elaboration");
+        let retain = journal
+            .transactions
+            .iter()
+            .find(|t| t.description == "Retain earnings")
+            .expect("retain earnings tx");
+        let income = retain
+            .postings
+            .iter()
+            .find(|p| p.account == "Income")
+            .expect("synthesized Income posting");
+        assert_eq!(income.amount_in("USD"), Some(dec!(200.00)));
+        assert_eq!(income.amount_in("EUR"), Some(dec!(30.00)));
+        let re = retain
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Retained-Earnings")
+            .expect("retained-earnings absorber");
+        assert_eq!(re.amount_in("USD"), Some(dec!(-200.00)));
+        assert_eq!(re.amount_in("EUR"), Some(dec!(-30.00)));
+    }
+
     #[test]
     fn test_lot_annotation_double_brace_total_form() {
         // `{{$1500}}` declares the total lot cost. The adapter records

@@ -765,17 +765,31 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                         &state,
                                     )?;
 
-                                    // Snapshot the account's non-zero commodities; the per-
-                                    // commodity delta is `target - current_balance`.
-                                    let deltas: Vec<(String, Decimal)> = account_balance
-                                        .map(|ab| {
-                                            ab.commodity
-                                                .iter()
-                                                .filter(|(_, v)| !v.is_zero())
-                                                .map(|(c, v)| (c.clone(), target_value - v))
-                                                .collect()
-                                        })
-                                        .unwrap_or_default();
+                                    // Aggregate the named account *and its subtree* (every
+                                    // account whose name has `account_name + ":"` as a prefix).
+                                    // hledger's `==*` operates on the entire subtree, not just
+                                    // the named account: e.g. `Income ==* 0` zeroes the whole
+                                    // `Income:*` subtree by synthesizing a corrective posting
+                                    // on `Income` itself.
+                                    let prefix = format!("{account_name}:");
+                                    let mut subtree_totals: BTreeMap<String, Decimal> =
+                                        BTreeMap::new();
+                                    for (name, balances) in &state.account_balances {
+                                        if name == &account_name || name.starts_with(&prefix) {
+                                            for (c, v) in &balances.commodity {
+                                                if !v.is_zero() {
+                                                    *subtree_totals
+                                                        .entry(c.clone())
+                                                        .or_default() += *v;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let deltas: Vec<(String, Decimal)> = subtree_totals
+                                        .into_iter()
+                                        .filter(|(_, v)| !v.is_zero())
+                                        .map(|(c, v)| (c, target_value - v))
+                                        .collect();
 
                                     if !accounts.contains_key(&account_name) {
                                         accounts.insert(account_name.clone(), Default::default());
