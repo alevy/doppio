@@ -194,6 +194,70 @@ file extensions; selected automatically by `dop` and by
 | Multiple commodities per posting | - | v1 limitation shared with ledger-cli frontend |
 | `assert` / `check` in account sub-directives | - | Parsed but not enforced (hledger's semantics differ from ledger-cli's) |
 
+## Beancount frontend
+
+Recognised by the `.beancount` file extension; selected automatically by `dop`
+and by `doppio::frontend_for_extension`. Beancount has its own grammar and
+several directives without a ledger-cli analogue (notably `pad`); see the
+[PTA tool semantics reference](https://github.com/alevy/doppio-research/blob/main/pta-tool-semantics.md)
+for the divergences from ledger-cli and hledger that doppio's elaborator is
+aware of.
+
+The Beancount frontend has reached parity with the ledger-cli and hledger
+frontends in coverage, lot semantics, balance/pad correctness, and
+parity-test pass rate against `bean-check 3.2.0`. The 12-entry hand-built
+fixture at [`crates/doppio/tests/fixtures/sample.beancount`](../crates/doppio/tests/fixtures/sample.beancount)
+exercises each supported directive; the upstream-sourced fixtures
+[`bean-example.beancount`](../tests/parity/bean-example.beancount) (5726
+lines, generated via `bean-example --seed 42`) and
+[`beancount-basic.beancount`](../tests/parity/beancount-basic.beancount)
+(643 lines, vendored from beancount/beancount@5704a86) provide realistic
+end-to-end coverage.
+
+### Supported
+
+| Feature | Status | Notes |
+|---|---|---|
+| Date format `YYYY-MM-DD` | + | Beancount's canonical form; only this form is accepted |
+| Transactions with `*` (cleared) / `!` (pending) flags | + | |
+| Transactions with custom single-character flags | + | Preserved as state metadata |
+| Two-string description (`"payee" "narration"`) | + | |
+| Postings with two-space rule | + | Same convention as ledger-cli |
+| Number-only and `<number> <COMMODITY>` amounts | + | |
+| Implicit-balance posting (last posting blank) | + | |
+| Arithmetic in posting amounts | + | Pratt-parsed; same precedence as ledger-cli |
+| Lot annotation `{cost CUR}` (per-unit) | + | Cost commodity preserved separately from held commodity in the elaborated `Lot.cost` |
+| Lot annotation `{{total CUR}}` (total cost) | + | Elaborator divides by unit count to produce canonical per-unit basis (#193) |
+| Lot date `{cost CUR, YYYY-MM-DD}` | + | |
+| Lot label `{cost CUR, YYYY-MM-DD, "label"}` | + | |
+| Cost-spec arithmetic `{(150 + 5) USD}` | + | Parenthesised arithmetic round-trips to per-unit basis |
+| `@` price annotation (per-unit) | + | |
+| `@@` price annotation (total) | + | |
+| `open` directive (with optional commodity restriction) | + | Lowered to `Directive::Account` |
+| `close` directive | + | Preserved as a comment so the source line survives the round-trip; resolution discards |
+| `commodity` directive (with indented metadata sub-items) | + | |
+| `balance` directive | + | Subtree-aware — aggregates the named account and every descendant (#214) |
+| `pad` directive | + | Per-commodity firing: a single `pad` covers every commodity asserted on the same target up to the next non-zero direct posting in that commodity (#220) |
+| `price` directive | + | |
+| `option` directive | + | `inferred_tolerance_default` consumed by the elaborator; others preserved as comments |
+| `pushtag` / `poptag` | + | Active tags are appended to every transaction declared between push and pop |
+| `pushmeta` / `popmeta` | + | Active metadata key-value pairs are appended to every enclosed transaction |
+| Per-commodity tolerance | + | `option "inferred_tolerance_default" "USD:0.005"` lands on `tolerance_overrides`; default fraction 0.5 of smallest precision (#198) |
+| `include` directive | + | Resolved recursively; the active pushtag/pushmeta stacks persist across includes |
+| Same-day directive ordering (`pad` < `balance` < transactions) | + | Composite sort key applied once after include flattening (#212) |
+| Org-mode section headers (`*`, `**`, etc.) | + | Treated as comments (matches Emacs `beancount-mode` convention) |
+| `note`, `document`, `event`, `query`, `custom`, `plugin` directives | + | Preserved as comments; not elaborated |
+
+### Known limitations
+
+| Feature | Status | Notes |
+|---|---|---|
+| Lot wildcard `{*}` (automatic cost) | - | Parsed but the wildcard sentinel is dropped. bean-check 3.2.0 itself errors with "Cost merging is not supported yet" on this input — there is no canonical reference behaviour to mirror. See #185 retrospective. |
+| Per-lot inventory state (separate lots at different cost) | ~ | Wire format records lot info per posting, but the elaborator's running state aggregates by `(account, commodity)`. A motivated downstream consumer can reconstruct per-lot positions from the posting stream. Tracked under #227. |
+| FIFO / LIFO automatic lot selection | - | Not implemented; sales must specify the lot explicitly. |
+| Phantom-lot validation | - | bean-check rejects sales whose stated lot was never acquired; doppio silently accepts when the user balanced the transaction explicitly. Tracked under #227. |
+| `query`, `custom`, `plugin` directives | - | Parsed and preserved as comments; never elaborated. |
+
 ## Out of scope (explicitly)
 
 These ledger-cli features are not modelled by doppio and aren't planned:
