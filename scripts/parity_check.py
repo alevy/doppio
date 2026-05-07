@@ -519,6 +519,144 @@ _register_prices_extractors()
 
 
 # ---------------------------------------------------------------------------
+# Pad-synthesised transaction extractors (#226 Phase 3).
+#
+# Both Beancount and doppio synthesise a transaction backdated to the pad
+# directive's own date that brings the running balance up to the next
+# balance assertion. The two-posting shape is identical -- target gets the
+# corrective amount, source absorbs the offset -- so a per-(date, frozenset
+# of (account, commodity, amount)) comparison catches drift in either the
+# pad date, the chosen source, or the per-commodity amount. The frozenset
+# is intentionally symmetric over the two postings: bean-check doesn't
+# label which posting is target vs source, and we don't need to.
+# ---------------------------------------------------------------------------
+
+# Per-pad-txn fingerprint: (date, frozenset((account, commodity, value))).
+PadFingerprint = tuple[str, frozenset[tuple[str, str, Decimal]]]
+
+
+def beancount_pad_fingerprints(fixture: Path) -> set[PadFingerprint]:
+    from beancount.loader import load_file
+    from beancount.core.data import Transaction
+
+    entries, errors, _ = load_file(str(fixture))
+    if errors:
+        raise RuntimeError(f"beancount errors loading {fixture}: {errors}")
+    out: set[PadFingerprint] = set()
+    for entry in entries:
+        if not isinstance(entry, Transaction):
+            continue
+        if not (entry.narration or "").startswith("(Padding inserted"):
+            continue
+        postings_set: set[tuple[str, str, Decimal]] = set()
+        for posting in entry.postings:
+            if posting.units is None:
+                continue
+            postings_set.add(
+                (
+                    posting.account,
+                    posting.units.currency,
+                    Decimal(posting.units.number),
+                )
+            )
+        out.add((entry.date.isoformat(), frozenset(postings_set)))
+    return out
+
+
+def doppio_pad_fingerprints(fixture: Path, dop_bin: Path) -> set[PadFingerprint]:
+    """Group `dop register --format=json` rows for pad-synthesised
+    transactions into per-(date, target, source) postings sets, then
+    discard the labelling and return per-(date, frozenset(postings))
+    fingerprints to match the canonical shape."""
+    raw = subprocess.run(
+        [str(dop_bin), "register", "--format=json", str(fixture)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    payload = json.loads(raw)
+    grouped: dict[tuple[str, str, str, str], set[tuple[str, str, Decimal]]] = {}
+    for row in payload:
+        if row["description"] != "(padding inserted for balance assertion)":
+            continue
+        source = row.get("txn_metadata", {}).get("pad")
+        if source is None:
+            continue
+        date = row["date"]
+        account = row["account"]
+        commodity = row["commodity"]
+        amount = Decimal(row["amount"])
+        if account == source:
+            grouped.setdefault((date, "__pending__", source, commodity), set()).add(
+                (account, commodity, amount)
+            )
+        else:
+            grouped.setdefault((date, account, source, commodity), set()).add(
+                (account, commodity, amount)
+            )
+    out: set[PadFingerprint] = set()
+    for key, postings in grouped.items():
+        date, target, source, commodity = key
+        if target == "__pending__":
+            continue
+        pending_key = (date, "__pending__", source, commodity)
+        pending = grouped.get(pending_key, set())
+        target_amount = next(iter(postings))[2]
+        matching_source = next(
+            (
+                p
+                for p in pending
+                if p[0] == source and p[1] == commodity and p[2] == -target_amount
+            ),
+            None,
+        )
+        full = set(postings)
+        if matching_source is not None:
+            full.add(matching_source)
+        out.add((date, frozenset(full)))
+    return out
+
+
+def diff_pad_fingerprints(
+    canonical: set[PadFingerprint], doppio: set[PadFingerprint]
+) -> str | None:
+    if canonical == doppio:
+        return None
+    only_canon = canonical - doppio
+    only_dop = doppio - canonical
+    lines = []
+    if only_canon:
+        lines.append("  pad txns only in canonical:")
+        for fp in sorted(only_canon, key=lambda x: (x[0], sorted(map(str, x[1])))):
+            date, postings = fp
+            posting_strs = ", ".join(
+                f"{a} {v} {c}" for (a, c, v) in sorted(postings)
+            )
+            lines.append(f"    [{date}] {{ {posting_strs} }}")
+    if only_dop:
+        lines.append("  pad txns only in doppio:")
+        for fp in sorted(only_dop, key=lambda x: (x[0], sorted(map(str, x[1])))):
+            date, postings = fp
+            posting_strs = ", ".join(
+                f"{a} {v} {c}" for (a, c, v) in sorted(postings)
+            )
+            lines.append(f"    [{date}] {{ {posting_strs} }}")
+    return "\n".join(lines)
+
+
+PAD_EXTRACTOR: dict[CanonicalFn, Callable[[Path], set[PadFingerprint]] | None] = {}
+
+
+def _register_pad_extractors() -> None:
+    """Only Beancount has a `pad` directive analogue. hledger / ledger-cli
+    have no equivalent; their fixtures return empty sets on both sides."""
+    PAD_EXTRACTOR[beancount_balances] = beancount_pad_fingerprints
+    PAD_EXTRACTOR[hledger_balances] = None
+    PAD_EXTRACTOR[ledger_balances] = None
+
+
+_register_pad_extractors()
+
+
+# ---------------------------------------------------------------------------
 # Test catalog
 # ---------------------------------------------------------------------------
 
@@ -624,7 +762,21 @@ def run_positive(case: Case, dop_bin: Path) -> bool:
         doppio_prices_set = doppio_prices(case.fixture, dop_bin)
         prices_diff = diff_prices(canonical_prices, doppio_prices_set)
 
-    if bal_diff is None and tags_meta_diff is None and prices_diff is None:
+    # Phase 3: pad-synthesised transactions (#226). Only Beancount has a
+    # `pad` directive; other frontends always return empty sets.
+    pad_diff: str | None = None
+    pad_extractor = PAD_EXTRACTOR.get(case.canonical)
+    if pad_extractor is not None:
+        canonical_pads = pad_extractor(case.fixture)
+        doppio_pads = doppio_pad_fingerprints(case.fixture, dop_bin)
+        pad_diff = diff_pad_fingerprints(canonical_pads, doppio_pads)
+
+    if (
+        bal_diff is None
+        and tags_meta_diff is None
+        and prices_diff is None
+        and pad_diff is None
+    ):
         print("OK")
         return True
     print("MISMATCH")
@@ -637,6 +789,9 @@ def run_positive(case: Case, dop_bin: Path) -> bool:
     if prices_diff is not None:
         print("  prices:", file=sys.stderr)
         print(prices_diff, file=sys.stderr)
+    if pad_diff is not None:
+        print("  pad synthesis:", file=sys.stderr)
+        print(pad_diff, file=sys.stderr)
     return False
 
 
