@@ -26,6 +26,17 @@
 //! [`ast::LotAnnotation::cost_is_total`]; the elaborator divides by
 //! the posting's unit count when applying a total-cost lot, so the
 //! canonical per-unit basis flows through the rest of the pipeline.
+//!
+//! ## Balance assignment forms
+//!
+//! - `Account = X`        — single-commodity balance assignment
+//! - `Account == X`       — same as `=`; both are accepted
+//! - `Account =* X` /
+//!   `Account ==* X`      — strict-zero across every commodity in
+//!   the account's running inventory. Typically `==* 0` in
+//!   fiscal-year retained-earnings transactions. The elaborator
+//!   synthesizes a multi-commodity posting that brings each
+//!   currently-held commodity to `X`.
 
 use crate::ast::*;
 use pest::Parser as _;
@@ -301,14 +312,26 @@ fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::er
         }
         Rule::assertion => {
             // The assertion rule: assertion_op ~ ws* ~ value_expr.
-            // Skip the assertion_op child, take the value_expr.
-            let inner_expr_pair = p
-                .into_inner()
+            // The op text is `=` / `==` / `=*` / `==*`. The trailing `*`
+            // qualifier ("all commodities") routes to a different
+            // AmountDetails variant so the elaborator can synthesize a
+            // multi-commodity posting that zeroes every commodity in the
+            // account's inventory.
+            let mut inner = p.into_inner();
+            let op_pair = inner
+                .next()
+                .expect("assertion must contain an assertion_op");
+            assert_eq!(op_pair.as_rule(), Rule::assertion_op);
+            let all_commodities = op_pair.as_str().ends_with('*');
+            let inner_expr_pair = inner
                 .find(|p| p.as_rule() == Rule::value_expr)
                 .expect("assertion must have a value_expr");
-            Ok(AmountDetails::BalanceAssignment(parse_expr(
-                inner_expr_pair,
-            )))
+            let target = parse_expr(inner_expr_pair);
+            Ok(if all_commodities {
+                AmountDetails::BalanceAssignmentAllCommodities(target)
+            } else {
+                AmountDetails::BalanceAssignment(target)
+            })
         }
         _ => unreachable!("unexpected rule in amount_logic: {:?}", p.as_rule()),
     }
@@ -1246,6 +1269,36 @@ P 2024-02-15 AAPL $182.50
             "date should be 2024-03-01"
         );
         assert_eq!(ann.note.as_deref(), Some("BUY-2024-01"));
+    }
+
+    #[test]
+    #[test]
+    fn assertion_op_recognises_star_qualifier() {
+        // The grammar accepts `=`, `==`, `=*`, `==*`. The `*` qualifier
+        // routes to a different AmountDetails variant for the elaborator.
+        let input = "2024-12-31 retain earnings\n    Income      ==* 0\n    Equity:RE\n";
+        let journal = parse_hledger(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!()
+        };
+        assert!(
+            matches!(
+                tx.postings[0].amount,
+                Some(AmountDetails::BalanceAssignmentAllCommodities(_))
+            ),
+            "expected BalanceAssignmentAllCommodities, got {:?}",
+            tx.postings[0].amount
+        );
+        // And the `=*` (weak strict-zero) form takes the same variant.
+        let input2 = "2024-12-31 retain earnings\n    Income      =* 0\n    Equity:RE\n";
+        let j2 = parse_hledger(input2).expect("parse =*");
+        let Entry::Transaction(tx2) = &j2.entries[0] else {
+            panic!()
+        };
+        assert!(matches!(
+            tx2.postings[0].amount,
+            Some(AmountDetails::BalanceAssignmentAllCommodities(_))
+        ));
     }
 
     #[test]

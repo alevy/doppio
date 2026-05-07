@@ -675,6 +675,78 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                     }
                                     (value, commodity, lot_cash, proto_lot)
                                 }
+                                AmountDetails::BalanceAssignmentAllCommodities(target) => {
+                                    // hledger `==* target` (or `=* target`) form -- typically
+                                    // `==* 0` in a fiscal-year retained-earnings transaction.
+                                    // Synthesize a multi-commodity posting that brings every
+                                    // commodity currently held by the account to `target`.
+                                    //
+                                    // The target expression is expected to be a bare number
+                                    // with no commodity (e.g. `0`); we evaluate it once and
+                                    // apply the same target value to each commodity.
+                                    // Evaluate `target` to a single numeric value. The
+                                    // `==* X` form has no commodity attached -- the
+                                    // target applies to whatever commodities the
+                                    // account already holds.
+                                    let target_value = evaluator::eval_amount_value(
+                                        target,
+                                        entry_context,
+                                        &state,
+                                    )?;
+
+                                    // Snapshot the account's non-zero commodities; the per-
+                                    // commodity delta is `target - current_balance`.
+                                    let deltas: Vec<(String, Decimal)> = account_balance
+                                        .map(|ab| {
+                                            ab.commodity
+                                                .iter()
+                                                .filter(|(_, v)| !v.is_zero())
+                                                .map(|(c, v)| (c.clone(), target_value - v))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+
+                                    if !accounts.contains_key(&account_name) {
+                                        accounts.insert(account_name.clone(), Default::default());
+                                    }
+
+                                    // Update transaction_state and account_balances.
+                                    let bal_entry = state
+                                        .account_balances
+                                        .entry(account_name.clone())
+                                        .or_default();
+                                    let mut by_commodity: BTreeMap<
+                                        String,
+                                        crate::elaboration::Decimal,
+                                    > = BTreeMap::new();
+                                    if posting_kind != ast::PostingKind::VirtualUnbalanced {
+                                        for (c, delta) in &deltas {
+                                            *transaction_state.0.entry(c.clone()).or_default() +=
+                                                delta;
+                                        }
+                                    }
+                                    for (c, delta) in &deltas {
+                                        *bal_entry.commodity.entry(c.clone()).or_default() += delta;
+                                        by_commodity
+                                            .insert(c.clone(), crate::decimal_to_proto(*delta));
+                                    }
+
+                                    let payee =
+                                        posting.metadata.remove("payee").unwrap_or(payee.clone());
+                                    resolved_postings.push(crate::elaboration::Posting {
+                                        account: account_name,
+                                        payee,
+                                        amount: Some(crate::elaboration::Amount { by_commodity }),
+                                        state: crate::state_to_proto(&posting.state.into()),
+                                        tags: posting.tags,
+                                        metadata: posting.metadata,
+                                        kind: crate::posting_kind_to_proto(posting_kind),
+                                        lot: None,
+                                    });
+                                    // Skip the standard single-commodity push path; we already
+                                    // pushed the synthesized multi-commodity posting above.
+                                    continue;
+                                }
                                 AmountDetails::BalanceAssignment(assignment) => {
                                     // "= target_balance" -- compute the delta needed to reach the
                                     // target from the current running balance.
@@ -1098,6 +1170,28 @@ mod evaluator {
         running_state: &RunningState,
     ) -> Result<(Decimal, String), ElaborationError> {
         eval_and_normalize_amount_with_fallback(val, eval_context, running_state, None)
+    }
+
+    /// Evaluate a value expression and return only its numeric component.
+    ///
+    /// Used by callers that have a meaningful target value but no
+    /// associated commodity -- for example `==* 0` (hledger's
+    /// "zero across every commodity" balance assignment), where the
+    /// target applies to whatever commodities the account already
+    /// holds. Skipping commodity normalisation avoids inventing a
+    /// fake commodity for the inference machinery.
+    ///
+    /// Errors if the evaluated expression is not an amount.
+    pub fn eval_amount_value(
+        val: ast::ValueExpr,
+        eval_context: &resolution::Context,
+        running_state: &RunningState,
+    ) -> Result<Decimal, ElaborationError> {
+        let empty_meta = BTreeMap::default();
+        match eval(val, eval_context, running_state, &empty_meta, EVAL_BUDGET)? {
+            ast::ValueExpr::Amount { value, .. } => Ok(value),
+            other => Err(EvaluationError::UnaryOnNonAmount(other).into()),
+        }
     }
 
     /// Like [`eval_and_normalize_amount`], but accepts an optional `fallback_commodity`

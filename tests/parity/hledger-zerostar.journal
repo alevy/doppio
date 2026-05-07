@@ -1,0 +1,20 @@
+; Minimal hand-crafted fixture exercising hledger's `==* 0` strict-zero
+; balance assignment (the all-commodities form), introduced for #200.
+;
+; The retain-earnings transaction zeroes Income across every commodity
+; it holds (USD and EUR here); Equity:Retained Earnings absorbs the
+; full multi-commodity total. Synthetic-but-valid; both `hledger
+; balance` and doppio agree on the per-account balances after the year
+; rolls over.
+
+2024-01-01 * "Salary in USD"
+    Assets:Cash:USD              1000.00 USD
+    Income:Salary               -1000.00 USD
+
+2024-01-15 * "Side gig in EUR"
+    Assets:Cash:EUR                500.00 EUR
+    Income:Salary                 -500.00 EUR
+
+2024-12-31 * "Retain earnings (zero out Income across all commodities)"
+    Income:Salary                       ==* 0
+    Equity:Retained-Earnings
