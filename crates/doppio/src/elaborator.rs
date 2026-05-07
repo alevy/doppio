@@ -361,7 +361,7 @@ impl Display for ElaborationError {
 /// [`resolution::ElaborationConfig`] passed here is the *only* place the
 /// elaborator picks up its semantic choices (tolerance rule, balance
 /// mode, assertion scope, ...) -- the parser/frontend stages do not
-/// inject any. Callers typically pass `frontend.defaults()` for the
+/// inject any. Callers typically pass `&frontend.elaboration_defaults()` for the
 /// matching tool's behaviour, or any other `ElaborationConfig` to
 /// experiment with cross-syntax-semantics combinations. Per-commodity
 /// overrides set by source directives (Beancount's
@@ -2466,7 +2466,7 @@ mod tests {
         assert_eq!(hir.prices.len(), 1, "HIR should contain one price");
 
         // Elaboration stage.
-        let journal = crate::elaborate(hir, &crate::grammars::ledger::LEDGER_DEFAULTS)
+        let journal = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
             .expect("elaboration should succeed");
 
         assert_eq!(journal.prices.len(), 1, "Journal should contain one price");
@@ -2492,7 +2492,7 @@ mod tests {
         use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        crate::elaborate(hir, &crate::grammars::ledger::LEDGER_DEFAULTS)
+        crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
             .expect("elaboration failed")
     }
 
@@ -2601,7 +2601,7 @@ define myval = $99.00
         assert!(hir.contexts[1].defines.contains_key("myval"));
 
         // Elaboration should succeed end-to-end.
-        let journal = crate::elaborate(hir, &crate::grammars::ledger::LEDGER_DEFAULTS)
+        let journal = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
             .expect("elaboration failed");
         let after_tx = &journal.transactions[1];
         let b_posting = after_tx
@@ -2753,7 +2753,7 @@ define myval = $99.00
         use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        crate::elaborate(hir, &crate::grammars::ledger::LEDGER_DEFAULTS)
+        crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
     }
 
     #[test]
@@ -2932,7 +2932,7 @@ define myval = $99.00
         use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        match crate::elaborate(hir, &crate::grammars::ledger::LEDGER_DEFAULTS)
+        match crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
             .expect_err("expected assertion failure")
         {
             ElaborationError::AccountAssertionFailed {
@@ -3834,7 +3834,7 @@ account Expenses:Food
 ";
         let ast = crate::grammars::ledger::parse_ledger(input).expect("parse failed");
         let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
-        let result = crate::elaborate(hir, &crate::grammars::ledger::LEDGER_DEFAULTS);
+        let result = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults());
         assert!(
             matches!(result, Err(ElaborationError::AccountAssertionFailed { .. })),
             "positive amount should fail isNegative assertion; got: {result:?}"
@@ -3890,7 +3890,7 @@ account Expenses:Food
 ";
         let ast = crate::grammars::ledger::parse_ledger(input).expect("parse failed");
         let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
-        let result = crate::elaborate(hir, &crate::grammars::ledger::LEDGER_DEFAULTS);
+        let result = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults());
         assert!(
             matches!(result, Err(ElaborationError::AccountAssertionFailed { .. })),
             "$50 should fail between(0, 10); got: {result:?}"

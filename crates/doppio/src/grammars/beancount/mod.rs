@@ -861,35 +861,39 @@ pub(crate) fn parse_beancount_with_options(
 /// full mapping table and known gaps.
 pub struct BeancountFrontend;
 
-/// Default elaboration semantics for files written in Beancount syntax.
-///
-/// Half-smallest-precision per-transaction balance tolerance (matching
-/// bean-check's `0.5 * 10^(-min_scale)` rule, #198), cost-basis lot
-/// pricing with explicit gain/loss postings (so `{cost}` annotations
-/// drive the cash-equivalent for balance), and subtree-aware top-level
-/// `balance` directives (matching bean-check's account-tree aggregation,
-/// #214).
+/// Construct the default [`crate::resolution::ElaborationConfig`] for
+/// files written in Beancount syntax: half-smallest-precision
+/// per-transaction balance tolerance (matching bean-check's
+/// `0.5 * 10^(-min_scale)` rule, #198), cost-basis lot pricing with
+/// explicit gain/loss postings, and subtree-aware top-level `balance`
+/// directives (matching bean-check's account-tree aggregation, #214).
 ///
 /// Per-commodity tolerance overrides set via Beancount's
 /// `option "inferred_tolerance_default" "COMMODITY:VALUE"` are journal-
-/// level state and live on [`crate::resolution::GlobalContext::tolerance_overrides`];
-/// they layer on top of this default at elaboration time.
-pub static BEANCOUNT_DEFAULTS: std::sync::LazyLock<crate::resolution::ElaborationConfig> =
-    std::sync::LazyLock::new(|| crate::resolution::ElaborationConfig {
+/// level state and live on
+/// [`crate::resolution::GlobalContext::tolerance_overrides`]; they
+/// layer on top of this default at elaboration time.
+///
+/// Available as a free function so test code can construct the config
+/// without instantiating [`BeancountFrontend`]; the trait method
+/// [`crate::frontend::Frontend::elaboration_defaults`] delegates here.
+pub fn beancount_defaults() -> crate::resolution::ElaborationConfig {
+    crate::resolution::ElaborationConfig {
         tolerance_mode: crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
             rust_decimal::Decimal::new(5, 1),
         ),
         balance_mode: crate::resolution::BalanceMode::CostBasis,
         assertion_scope: crate::resolution::AssertionScope::Subtree,
-    });
+    }
+}
 
 impl crate::frontend::Frontend for BeancountFrontend {
     fn extensions(&self) -> &'static [&'static str] {
         &["beancount"]
     }
 
-    fn defaults(&self) -> &'static crate::resolution::ElaborationConfig {
-        &BEANCOUNT_DEFAULTS
+    fn elaboration_defaults(&self) -> crate::resolution::ElaborationConfig {
+        beancount_defaults()
     }
 
     fn parse(
@@ -1546,7 +1550,7 @@ mod tests {
         // passes.
         let journal = parse_beancount(SAMPLE).expect("parse sample.beancount");
         let hir: crate::resolution::HIR = journal.try_into().expect("resolve sample.beancount");
-        let elab: crate::elaboration::Journal = crate::elaborate(hir, &BEANCOUNT_DEFAULTS)
+        let elab: crate::elaboration::Journal = crate::elaborate(hir, &beancount_defaults())
             .expect("elaborate sample.beancount (pad+balance must reconcile)");
         // The synthesized pad transaction is tagged with metadata `pad: <source>`.
         let pad_tx_count = elab
@@ -2021,8 +2025,8 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
         let mut hir: crate::resolution::HIR = journal.try_into()?;
         // Beancount's `option "inferred_tolerance_default"` populates
         // `tolerance_overrides` (per-commodity overrides; layer on top
-        // of `BEANCOUNT_DEFAULTS.tolerance_mode` at elaboration time).
-        // The base semantic config is BEANCOUNT_DEFAULTS itself.
+        // of the config's `tolerance_mode` at elaboration time). The
+        // base semantic config is `beancount_defaults()`.
         for (k, v) in &options {
             if k == "inferred_tolerance_default"
                 && let Some((commodity, decimal)) = v.split_once(':')
@@ -2033,7 +2037,7 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
                     .insert(commodity.trim().to_string(), d);
             }
         }
-        Ok(crate::elaborate(hir, &BEANCOUNT_DEFAULTS)?)
+        Ok(crate::elaborate(hir, &beancount_defaults())?)
     }
 
     #[test]

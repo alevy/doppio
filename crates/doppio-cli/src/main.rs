@@ -232,12 +232,12 @@ fn load_proto_journal_with_tolerance(
         // Start from the matching tool's default semantics; override the
         // tolerance fraction if `--tolerance` was passed on the CLI.
         let config = match tolerance_override {
-            None => frontend.defaults().clone(),
+            None => frontend.elaboration_defaults(),
             Some(fraction) => doppio::resolution::ElaborationConfig {
                 tolerance_mode: doppio::resolution::ToleranceMode::FractionOfSmallestPrecision(
                     fraction,
                 ),
-                ..frontend.defaults().clone()
+                ..frontend.elaboration_defaults()
             },
         };
         Ok(doppio::elaborate(hir, &config)?)
@@ -428,7 +428,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             File::open(&source)?.read_to_string(&mut file)?;
             let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
             let journal: doppio::elaboration::Journal =
-                doppio::elaborate(hir, frontend.defaults())?;
+                doppio::elaborate(hir, &frontend.elaboration_defaults())?;
             let compression = if no_compression {
                 doppio::Compression::None
             } else {

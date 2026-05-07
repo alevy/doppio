@@ -687,16 +687,19 @@ pub(crate) fn parse_hledger(input: &str) -> Result<Journal, Box<dyn std::error::
 /// that are stubbed out or not yet supported.
 pub struct HledgerFrontend;
 
-/// Default elaboration semantics for files written in hledger syntax.
+/// Construct the default [`crate::resolution::ElaborationConfig`] for
+/// files written in hledger syntax: strict per-transaction balance,
+/// `@price`-driven cost-equivalent for lots with both `{cost}` and
+/// `@price` (with a synthesised posting on `Income:Capital Gains` so
+/// the elaborated form is cost-basis-balanced regardless of frontend),
+/// and direct-account balance assertions. Mirrors hledger's own
+/// elaboration. See #210 for the gains-synthesis design.
 ///
-/// Strict per-transaction balance, `@price`-driven cost-equivalent for
-/// lots with both `{cost}` and `@price` (with a synthesised posting on
-/// `Income:Capital Gains` so the elaborated form is cost-basis-balanced
-/// regardless of frontend), and direct-account balance assertions.
-/// Mirrors hledger's own elaboration. See #210 for the gains-synthesis
-/// design.
-pub static HLEDGER_DEFAULTS: std::sync::LazyLock<crate::resolution::ElaborationConfig> =
-    std::sync::LazyLock::new(|| crate::resolution::ElaborationConfig {
+/// Available as a free function so test code can construct the config
+/// without instantiating [`HledgerFrontend`]; the trait method
+/// [`crate::frontend::Frontend::elaboration_defaults`] delegates here.
+pub fn hledger_defaults() -> crate::resolution::ElaborationConfig {
+    crate::resolution::ElaborationConfig {
         tolerance_mode: crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
             rust_decimal::Decimal::ZERO,
         ),
@@ -704,15 +707,16 @@ pub static HLEDGER_DEFAULTS: std::sync::LazyLock<crate::resolution::ElaborationC
             gains_account: "Income:Capital Gains".to_string(),
         },
         assertion_scope: crate::resolution::AssertionScope::Direct,
-    });
+    }
+}
 
 impl crate::frontend::Frontend for HledgerFrontend {
     fn extensions(&self) -> &'static [&'static str] {
         &["hledger", "journal"]
     }
 
-    fn defaults(&self) -> &'static crate::resolution::ElaborationConfig {
-        &HLEDGER_DEFAULTS
+    fn elaboration_defaults(&self) -> crate::resolution::ElaborationConfig {
+        hledger_defaults()
     }
 
     fn parse(
@@ -1411,7 +1415,7 @@ nothing after this matters
         let ast = parse_hledger(input).expect("parse");
         let hir: crate::resolution::HIR = ast.try_into().expect("resolution");
         let journal: crate::elaboration::Journal =
-            crate::elaborate(hir, &HLEDGER_DEFAULTS).expect("elaboration");
+            crate::elaborate(hir, &hledger_defaults()).expect("elaboration");
         let retain = journal
             .transactions
             .iter()
@@ -1450,7 +1454,7 @@ account Income          ; type:R
         let ast = parse_hledger(input).expect("parse");
         let hir: crate::resolution::HIR = ast.try_into().expect("resolution");
         let journal: crate::elaboration::Journal =
-            crate::elaborate(hir, &HLEDGER_DEFAULTS).expect("elaboration");
+            crate::elaborate(hir, &hledger_defaults()).expect("elaboration");
         let salary = journal
             .accounts
             .get("Income:Salary")

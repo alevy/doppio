@@ -408,11 +408,11 @@ where
     let output = parser.parse(input)?;
     let hir: resolution::HIR = output.try_into()?;
     // The parser is type-locked to ledger-cli, so the matching defaults
-    // are LEDGER_DEFAULTS. Callers who want a different elaboration
+    // are `ledger_defaults()`. Callers who want a different elaboration
     // ruleset (e.g. relaxed tolerance, subtree assertions) can call
     // `frontend.parse()` and `elaborate()` separately and pass an
     // explicit `ElaborationConfig`.
-    Ok(elaborate(hir, &grammars::ledger::LEDGER_DEFAULTS)?)
+    Ok(elaborate(hir, &grammars::ledger::ledger_defaults())?)
 }
 
 /// Run the elaboration stage on a resolved [`resolution::HIR`] under
@@ -421,8 +421,8 @@ where
 ///
 /// The config is the elaborator's only source of semantic choices
 /// (tolerance rule, balance mode, assertion scope, ...). Callers
-/// typically pass `frontend.defaults()` for the matching tool's
-/// behaviour:
+/// typically pass `&frontend.elaboration_defaults()` for the matching
+/// tool's behaviour:
 ///
 /// ```rust
 /// use doppio::frontend::Frontend as _;
@@ -435,7 +435,7 @@ where
 ///         &|_| Ok(String::new()),
 ///     )
 ///     .unwrap();
-/// let journal = doppio::elaborate(hir, LedgerFrontend.defaults()).unwrap();
+/// let journal = doppio::elaborate(hir, &LedgerFrontend.elaboration_defaults()).unwrap();
 /// assert_eq!(journal.transactions.len(), 1);
 /// ```
 ///
@@ -507,7 +507,7 @@ pub fn eval_transaction(
     // transaction has to balance exactly. Callers that need different
     // semantics can use [`elaborate`] directly with their own
     // [`resolution::ElaborationConfig`].
-    let journal = elaborator::elaborate(hir, &grammars::ledger::LEDGER_DEFAULTS)?;
+    let journal = elaborator::elaborate(hir, &grammars::ledger::ledger_defaults())?;
     // The HIR contained exactly one transaction, so the journal has exactly one.
     Ok(journal
         .transactions

@@ -30,7 +30,7 @@ fn compile_to_dop_with_compression(
     let ast = parser.parse(source).expect("parse failed");
     let hir: doppio::resolution::HIR = ast.try_into().expect("resolution failed");
     let journal: doppio::elaboration::Journal =
-        doppio::elaborate(hir, &doppio::grammars::ledger::LEDGER_DEFAULTS)
+        doppio::elaborate(hir, &doppio::grammars::ledger::ledger_defaults())
             .expect("elaboration failed");
 
     // Write to a named temp file so we can pass its path to `read_dop`.

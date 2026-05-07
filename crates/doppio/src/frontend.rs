@@ -53,7 +53,7 @@ pub trait Frontend {
     /// tool's rules. The associated default is what `dop`-style command
     /// dispatchers use when the user hasn't asked for anything more
     /// specific.
-    fn defaults(&self) -> &'static ElaborationConfig;
+    fn elaboration_defaults(&self) -> ElaborationConfig;
 
     /// Parse source text into an [`HIR`].
     ///
