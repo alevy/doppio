@@ -135,6 +135,39 @@ pub struct GlobalContext {
     /// elaborator uses the override directly; otherwise it falls back
     /// to the `tolerance_mode` rule.
     pub tolerance_overrides: BTreeMap<String, rust_decimal::Decimal>,
+    /// How the elaborator computes a posting's cash-equivalent for
+    /// transaction balance when the posting carries both `{cost}` and
+    /// `@price` annotations. See [`BalanceMode`].
+    pub balance_mode: BalanceMode,
+}
+
+/// Strategy for computing a posting's cash-equivalent during the
+/// transaction balance check when the posting carries both a lot
+/// `{cost}` annotation and an `@price` annotation.
+///
+/// Surfaced from #210, which observed that ledger-cli + Beancount use
+/// `{cost}` for balance (with `@price` informational), while hledger
+/// uses `@price` (with `{cost}` informational). doppio's prior
+/// behaviour matched hledger; the other two frontends produced
+/// `TransactionDoesNotBalance` whenever the user wrote an explicit
+/// PnL posting alongside `{cost} @price`.
+#[derive(Debug, Clone, Default)]
+pub enum BalanceMode {
+    /// `{cost}` drives the cash-equivalent for balance; `@price` is
+    /// informational only. The user is expected to write an explicit
+    /// gain/loss posting that absorbs any cost-vs-price residual.
+    /// Default. Matches ledger-cli and Beancount.
+    #[default]
+    CostBasis,
+    /// `@price` (when present) drives the cash-equivalent for
+    /// balance; `{cost}` is informational. The user does NOT write a
+    /// gain/loss posting; doppio synthesizes one on `gains_account`
+    /// after the @price-driven balance succeeds, computed as
+    /// `units * (cost - price)`, so the elaborated transaction is
+    /// also cost-basis-balanced (and the `.dop` output is uniform
+    /// with what Beancount/ledger-cli inputs produce). Matches
+    /// hledger.
+    AtPriceWithSynthesis { gains_account: String },
 }
 
 /// Per-transaction balance tolerance policy.

@@ -703,7 +703,17 @@ impl crate::frontend::Frontend for HledgerFrontend {
             base_path: base_path.to_path_buf(),
         }
         .parse(input)?;
-        Ok(ast_journal.try_into()?)
+        let mut hir: crate::resolution::HIR = ast_journal.try_into()?;
+        // hledger uses `@price` for transaction balance when present
+        // and does not require an explicit gain/loss posting. After
+        // the @price-driven balance check, the elaborator synthesizes
+        // a posting on the gains account so the elaborated form is
+        // cost-basis-balanced -- giving `.dop` files a uniform shape
+        // across frontends. See #210.
+        hir.global_context.balance_mode = crate::resolution::BalanceMode::AtPriceWithSynthesis {
+            gains_account: "Income:Capital Gains".to_string(),
+        };
+        Ok(hir)
     }
 }
 

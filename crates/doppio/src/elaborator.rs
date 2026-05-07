@@ -375,6 +375,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
 
         let tolerance_mode = value.global_context.tolerance_mode;
         let tolerance_overrides = value.global_context.tolerance_overrides.clone();
+        let balance_mode = value.global_context.balance_mode.clone();
 
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
@@ -522,7 +523,18 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                 resolution::Entry::Transaction(mut transaction) => {
                     // `transaction_state` accumulates the running sum of all
                     // explicit posting amounts (per commodity) for balancing.
+                    // In `BalanceMode::AtPriceWithSynthesis`, this is at @price;
+                    // in `CostBasis`, it is at cost.
                     let mut transaction_state = Amount(BTreeMap::default());
+                    // Parallel running sum at COST basis. Diverges from
+                    // `transaction_state` only in `AtPriceWithSynthesis` mode for
+                    // postings that have BOTH `{cost}` and `@price` (where the
+                    // two summands are different). After the balance check, any
+                    // non-zero value here is the realized capital gain in that
+                    // commodity, and we synthesize a posting on the configured
+                    // gains account so the elaborated transaction is also
+                    // cost-basis-balanced. See #210.
+                    let mut cost_basis_state = Amount(BTreeMap::default());
 
                     // Prefer an explicit "payee:" metadata key; fall back to
                     // the transaction description as the default payee.
@@ -551,7 +563,14 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             // `lot_cash` -- the (total, commodity) pair to use for
                             // transaction balancing, along with the elaborated
                             // lot annotation for the proto output.
-                            let (value, commodity, lot_cash, proto_lot) = match amount {
+                            #[allow(clippy::type_complexity)]
+                            let (value, commodity, lot_cash, proto_lot, cost_basis_cash): (
+                                Decimal,
+                                String,
+                                Option<(Decimal, String)>,
+                                Option<crate::elaboration::Lot>,
+                                Option<(Decimal, String)>,
+                            ) = match amount {
                                 AmountDetails::Amount {
                                     value,
                                     lot_annotation,
@@ -620,41 +639,90 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                             (None, None)
                                         };
 
-                                    // Cash-contribution priority:
-                                    // 1. lot_pricing (@/@@) present  -> price drives cash (unchanged)
-                                    // 2. lot_annotation.cost present -> quantity * cost_per_unit
-                                    // 3. otherwise                   -> value contributes in its own
-                                    //                                  commodity (today's fallback)
-                                    let lot_cash = match lot_pricing {
-                                        Some(ast::LotPricing::Total(expr)) => {
-                                            let (mut v, c) = evaluator::eval_and_normalize_amount(
-                                                expr,
-                                                entry_context,
-                                                &state,
-                                            )?;
-                                            // For a negative lot (selling), negate the cash total
-                                            // so that it offsets correctly in transaction_state.
-                                            if value.is_sign_negative() {
-                                                v = -v;
+                                    // The cost-basis cash equivalent (always
+                                    // computed; used for `cost_basis_state`
+                                    // and, in `CostBasis` mode, for the
+                                    // primary `lot_cash` too).
+                                    let cost_basis_cash = cost_for_balance
+                                        .as_ref()
+                                        .map(|(cv, cc)| (value * *cv, cc.clone()));
+
+                                    // Cash-contribution priority depends on
+                                    // `balance_mode` (#210):
+                                    //
+                                    // - `CostBasis` (ledger-cli, Beancount):
+                                    //   `{cost}` drives cash; `@price` is
+                                    //   informational only. The user is
+                                    //   responsible for writing an explicit
+                                    //   gain/loss posting that absorbs any
+                                    //   cost-vs-price residual.
+                                    //
+                                    // - `AtPriceWithSynthesis` (hledger):
+                                    //   `@price` drives cash when present;
+                                    //   `{cost}` falls back when absent. The
+                                    //   cost-vs-price residual is captured
+                                    //   in `cost_basis_state` and a gains
+                                    //   posting is synthesized after the
+                                    //   transaction-balance check.
+                                    // Helper: evaluate the @price expression
+                                    // into a (units * price, commodity) cash
+                                    // contribution.
+                                    let at_price_cash = |lp: ast::LotPricing,
+                                                         state: &RunningState|
+                                     -> Result<
+                                        Option<(Decimal, String)>,
+                                        ElaborationError,
+                                    > {
+                                        Ok(match lp {
+                                            ast::LotPricing::Total(expr) => {
+                                                let (mut v, c) =
+                                                    evaluator::eval_and_normalize_amount(
+                                                        expr,
+                                                        entry_context,
+                                                        state,
+                                                    )?;
+                                                if value.is_sign_negative() {
+                                                    v = -v;
+                                                }
+                                                Some((v, c))
                                             }
-                                            Some((v, c))
-                                        }
-                                        Some(ast::LotPricing::Unit(expr)) => {
-                                            // "@ unit_price" -- total cash = units * price
-                                            let (v, c) = evaluator::eval_and_normalize_amount(
-                                                expr,
-                                                entry_context,
-                                                &state,
-                                            )?;
-                                            Some((v * value, c))
-                                        }
-                                        None => {
-                                            // No @/@@. If cost annotation is present, it drives
-                                            // the cash balance: total = quantity * cost_per_unit.
-                                            cost_for_balance.map(|(cv, cc)| (value * cv, cc))
-                                        }
+                                            ast::LotPricing::Unit(expr) => {
+                                                let (v, c) =
+                                                    evaluator::eval_and_normalize_amount(
+                                                        expr,
+                                                        entry_context,
+                                                        state,
+                                                    )?;
+                                                Some((v * value, c))
+                                            }
+                                        })
                                     };
 
+                                    let lot_cash = match &balance_mode {
+                                        resolution::BalanceMode::CostBasis => {
+                                            // `{cost}` drives balance when
+                                            // present. When absent (e.g.
+                                            // ledger's `10 AAPL @ $150` BUY
+                                            // syntax with no separate `{cost}`),
+                                            // fall back to `@price` because
+                                            // there's no cost-basis to use.
+                                            // `@price` ignored only when
+                                            // `{cost}` is present.
+                                            match &cost_basis_cash {
+                                                Some(_) => cost_basis_cash.clone(),
+                                                None => match lot_pricing {
+                                                    Some(lp) => at_price_cash(lp, &state)?,
+                                                    None => None,
+                                                },
+                                            }
+                                        }
+                                        resolution::BalanceMode::AtPriceWithSynthesis {
+                                            ..
+                                        } => match lot_pricing {
+                                            Some(lp) => at_price_cash(lp, &state)?,
+                                            None => cost_basis_cash.clone(),
+                                        },
+                                    };
                                     if let Some(balance_assertion) = balance_assertion {
                                         let (baval, bacommodity) =
                                             evaluator::eval_and_normalize_amount(
@@ -676,7 +744,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                             Err(ElaborationError::PostingBalanceAssertionFailed)?;
                                         }
                                     }
-                                    (value, commodity, lot_cash, proto_lot)
+                                    (value, commodity, lot_cash, proto_lot, cost_basis_cash)
                                 }
                                 AmountDetails::BalanceAssignmentAllCommodities(target) => {
                                     // hledger `==* target` (or `=* target`) form -- typically
@@ -725,6 +793,12 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                     if posting_kind != ast::PostingKind::VirtualUnbalanced {
                                         for (c, delta) in &deltas {
                                             *transaction_state.0.entry(c.clone()).or_default() +=
+                                                delta;
+                                            // Mirror into cost_basis_state so
+                                            // the post-balance synthesis pass
+                                            // (#210) doesn't see a phantom
+                                            // residual on `==*` postings.
+                                            *cost_basis_state.0.entry(c.clone()).or_default() +=
                                                 delta;
                                         }
                                     }
@@ -791,7 +865,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                         - account_balance
                                             .and_then(|ab| ab.commodity.get(&commodity))
                                             .unwrap_or(&Decimal::ZERO);
-                                    (value, commodity, None, None)
+                                    (value, commodity, None, None, None)
                                 }
                             };
                             let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
@@ -801,12 +875,39 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             // For lot-priced postings, add the *cash* total (in the lot's
                             // commodity) to transaction_state rather than the commodity units.
                             if posting_kind != ast::PostingKind::VirtualUnbalanced {
-                                if let Some((lot_total, lot_commodity)) = lot_cash {
-                                    let dec = transaction_state.0.entry(lot_commodity).or_default();
-                                    *dec += lot_total;
+                                if let Some((lot_total, lot_commodity)) = &lot_cash {
+                                    let dec = transaction_state
+                                        .0
+                                        .entry(lot_commodity.clone())
+                                        .or_default();
+                                    *dec += *lot_total;
                                 } else {
                                     let dec =
                                         transaction_state.0.entry(commodity.clone()).or_default();
+                                    *dec += value;
+                                }
+                                // `cost_basis_state` mirrors `transaction_state`
+                                // except lot-priced postings contribute their
+                                // COST-basis cash equivalent (when present),
+                                // not their @price-based one. Diverges only in
+                                // `AtPriceWithSynthesis` mode for postings with
+                                // both `{cost}` and `@price`.
+                                if let Some((cb_total, cb_commodity)) = &cost_basis_cash {
+                                    let dec =
+                                        cost_basis_state.0.entry(cb_commodity.clone()).or_default();
+                                    *dec += *cb_total;
+                                } else if let Some((lot_total, lot_commodity)) = &lot_cash {
+                                    // No cost annotation; the lot_cash IS the
+                                    // cost-basis contribution (or the only
+                                    // contribution available).
+                                    let dec = cost_basis_state
+                                        .0
+                                        .entry(lot_commodity.clone())
+                                        .or_default();
+                                    *dec += *lot_total;
+                                } else {
+                                    let dec =
+                                        cost_basis_state.0.entry(commodity.clone()).or_default();
                                     *dec += value;
                                 }
                             }
@@ -848,11 +949,23 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                         // excluded from transaction_state, so they don't affect inference).
                         // Null postings are always REAL; the kind field is left unspecified
                         // (defaults to 0 = UNSPECIFIED which is treated as REAL by consumers).
-                        let by_commodity = transaction_state
+                        let by_commodity: BTreeMap<String, _> = transaction_state
                             .0
                             .iter()
                             .map(|(c, v)| (c.clone(), crate::decimal_to_proto(-v)))
                             .collect();
+
+                        // The null posting also offsets `cost_basis_state` by
+                        // the same delta -- it's a regular non-lot cash
+                        // posting and contributes equally to both running
+                        // sums. After this, any leftover in
+                        // `cost_basis_state` is the realized capital gain
+                        // (only non-zero in `AtPriceWithSynthesis` mode for
+                        // transactions with `{cost} @price` postings; see
+                        // #210).
+                        for (c, v) in &transaction_state.0 {
+                            *cost_basis_state.0.entry(c.clone()).or_default() -= *v;
+                        }
 
                         resolved_postings.push(crate::elaboration::Posting {
                             account: account_name,
@@ -936,6 +1049,50 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                     .collect();
                             resolved_postings.push(crate::elaboration::Posting {
                                 account: String::new(),
+                                payee: payee.clone(),
+                                amount: Some(crate::elaboration::Amount { by_commodity }),
+                                state: crate::state_to_proto(&TransactionState::Cleared),
+                                tags: vec![],
+                                metadata: BTreeMap::new(),
+                                kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
+                                lot: None,
+                            });
+                        }
+                    }
+
+                    // After the @price-driven balance check has passed, in
+                    // `AtPriceWithSynthesis` mode, any non-zero entry in
+                    // `cost_basis_state` is a realized capital gain in that
+                    // commodity. Synthesize a posting on the configured
+                    // gains account whose amount = -residual, so the
+                    // elaborated transaction is also cost-basis-balanced.
+                    // Result: `.dop` files are uniformly cost-basis-balanced
+                    // regardless of source frontend (#210).
+                    if let resolution::BalanceMode::AtPriceWithSynthesis { gains_account } =
+                        &balance_mode
+                    {
+                        let gains: BTreeMap<String, Decimal> = cost_basis_state
+                            .0
+                            .iter()
+                            .filter(|(_, v)| !v.is_zero())
+                            .map(|(c, v)| (c.clone(), -*v))
+                            .collect();
+                        if !gains.is_empty() {
+                            if !accounts.contains_key(gains_account.as_str()) {
+                                accounts.insert(gains_account.clone(), Default::default());
+                            }
+                            let gains_balances = state
+                                .account_balances
+                                .entry(gains_account.clone())
+                                .or_default();
+                            let mut by_commodity: BTreeMap<String, crate::elaboration::Decimal> =
+                                BTreeMap::new();
+                            for (c, v) in &gains {
+                                *gains_balances.commodity.entry(c.clone()).or_default() += *v;
+                                by_commodity.insert(c.clone(), crate::decimal_to_proto(*v));
+                            }
+                            resolved_postings.push(crate::elaboration::Posting {
+                                account: gains_account.clone(),
                                 payee: payee.clone(),
                                 amount: Some(crate::elaboration::Amount { by_commodity }),
                                 state: crate::state_to_proto(&TransactionState::Cleared),
@@ -3956,9 +4113,12 @@ account Assets:Savings
     }
 
     #[test]
-    fn test_lot_cost_and_price_price_wins_cash_cost_preserved() {
-        // 10 AAPL {$150} @ $155 -> cash -$1550 (price drives balance),
-        // but lot.cost = $150 is still stored.
+    fn test_lot_cost_and_price_cost_wins_cash() {
+        // 10 AAPL {$150} @ $155 in ledger semantics: `{cost}` drives
+        // balance (cash = -$1500), `@price` is informational only and
+        // preserved on the proto Lot. Updated for #210 to match
+        // ledger-cli's actual semantics; previously this test
+        // documented doppio's now-fixed @price-wins bug.
         let input = "\
 2024-03-01 Buy AAPL
     Assets:Brokerage   10 AAPL {$150} @ $155
@@ -3967,18 +4127,14 @@ account Assets:Savings
         let journal = elaborate(input);
         let t = &journal.transactions[0];
         assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-        // Price wins over lot cost for cash balance: 10 * $155 = $1550.
+        // Cost drives balance: 10 * $150 = $1500.
         assert_eq!(
             t.postings[1].amount_in("$"),
-            Some(dec!(-1550)),
-            "cash side should be -$1550 when @ price is present"
+            Some(dec!(-1500)),
+            "cash side should be -$1500 when {{cost}} is present (cost wins over @price)"
         );
-        // Lot cost annotation is preserved even though it didn't drive balance.
-        assert_eq!(
-            t.postings[0].lot_cost_in("$"),
-            Some(dec!(150)),
-            "lot cost should be $150, not the price $155"
-        );
+        // Lot cost annotation is preserved.
+        assert_eq!(t.postings[0].lot_cost_in("$"), Some(dec!(150)));
     }
 
     #[test]
