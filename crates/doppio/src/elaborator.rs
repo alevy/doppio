@@ -60,12 +60,19 @@ struct RunningState {
 }
 
 /// A pad directive observed but not yet consumed by a balance assertion.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct PendingPad {
     /// The pad's own date -- used as the synthesized transaction's date.
     date: chrono::NaiveDate,
     /// The counter-account that will absorb the padding amount.
     source_account: String,
+    /// Commodities for which this pad has already fired a synthesised
+    /// transaction. Beancount fires the pad once per commodity at the
+    /// first balance assertion that references it; subsequent
+    /// assertions in the same commodity check the running balance
+    /// against the asserted amount without re-padding. Different
+    /// commodities can each consume the pad once.
+    padded_commodities: std::collections::BTreeSet<String>,
 }
 
 /// A commodity name (e.g. `"USD"`, `"BTC"`, `"$"`).
@@ -382,15 +389,18 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
             let entry_context = &value.contexts[entry.context_id];
             match entry.data {
                 resolution::Entry::Pad(p) => {
-                    // Beancount `pad`: remember the (target, source) pair until
-                    // the next balance assertion on `target` consumes it. A
-                    // second pad on the same target before any assertion
-                    // overwrites the first (most-recent-pad-wins).
+                    // Beancount `pad`: remember the (target, source) pair so
+                    // upcoming balance assertions on `target` can each fire
+                    // it once per commodity. A second pad on the same target
+                    // overwrites the first (most-recent-pad-wins) -- the new
+                    // pad's `padded_commodities` set starts empty, re-arming
+                    // it for every commodity.
                     state.pending_pads.insert(
                         p.target_account,
                         PendingPad {
                             date: p.date,
                             source_account: p.source_account,
+                            padded_commodities: std::collections::BTreeSet::new(),
                         },
                     );
                 }
@@ -426,14 +436,33 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                         }
                     };
 
-                    // If a pad on this account is pending, synthesize a
+                    // If a pad on this account is pending and has not yet
+                    // fired for the asserted commodity, synthesize a
                     // balancing transaction (back-dated to the pad's date)
                     // that brings `actual_amount` up to `expected_amount`,
                     // and apply it to the running state so the assertion
                     // below passes by construction. The synthesized
                     // transaction is also pushed into the output journal so
                     // downstream consumers see the inserted postings.
-                    if let Some(pad) = state.pending_pads.remove(&assertion.account) {
+                    //
+                    // Per bean-check 3.2.0: each pad fires exactly once
+                    // *per commodity*. Different commodities can each
+                    // consume the pad once; subsequent assertions in an
+                    // already-padded commodity check the running balance
+                    // against the asserted amount without re-padding (and
+                    // therefore fail honestly when a later real posting
+                    // moves the balance away from the originally-padded
+                    // total). The `padded_commodities` set on each
+                    // `PendingPad` tracks which commodities have fired.
+                    // See #220.
+                    let pad_should_fire = state
+                        .pending_pads
+                        .get(&assertion.account)
+                        .map(|pad| !pad.padded_commodities.contains(&expected_commodity))
+                        .unwrap_or(false);
+                    if pad_should_fire
+                        && let Some(pad) = state.pending_pads.get(&assertion.account).cloned()
+                    {
                         let diff = expected_amount - actual_amount;
                         if !diff.is_zero() {
                             // Ensure both accounts exist in the accounts map
@@ -516,6 +545,17 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
 
                             // The assertion now holds by construction.
                             actual_amount = expected_amount;
+                        }
+                        // Mark this commodity as padded -- whether or not
+                        // a transaction was synthesised. The zero-diff
+                        // case (`if !diff.is_zero()` above skipped
+                        // synthesis) still consumes the pad: bean-check
+                        // treats the assertion as the pad's "fire" event
+                        // even when the running balance already matches.
+                        if let Some(pad_mut) = state.pending_pads.get_mut(&assertion.account) {
+                            pad_mut
+                                .padded_commodities
+                                .insert(expected_commodity.clone());
                         }
                     }
 
