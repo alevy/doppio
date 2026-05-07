@@ -160,6 +160,15 @@ enum Commands {
     /// Output is sorted and deduplicated.
     Commodities { source: PathBuf },
 
+    /// List historical price quotes (`P date commodity price target` directives)
+    /// in source order, optionally as JSON.
+    Prices {
+        source: PathBuf,
+        /// Output format: text (default) or json.
+        #[clap(long, default_value = "text")]
+        format: String,
+    },
+
     /// Print a summary of the journal: transaction count, unique accounts,
     /// unique commodities, and the date range covered.
     Stats { source: PathBuf },
@@ -691,6 +700,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .collect();
             for commodity in commodities {
                 println!("{}", commodity);
+            }
+        }
+        Commands::Prices { source, format } => {
+            let format = OutputFormat::parse(&format)?;
+            let journal = load_proto_journal(&source)?;
+            match format {
+                OutputFormat::Text => {
+                    for hp in &journal.prices {
+                        let date = epoch_days_to_string(hp.date);
+                        let value = hp
+                            .price
+                            .as_ref()
+                            .map(|p| p.to_decimal().to_string())
+                            .unwrap_or_default();
+                        println!("P {date} {} {value} {}", hp.commodity, hp.price_commodity);
+                    }
+                }
+                OutputFormat::Json => {
+                    let rows: Vec<serde_json::Value> = journal
+                        .prices
+                        .iter()
+                        .map(|hp| {
+                            serde_json::json!({
+                                "date": epoch_days_to_string(hp.date),
+                                "commodity": hp.commodity,
+                                "price_amount": hp.price.as_ref().map(|p| p.to_decimal().to_string()).unwrap_or_default(),
+                                "price_commodity": hp.price_commodity,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                }
+                OutputFormat::Csv => {
+                    println!("date,commodity,price_amount,price_commodity");
+                    for hp in &journal.prices {
+                        let date = epoch_days_to_string(hp.date);
+                        let value = hp
+                            .price
+                            .as_ref()
+                            .map(|p| p.to_decimal().to_string())
+                            .unwrap_or_default();
+                        println!(
+                            "{},{},{},{}",
+                            csv_field(&date),
+                            csv_field(&hp.commodity),
+                            value,
+                            csv_field(&hp.price_commodity)
+                        );
+                    }
+                }
             }
         }
         Commands::Stats { source } => {
