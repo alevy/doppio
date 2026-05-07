@@ -722,18 +722,39 @@ fn clean_decimal(s: &str) -> Decimal {
 // ---
 // Date-order normalisation
 // ---
-/// Beancount evaluates entries in **date order**, not source order, which
-/// matters for `pad` + `balance` (a pad must see all transactions on its
-/// target account between its date and the next assertion's date before
-/// computing the gap to fill).
-///
-/// We stable-sort the AST entries here so the resolver and elaborator can
+/// Beancount evaluates entries in **date order**, not source order. We
+/// stable-sort the AST entries here so the resolver and elaborator can
 /// stay source-order-agnostic. Undated entries (directives, comments)
-/// keep their original relative position and sort before any dated entry
-/// because directives are setup that should apply before the journal's
-/// time-evolving state begins.
+/// keep their original relative position and sort before any dated
+/// entry.
+///
+/// Within the same date, Beancount applies a fixed ordering that
+/// matters for the pad/balance interaction (#147) and for balance
+/// assertions that should fire BEFORE any same-date transaction
+/// touching the asserted account (#212):
+///
+/// 1. **Pad** -- registers a "pending pad" for the next balance.
+/// 2. **Balance** -- assertion fires at the *beginning* of the date,
+///    consuming any pending pad. Per Beancount's documentation:
+///    "The balance directive applies for the *beginning* of the date."
+/// 3. **Transactions / HistoricalPrice / other dated** -- happen
+///    during the date, in source order (stable sort tiebreak).
 fn sort_entries_by_date(entries: &mut [Entry]) {
-    entries.sort_by_key(entry_date_key);
+    entries.sort_by_key(entry_sort_key);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SameDayOrder {
+    /// Pad registers a pending fill before any same-date balance.
+    Pad,
+    /// Balance asserts at the start of the date, after pad.
+    Balance,
+    /// Transactions, prices, etc. -- "during" the date.
+    During,
+}
+
+fn entry_sort_key(entry: &Entry) -> (Option<Date>, SameDayOrder) {
+    (entry_date_key(entry), entry_sub_order(entry))
 }
 
 fn entry_date_key(entry: &Entry) -> Option<Date> {
@@ -743,6 +764,14 @@ fn entry_date_key(entry: &Entry) -> Option<Date> {
         Entry::HistoricalPrice(hp) => Some(hp.date.clone()),
         Entry::Pad(p) => Some(p.date.clone()),
         Entry::Directive(_) | Entry::Comment(_) => None,
+    }
+}
+
+fn entry_sub_order(entry: &Entry) -> SameDayOrder {
+    match entry {
+        Entry::Pad(_) => SameDayOrder::Pad,
+        Entry::Assertion(_) => SameDayOrder::Balance,
+        _ => SameDayOrder::During,
     }
 }
 
