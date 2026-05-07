@@ -208,6 +208,180 @@ def doppio_balances(fixture: Path, dop_bin: Path) -> set[Tuple3]:
 
 
 # ---------------------------------------------------------------------------
+# Tag / metadata extractors (#226 Phase 1).
+#
+# Per-transaction fingerprint: (date, description, frozenset(tags),
+# frozenset((key, value), ...)). Compared as multisets so duplicate
+# (date, description) transactions in a fixture don't collapse.
+# ---------------------------------------------------------------------------
+
+# Fingerprint = (date, description, frozenset[tag], frozenset[(meta_key, meta_value)]).
+Fingerprint = tuple[str, str, frozenset[str], frozenset[tuple[str, str]]]
+
+
+def _fp_sort_key(fp: Fingerprint) -> tuple:
+    """Stable sort key for a Fingerprint -- frozensets aren't directly orderable."""
+    date, desc, tags, meta = fp
+    return (date, desc, tuple(sorted(tags)), tuple(sorted(meta)))
+
+
+def beancount_tags_metadata(fixture: Path) -> list[Fingerprint]:
+    """Per-transaction tags + metadata via Beancount's Python API.
+
+    Beancount distinguishes `#tag` from `^link`; doppio's Beancount parser
+    keeps the `^` prefix on link tags so the distinction is recoverable.
+    Combine both into a single frozen set on the canonical side, prefixing
+    links with `^` to match doppio's representation."""
+    from beancount.loader import load_file
+    from beancount.core.data import Transaction
+
+    entries, errors, _ = load_file(str(fixture))
+    if errors:
+        raise RuntimeError(f"beancount errors loading {fixture}: {errors}")
+    out: list[Fingerprint] = []
+    for entry in entries:
+        if not isinstance(entry, Transaction):
+            continue
+        # Skip pad-synthesised transactions: bean-check inserts them as
+        # `(Padding inserted for ...)`. doppio's analogous synthesised
+        # transactions are dropped on the doppio side too. They're a
+        # tool-internal artefact, not a user-meaningful tag/metadata
+        # carrier.
+        narration = entry.narration or ""
+        if narration.startswith("(Padding inserted"):
+            continue
+        tags = set(entry.tags or ())
+        links = {f"^{ln}" for ln in (entry.links or ())}
+        # Beancount filters `filename` / `lineno` / `__tolerances__` out of
+        # user-visible metadata; do the same so canonical and doppio agree.
+        meta = {
+            k: str(v)
+            for k, v in (entry.meta or {}).items()
+            if not k.startswith("_") and k not in ("filename", "lineno")
+        }
+        out.append(
+            (
+                entry.date.isoformat(),
+                narration,
+                frozenset(tags | links),
+                frozenset(meta.items()),
+            )
+        )
+    return out
+
+
+def hledger_tags_metadata(fixture: Path) -> list[Fingerprint]:
+    """Per-transaction tags + metadata via `hledger print --output-format=json`.
+
+    `ttags` is a list of [name, value] pairs. hledger separates "bare" tags
+    from key:value metadata only by convention (a tag with empty value is
+    bare); we emit `name` as a tag for empty-value pairs and `name=value`
+    pairs into metadata otherwise."""
+    raw = subprocess.run(
+        ["hledger", "-f", str(fixture), "print", "--output-format=json"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    payload = json.loads(raw)
+    out: list[Fingerprint] = []
+    for txn in payload:
+        date = txn.get("tdate") or ""
+        desc = txn.get("tdescription") or ""
+        tags: set[str] = set()
+        meta: dict[str, str] = {}
+        for pair in txn.get("ttags") or ():
+            name, value = pair[0], pair[1]
+            if value == "":
+                tags.add(name)
+            else:
+                meta[name] = value
+        out.append((date, desc, frozenset(tags), frozenset(meta.items())))
+    return out
+
+
+def doppio_tags_metadata(fixture: Path, dop_bin: Path) -> list[Fingerprint]:
+    """Read per-transaction tags + metadata from `dop register --format=json`.
+
+    Register emits per-posting rows with txn-level tags/metadata duplicated
+    across every posting of the same transaction; dedupe by (date,
+    description, txn_tags, txn_metadata). Posting-level tags / metadata are
+    not currently compared at this phase (see #226 follow-on)."""
+    raw = subprocess.run(
+        [str(dop_bin), "register", "--format=json", str(fixture)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    payload = json.loads(raw)
+    seen: set[Fingerprint] = set()
+    out: list[Fingerprint] = []
+    for row in payload:
+        date = row["date"]
+        desc = row["description"]
+        # Skip the synthesised pad rows -- they're a doppio-internal artefact
+        # of pad+balance reconciliation that has no canonical analogue at
+        # this phase.
+        if desc == "(padding inserted for balance assertion)":
+            continue
+        tags = frozenset(row.get("txn_tags") or ())
+        meta = frozenset((row.get("txn_metadata") or {}).items())
+        fp = (date, desc, tags, meta)
+        if fp in seen:
+            continue
+        seen.add(fp)
+        out.append(fp)
+    return out
+
+
+def diff_fingerprints(canonical: list[Fingerprint], doppio: list[Fingerprint]) -> str | None:
+    """Compare distinct per-transaction (date, description, tags, metadata)
+    fingerprints between the two tools.
+
+    Set-based, not multiset: if the same fingerprint occurs N times on
+    one side and M times on the other, that's tolerated. Multiset
+    precision would need a per-transaction id surfaced by `dop register`,
+    which doesn't exist yet; for the gap classes #226 actually targets
+    (a tag dropped, a metadata key renamed, a quoted string preserving
+    its quotes), set-based comparison surfaces the divergence either
+    way."""
+    canon_set = set(canonical)
+    dop_set = set(doppio)
+    if canon_set == dop_set:
+        return None
+    only_canon = canon_set - dop_set
+    only_dop = dop_set - canon_set
+    lines = []
+    if only_canon:
+        lines.append("  txn fingerprints only in canonical:")
+        for fp in sorted(only_canon, key=_fp_sort_key):
+            date, desc, tags, meta = fp
+            lines.append(
+                f"    [{date}] '{desc}' tags={sorted(tags)} meta={dict(sorted(meta))}"
+            )
+    if only_dop:
+        lines.append("  txn fingerprints only in doppio:")
+        for fp in sorted(only_dop, key=_fp_sort_key):
+            date, desc, tags, meta = fp
+            lines.append(
+                f"    [{date}] '{desc}' tags={sorted(tags)} meta={dict(sorted(meta))}"
+            )
+    return "\n".join(lines)
+
+
+# Map balance extractor -> tags/metadata extractor. ledger-cli's tag handling
+# isn't structured in its native output; skip for this phase.
+TAGS_META_EXTRACTOR: dict[CanonicalFn, Callable[[Path], list[Fingerprint]] | None] = {}
+
+
+def _register_tags_meta_extractors() -> None:
+    """Populate TAGS_META_EXTRACTOR after the balance extractors are defined.
+    Cleaner than ordering by source position."""
+    TAGS_META_EXTRACTOR[beancount_balances] = beancount_tags_metadata
+    TAGS_META_EXTRACTOR[hledger_balances] = hledger_tags_metadata
+    TAGS_META_EXTRACTOR[ledger_balances] = None
+
+
+_register_tags_meta_extractors()
+
+
+# ---------------------------------------------------------------------------
 # Test catalog
 # ---------------------------------------------------------------------------
 
@@ -290,14 +464,30 @@ def diff_sets(canonical: set[Tuple3], doppio: set[Tuple3]) -> str | None:
 
 def run_positive(case: Case, dop_bin: Path) -> bool:
     print(f"  [{case.label}] {case.fixture.name}", end=" ... ", flush=True)
+    # Phase 0: balance equality (the original parity check, #196).
     canonical = case.canonical(case.fixture)
     doppio = doppio_balances(case.fixture, dop_bin)
-    diff = diff_sets(canonical, doppio)
-    if diff is None:
+    bal_diff = diff_sets(canonical, doppio)
+
+    # Phase 1: per-transaction tags + metadata (#226). Skipped for ledger-cli
+    # since its native output doesn't expose tags structurally.
+    tags_meta_diff: str | None = None
+    extractor = TAGS_META_EXTRACTOR.get(case.canonical)
+    if extractor is not None:
+        canonical_fps = extractor(case.fixture)
+        doppio_fps = doppio_tags_metadata(case.fixture, dop_bin)
+        tags_meta_diff = diff_fingerprints(canonical_fps, doppio_fps)
+
+    if bal_diff is None and tags_meta_diff is None:
         print("OK")
         return True
     print("MISMATCH")
-    print(diff, file=sys.stderr)
+    if bal_diff is not None:
+        print("  balance:", file=sys.stderr)
+        print(bal_diff, file=sys.stderr)
+    if tags_meta_diff is not None:
+        print("  tags + metadata:", file=sys.stderr)
+        print(tags_meta_diff, file=sys.stderr)
     return False
 
 

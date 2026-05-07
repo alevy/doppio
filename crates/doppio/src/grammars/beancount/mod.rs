@@ -189,12 +189,23 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                 }
                 Rule::pushmeta_directive => {
                     // `pushmeta key: value`: capture the key and the
-                    // verbatim value text.
+                    // verbatim value text. Strip outer quotes on
+                    // string-typed values (`pushmeta phase: "Q1"`) so the
+                    // active-meta stack carries the user-visible value,
+                    // not the quoted token text -- mirrors how
+                    // `metadata_line_to_note` handles the same shape.
                     let mut inner = pair.into_inner();
                     let key = inner.next().unwrap().as_str().to_string();
                     let value = inner
                         .next()
-                        .map(|v| v.as_str().trim().to_string())
+                        .map(|v| {
+                            let raw = v.as_str().trim();
+                            if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+                                raw[1..raw.len() - 1].to_string()
+                            } else {
+                                raw.to_string()
+                            }
+                        })
                         .unwrap_or_default();
                     self.active_meta.push((key, value));
                 }
@@ -396,7 +407,19 @@ fn metadata_line_to_note(pair: Pair<Rule>) -> String {
     let key = inner.next().unwrap().as_str().to_string();
     let val = inner
         .next()
-        .map(|v| v.as_str().trim().to_string())
+        .map(|v| {
+            // Beancount has typed metadata values: a value that is enclosed in
+            // double-quotes is a string literal whose user-visible value is the
+            // unquoted contents (mirrors `option "key" "value"`). Strip the
+            // outer quotes so consumers compare against bean-check's
+            // `entry.meta` cleanly. Non-quoted values pass through as-is.
+            let raw = v.as_str().trim();
+            if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+                raw[1..raw.len() - 1].to_string()
+            } else {
+                raw.to_string()
+            }
+        })
         .unwrap_or_default();
     format!("{key}: {val}")
 }
@@ -1788,12 +1811,12 @@ popmeta project:
         let hir: crate::resolution::HIR = journal.try_into().expect("resolve");
         let txs = resolved_tx(&hir);
         assert_eq!(txs.len(), 2);
-        // First inherits the pushmeta. Resolution captures metadata values
-        // verbatim from the note text, so the value retains the surrounding
-        // quotes.
+        // First inherits the pushmeta. The parser strips the outer
+        // double-quotes on string-typed values so consumers see the
+        // user-visible string, matching bean-check's `entry.meta`.
         assert_eq!(
             txs[0].metadata.get("project").map(String::as_str),
-            Some("\"acme-rebrand\""),
+            Some("acme-rebrand"),
             "pushmeta missing on tx0: {:?}",
             txs[0].metadata
         );
@@ -1825,7 +1848,7 @@ pushmeta phase: \"delivery\"
         let txs = resolved_tx(&hir);
         assert_eq!(
             txs[0].metadata.get("phase").map(String::as_str),
-            Some("\"delivery\""),
+            Some("delivery"),
             "later pushmeta should win: {:?}",
             txs[0].metadata
         );
@@ -1855,7 +1878,7 @@ popmeta tag:
         let txs = resolved_tx(&hir);
         assert_eq!(
             txs[0].metadata.get("tag").map(String::as_str),
-            Some("\"taxable\"")
+            Some("taxable")
         );
     }
 
