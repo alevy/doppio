@@ -37,10 +37,10 @@
 //!   date (ISO), or quoted label. The wildcard `{*}` form is accepted but
 //!   the wildcard is silently dropped, and the cost commodity vs held
 //!   commodity distinction is collapsed.
-//! - The total-cost `{{total}}` form is rejected at parse time with a
-//!   clear error (matching the hledger frontend's existing stance).
-//!   Real total-cost lot basis support is tracked cross-frontend in
-//!   #193; when that lands, this rejection goes away.
+//! - The total-cost `{{total}}` form is supported: the adapter records
+//!   `cost_is_total = true` on the lot annotation and the elaborator
+//!   divides by the posting's unit count to derive per-unit basis.
+//!   The proto wire format always carries the canonical per-unit form.
 //! - `pad` is preserved as an [`Entry::Pad`] marker but the elaborator does
 //!   not yet act on it; the algorithm is the subject of #147.
 //! - Org-mode outline headings (`*`, `**`, `***`, ... at column 0) are
@@ -422,20 +422,12 @@ fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::er
         match p.as_rule() {
             Rule::value_expr => value = Some(parse_expr(p)),
             Rule::lot_annotation => {
-                // Reject the `{{total}}` double-brace form. The grammar
-                // matches it before `{cost}` so the raw token text starts
-                // with `{{`. Treating it as per-unit cost here would
-                // produce a wrong basis (e.g. `10 AAPL {{$1500}}` would
-                // yield $15,000 instead of $1,500); explicit error is
-                // safer than silent miscomputation. Real total-cost
-                // support is tracked in #193 (cross-frontend); when that
-                // lands this rejection goes away.
+                // The `{{total}}` form: the grammar matches it before
+                // `{cost}` so the raw token text starts with `{{`. The
+                // elaborator divides by the posting's unit count when
+                // applying the cost (see #193).
                 if p.as_str().starts_with("{{") {
-                    return Err(
-                        "Beancount `{{total}}` lot syntax is not yet implemented (#193); \
-                         use `{cost}` for per-unit cost or `@@ total` for transient total cost"
-                            .into(),
-                    );
+                    lot_annotation.cost_is_total = true;
                 }
                 has_lot_annotation = true;
                 merge_lot_annotation_into(p, &mut lot_annotation);
@@ -1179,23 +1171,43 @@ mod tests {
     }
 
     #[test]
-    fn double_brace_total_cost_lot_is_rejected() {
-        // `10 AAPL {{$1825 USD}}` means the entire lot was acquired for
-        // a total of 1825 USD (per-unit basis 182.50). Treating it as
-        // per-unit cost (the current best-effort code path) would
-        // silently produce a 10x-wrong basis. Until cross-frontend
-        // support lands (#193), parse must error -- explicit failure
-        // is far better than silent miscomputation.
-        let input = "\
-2024-02-15 * \"Apple lot purchase via total-cost\"
-  Assets:Brokerage   10 AAPL {{1825.00 USD}}
-  Assets:Bank:Checking       -1825.00 USD
+    fn double_brace_total_cost_lot_elaborates_to_per_unit() {
+        // `{{1825 USD}}` declares the *total* lot cost; the elaborator
+        // divides by 10 (the unit count) to derive a per-unit basis of
+        // 182.50, which is what flows through the rest of the pipeline.
+        // The transaction balances at $1825 cash either way.
+        let total_form = "\
+2024-01-01 open Assets:Brokerage USD
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-02-15 * \"Apple lot purchase (total-cost form)\"
+  Assets:Brokerage    10 AAPL {{1825.00 USD}}
+  Assets:Bank:Checking      -1825.00 USD
 ";
-        let err = parse_beancount(input).expect_err("`{{total}}` must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("{{total}}") && msg.contains("#193"),
-            "error should explain the gap and reference #193, got: {msg}"
+        let per_unit_form = "\
+2024-01-01 open Assets:Brokerage USD
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-02-15 * \"Apple lot purchase (per-unit form)\"
+  Assets:Brokerage    10 AAPL {182.50 USD}
+  Assets:Bank:Checking      -1825.00 USD
+";
+        let total_elab = elaborate(total_form).expect("`{{total}}` should elaborate");
+        let per_unit_elab = elaborate(per_unit_form).expect("`{cost}` should elaborate");
+
+        // Both forms should produce identical elaborated lot cost on the
+        // brokerage posting (the canonical per-unit form).
+        let total_lot = total_elab.transactions[0].postings[0]
+            .lot
+            .as_ref()
+            .expect("lot present (total form)");
+        let per_unit_lot = per_unit_elab.transactions[0].postings[0]
+            .lot
+            .as_ref()
+            .expect("lot present (per-unit form)");
+        assert_eq!(
+            total_lot, per_unit_lot,
+            "total and per-unit forms should produce identical elaborated lots"
         );
     }
 
