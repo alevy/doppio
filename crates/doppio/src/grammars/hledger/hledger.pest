@@ -145,10 +145,16 @@ lot_date = ${ "[" ~ date ~ "]" }
 lot_note = ${ "((" ~ lot_note_inner ~ "))" }
 lot_note_inner = @{ (!"))" ~ ANY)* }
 
-// hledger uses `==` for "all-commodity" (strict) balance assertions and `=`
-// for single-commodity assertions.  The longer token must be tried first.
+// hledger uses `==` for "strict" balance assertions and `=` for "weak"
+// assertions; an optional trailing `*` qualifier ("== *" / "= *") makes
+// the assertion span EVERY commodity the account holds rather than just
+// the one written. The combined form `==* 0` is the standard
+// fiscal-year retained-earnings idiom: assert that the account has
+// zero across all commodities and synthesize whatever postings are
+// needed to make that true. The longer token must be matched first
+// (the `==` `*` ordering is enforced by the rule below).
 assertion = ${ assertion_op ~ ws* ~ value_expr }
-assertion_op = @{ "==" | "=" }
+assertion_op = @{ ("==" | "=") ~ "*"? }
 
 // --- Atoms ---
 

@@ -675,6 +675,80 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                     }
                                     (value, commodity, lot_cash, proto_lot)
                                 }
+                                AmountDetails::BalanceAssignmentAllCommodities(target) => {
+                                    // hledger `==* target` (or `=* target`) form -- typically
+                                    // `==* 0` in a fiscal-year retained-earnings transaction.
+                                    // Synthesize a multi-commodity posting that brings every
+                                    // commodity currently held by the account to `target`.
+                                    //
+                                    // The target expression is expected to be a bare number
+                                    // with no commodity (e.g. `0`); we evaluate it once and
+                                    // apply the same target value to each commodity.
+                                    // Evaluate `target`. The `==* X` form expects a bare
+                                    // number; we ignore the resolved commodity (a sentinel
+                                    // fallback satisfies the normaliser) and apply the
+                                    // numeric value to every commodity in the inventory.
+                                    let (target_value, _commodity) =
+                                        evaluator::eval_and_normalize_amount_with_fallback(
+                                            target,
+                                            entry_context,
+                                            &state,
+                                            Some("__all_commodities__"),
+                                        )?;
+
+                                    // Snapshot the account's non-zero commodities; the per-
+                                    // commodity delta is `target - current_balance`.
+                                    let deltas: Vec<(String, Decimal)> = account_balance
+                                        .map(|ab| {
+                                            ab.commodity
+                                                .iter()
+                                                .filter(|(_, v)| !v.is_zero())
+                                                .map(|(c, v)| (c.clone(), target_value - v))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+
+                                    if !accounts.contains_key(&account_name) {
+                                        accounts.insert(account_name.clone(), Default::default());
+                                    }
+
+                                    // Update transaction_state and account_balances.
+                                    let bal_entry = state
+                                        .account_balances
+                                        .entry(account_name.clone())
+                                        .or_default();
+                                    let mut by_commodity: BTreeMap<
+                                        String,
+                                        crate::elaboration::Decimal,
+                                    > = BTreeMap::new();
+                                    if posting_kind != ast::PostingKind::VirtualUnbalanced {
+                                        for (c, delta) in &deltas {
+                                            *transaction_state.0.entry(c.clone()).or_default() +=
+                                                delta;
+                                        }
+                                    }
+                                    for (c, delta) in &deltas {
+                                        *bal_entry.commodity.entry(c.clone()).or_default() += delta;
+                                        by_commodity
+                                            .insert(c.clone(), crate::decimal_to_proto(*delta));
+                                    }
+
+                                    let payee =
+                                        posting.metadata.remove("payee").unwrap_or(payee.clone());
+                                    resolved_postings.push(crate::elaboration::Posting {
+                                        account: account_name,
+                                        payee,
+                                        amount: Some(crate::elaboration::Amount { by_commodity }),
+                                        state: crate::state_to_proto(&posting.state.into()),
+                                        tags: posting.tags,
+                                        metadata: posting.metadata,
+                                        kind: crate::posting_kind_to_proto(posting_kind),
+                                        lot: None,
+                                    });
+                                    // Skip the standard single-commodity push path; we already
+                                    // pushed the synthesized multi-commodity posting above.
+                                    continue;
+                                }
                                 AmountDetails::BalanceAssignment(assignment) => {
                                     // "= target_balance" -- compute the delta needed to reach the
                                     // target from the current running balance.
