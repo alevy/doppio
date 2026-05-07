@@ -155,8 +155,8 @@ pub enum ElaborationError {
         expression: String,
     },
     /// A `{{total}}` lot annotation was attached to a posting whose
-    /// unit count is zero, so per-unit basis cannot be derived. This is
-    /// a malformed input, not a doppio bug.
+    /// unit count is zero, so per-unit basis cannot be derived from
+    /// the total.
     TotalCostWithZeroUnits,
 }
 
