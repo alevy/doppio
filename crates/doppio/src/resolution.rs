@@ -139,6 +139,10 @@ pub struct GlobalContext {
     /// transaction balance when the posting carries both `{cost}` and
     /// `@price` annotations. See [`BalanceMode`].
     pub balance_mode: BalanceMode,
+    /// Whether top-level `balance` directives ([`Entry::Assertion`])
+    /// check the named account in isolation or aggregate the entire
+    /// account subtree. See [`AssertionScope`].
+    pub assertion_scope: AssertionScope,
 }
 
 /// Strategy for computing a posting's cash-equivalent during the
@@ -168,6 +172,32 @@ pub enum BalanceMode {
     /// with what Beancount/ledger-cli inputs produce). Matches
     /// hledger.
     AtPriceWithSynthesis { gains_account: String },
+}
+
+/// Scope of a top-level `balance` directive's account lookup.
+///
+/// Three frontends, two semantics:
+///
+/// - **Beancount** (`balance Account X CUR`): the running balance is
+///   summed across `Account` itself and every descendant whose name
+///   has `Account + ":"` as a prefix. A `pad` that targets the same
+///   account computes its corrective amount from the same subtree
+///   sum.
+/// - **ledger-cli / hledger** (`Account = X CUR` posting assertion or
+///   the doppio-extended top-level form): the running balance is the
+///   direct posting balance of the named account only. hledger's
+///   strict `==` form is explicit about this in its own error message
+///   ("excluding subaccounts"). hledger's `==*` posting form is
+///   subtree-aware, but it is encoded as a separate
+///   [`crate::ast::AmountDetails::BalanceAssignmentAllCommodities`]
+///   variant rather than via this scope flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AssertionScope {
+    /// The named account's running balance only. Default.
+    #[default]
+    Direct,
+    /// Sum of the named account and every descendant.
+    Subtree,
 }
 
 /// Per-transaction balance tolerance policy.

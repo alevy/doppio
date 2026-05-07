@@ -1,0 +1,36 @@
+; Beancount's `pad` directive computes its corrective amount against
+; the *subtree* sum of the next balance assertion's account. Introduced
+; for #214.
+;
+; Setup:
+;   - children `Assets:Bank:Checking` (+100) and `Assets:Bank:Savings`
+;     (+200) have direct postings; subtree sum on `Assets:Bank` is
+;     +300 USD.
+;   - parent `Assets:Bank` has no direct postings.
+;   - `pad Assets:Bank Equity:OpeningBalances` then
+;     `balance Assets:Bank 1000.00 USD`.
+;
+; bean-check synthesises a +700 USD posting on the literal parent
+; `Assets:Bank` (target 1000 - subtree 300 = +700). After synthesis:
+;   - parent direct: +700 USD  (synthesized)
+;   - child Checking: +100 USD (unchanged)
+;   - child Savings:  +200 USD (unchanged)
+;   - subtree sum:    +1000 USD ✓
+;
+; Verified empirically against bean-check 3.2.0.
+
+option "operating_currency" "USD"
+
+2024-01-01 open Equity:OpeningBalances
+2024-01-01 open Assets:Bank USD
+2024-01-01 open Assets:Bank:Checking USD
+2024-01-01 open Assets:Bank:Savings USD
+
+2024-01-02 pad Assets:Bank Equity:OpeningBalances
+
+2024-01-15 * "Existing"
+    Assets:Bank:Checking   100.00 USD
+    Assets:Bank:Savings    200.00 USD
+    Equity:OpeningBalances
+
+2024-12-31 balance Assets:Bank 1000.00 USD

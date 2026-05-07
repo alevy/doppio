@@ -865,6 +865,11 @@ impl crate::frontend::Frontend for BeancountFrontend {
             crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
                 rust_decimal::Decimal::new(5, 1),
             );
+        // Beancount's `balance` directive aggregates the entire
+        // account subtree (#214). A `pad` that targets the same
+        // account synthesizes its corrective amount against the
+        // subtree sum.
+        hir.global_context.assertion_scope = crate::resolution::AssertionScope::Subtree;
         // Honour `option "inferred_tolerance_default" "COMMODITY:VALUE"`
         // directives. Each occurrence overrides any previous value for
         // the same commodity (last write wins). The directive is
@@ -1877,6 +1882,11 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
             crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
                 rust_decimal::Decimal::new(5, 1),
             );
+        // Match BeancountFrontend's subtree-aware `balance` semantics
+        // (#214). bean-check aggregates the entire account subtree;
+        // pad uses the same scope when computing its corrective
+        // amount.
+        hir.global_context.assertion_scope = crate::resolution::AssertionScope::Subtree;
         for (k, v) in &options {
             if k == "inferred_tolerance_default"
                 && let Some((commodity, decimal)) = v.split_once(':')
@@ -2055,5 +2065,89 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
             pad_txs, 0,
             "pad whose gap is zero should not emit a synthesized transaction"
         );
+    }
+
+    // -- subtree balance / pad (#214) ---------------------------------------
+
+    /// `balance` on a parent account aggregates the subtree: the parent
+    /// has no direct postings, the child does, and the asserted amount
+    /// equals the descendant's balance. Direct-only semantics would
+    /// see 0 on the parent and reject; subtree semantics pass.
+    #[test]
+    fn balance_directive_aggregates_subtree() {
+        let input = "\
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Salary USD
+2024-01-01 open Income:Salary:Base USD
+
+2024-06-01 * \"Salary\"
+  Assets:Cash             100.00 USD
+  Income:Salary:Base     -100.00 USD
+
+2024-12-31 balance Income:Salary -100.00 USD
+";
+        elaborate(input).expect("balance on parent must reach the descendant's posting");
+    }
+
+    /// `pad` computes its corrective amount against the *subtree* sum
+    /// of the next-balance account, not just the literal account's
+    /// direct balance. The synthesized posting still lands on the
+    /// literal pad target.
+    #[test]
+    fn pad_residual_uses_subtree_sum() {
+        let input = "\
+2024-01-01 open Equity:OpeningBalances
+2024-01-01 open Assets:Bank USD
+2024-01-01 open Assets:Bank:Checking USD
+2024-01-01 open Assets:Bank:Savings USD
+
+2024-01-02 pad Assets:Bank Equity:OpeningBalances
+
+2024-01-15 * \"Existing\"
+  Assets:Bank:Checking   100.00 USD
+  Assets:Bank:Savings    200.00 USD
+  Equity:OpeningBalances
+
+2024-12-31 balance Assets:Bank 1000.00 USD
+";
+        let elab = elaborate(input).expect("subtree pad must reconcile against subtree sum");
+        let pad_txs: Vec<_> = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .collect();
+        assert_eq!(pad_txs.len(), 1, "exactly one pad txn expected");
+        let pad_tx = pad_txs[0];
+        // Pad amount = 1000 - (100 + 200) = +700 on the parent account.
+        let target = pad_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Bank")
+            .expect("synthesized posting must land on the literal pad target");
+        assert_eq!(target.amount_in("USD"), Some(dec!(700.00)));
+        let source = pad_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:OpeningBalances")
+            .expect("synthesized source posting");
+        assert_eq!(source.amount_in("USD"), Some(dec!(-700.00)));
+    }
+
+    /// Direct-balance assertion still works when the named account is
+    /// itself the leaf (no descendants); the subtree reduces to a
+    /// single account.
+    #[test]
+    fn balance_directive_on_leaf_is_unchanged() {
+        let input = "\
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Salary USD
+
+2024-06-01 * \"Salary\"
+  Assets:Cash             100.00 USD
+  Income:Salary          -100.00 USD
+
+2024-12-31 balance Income:Salary -100.00 USD
+";
+        elaborate(input).expect("leaf-account assertion must still pass");
     }
 }

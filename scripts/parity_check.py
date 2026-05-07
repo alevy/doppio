@@ -234,8 +234,11 @@ POSITIVE: list[Case] = [
     # per the convention documented in tests/parity/README.md.
     Case("hledger:ascii",         REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
     Case("hledger:zerostar",      REPO / "tests/parity/hledger-zerostar.journal", hledger_balances),
+    Case("hledger:zerostar-subtree", REPO / "tests/parity/hledger-zerostar-subtree.journal", hledger_balances),
     Case("hledger:block-comment", REPO / "tests/parity/hledger-block-comment.journal", hledger_balances),
     Case("beancount:example",     REPO / "tests/parity/bean-example.beancount", beancount_balances),
+    Case("beancount:subtree-balance", REPO / "tests/parity/beancount-subtree-balance.beancount", beancount_balances),
+    Case("beancount:subtree-pad",     REPO / "tests/parity/beancount-subtree-pad.beancount",     beancount_balances),
 ]
 
 NEGATIVE: list[Case] = [
