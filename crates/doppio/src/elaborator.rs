@@ -684,17 +684,15 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                     // The target expression is expected to be a bare number
                                     // with no commodity (e.g. `0`); we evaluate it once and
                                     // apply the same target value to each commodity.
-                                    // Evaluate `target`. The `==* X` form expects a bare
-                                    // number; we ignore the resolved commodity (a sentinel
-                                    // fallback satisfies the normaliser) and apply the
-                                    // numeric value to every commodity in the inventory.
-                                    let (target_value, _commodity) =
-                                        evaluator::eval_and_normalize_amount_with_fallback(
-                                            target,
-                                            entry_context,
-                                            &state,
-                                            Some("__all_commodities__"),
-                                        )?;
+                                    // Evaluate `target` to a single numeric value. The
+                                    // `==* X` form has no commodity attached -- the
+                                    // target applies to whatever commodities the
+                                    // account already holds.
+                                    let target_value = evaluator::eval_amount_value(
+                                        target,
+                                        entry_context,
+                                        &state,
+                                    )?;
 
                                     // Snapshot the account's non-zero commodities; the per-
                                     // commodity delta is `target - current_balance`.
@@ -1172,6 +1170,28 @@ mod evaluator {
         running_state: &RunningState,
     ) -> Result<(Decimal, String), ElaborationError> {
         eval_and_normalize_amount_with_fallback(val, eval_context, running_state, None)
+    }
+
+    /// Evaluate a value expression and return only its numeric component.
+    ///
+    /// Used by callers that have a meaningful target value but no
+    /// associated commodity -- for example `==* 0` (hledger's
+    /// "zero across every commodity" balance assignment), where the
+    /// target applies to whatever commodities the account already
+    /// holds. Skipping commodity normalisation avoids inventing a
+    /// fake commodity for the inference machinery.
+    ///
+    /// Errors if the evaluated expression is not an amount.
+    pub fn eval_amount_value(
+        val: ast::ValueExpr,
+        eval_context: &resolution::Context,
+        running_state: &RunningState,
+    ) -> Result<Decimal, ElaborationError> {
+        let empty_meta = BTreeMap::default();
+        match eval(val, eval_context, running_state, &empty_meta, EVAL_BUDGET)? {
+            ast::ValueExpr::Amount { value, .. } => Ok(value),
+            other => Err(EvaluationError::UnaryOnNonAmount(other).into()),
+        }
     }
 
     /// Like [`eval_and_normalize_amount`], but accepts an optional `fallback_commodity`
