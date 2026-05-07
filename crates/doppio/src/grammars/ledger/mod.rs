@@ -132,6 +132,12 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     // planned/expected amounts in ledger-cli but have no effect
                     // on balances or reports. See GitHub issue #13.
                 }
+                Rule::auto_rule => {
+                    // Automated posting rules (`= /pattern/`) parse but
+                    // are not yet elaborated. Matches the hledger
+                    // frontend's behaviour. Tracked under #219;
+                    // elaboration is deferred behind a real consumer.
+                }
                 _ => {}
             }
         }
@@ -1547,6 +1553,33 @@ mod directed_tests {
         };
         assert_eq!(a.account, "Liabilities:CreditCard");
         assert!(a.strict, "== should be strict");
+    }
+
+    /// Automated posting rules (`= /pattern/`) parse without error;
+    /// the rule body is captured in the AST but the resolver drops
+    /// it. Mirrors the hledger frontend's behaviour. #219.
+    #[test]
+    fn test_auto_rule_parse_only() {
+        // The query may be a regex (delimited by `/`) or a free-form
+        // expression terminated by newline. Mixed with normal entries
+        // and followed by transactions that the rule would target.
+        let input = "\
+= /^Income/
+    (Liabilities:Tithe)                    0.12
+
+2024-01-01 * Salary
+    Income:Salary                       $-1000.00
+    Assets:Checking                      $1000.00
+";
+        let journal = parse_ledger(input).expect("parse must accept auto-rule");
+        // The auto-rule's postings are not surfaced as Entry items;
+        // only the transaction following it should show up.
+        let transactions: Vec<_> = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .collect();
+        assert_eq!(transactions.len(), 1, "exactly one transaction expected");
     }
 
     #[test]
