@@ -1,0 +1,14 @@
+; Deliberately broken fixture for the parity-check negative control.
+; A future change that turns the parity job into a silent no-op (e.g.
+; install step skipped, fixture path drifted, harness exit code lost)
+; would make this case pass-by-omission instead of failing as it should.
+;
+; The transaction below does not balance: the cash leg is -100 USD but the
+; expense leg is +50 USD. Both bean-check and doppio's elaborator must reject.
+
+2024-01-01 open Expenses:Food
+2024-01-01 open Assets:Cash USD
+
+2024-03-15 * "Unbalanced lunch"
+  Expenses:Food       50.00 USD
+  Assets:Cash       -100.00 USD

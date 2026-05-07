@@ -1,0 +1,11 @@
+; Deliberately broken fixture for the parity-check negative control.
+; A future change that turns the parity job into a silent no-op would
+; make this case pass-by-omission instead of failing as it should.
+;
+; The transaction below does not balance: the cash leg is -$100 but the
+; expense leg is +$50. Both `ledger --strict` and doppio's elaborator
+; must reject.
+
+2024-03-15 * Unbalanced lunch
+    Expenses:Food         $50.00
+    Assets:Cash         $-100.00

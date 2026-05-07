@@ -34,3 +34,38 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --target wasm32-unknown-unknown -p doppio --lib
+
+  parity-check:
+    name: Parity fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Each tool's source-of-truth balance is consumed by
+      # scripts/parity_check.py; pin versions so CI stays reproducible.
+      - name: Install canonical tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hledger ledger
+          pip install 'beancount==3.2.0'
+      # Print versions BEFORE running checks. If apt or pip silently
+      # failed, the check script's first canonical-tool invocation
+      # would error -- but explicit version logs make the failure mode
+      # obvious in CI output.
+      - name: Record canonical-tool versions
+        run: |
+          hledger --version
+          ledger --version
+          python3 -c "import beancount; print('beancount', beancount.__version__)"
+      - name: Build dop CLI
+        run: cargo build --release -p doppio-cli
+      - name: Parity (positive — fixtures must produce identical balances)
+        run: python3 scripts/parity_check.py
+      - name: Parity (negative — broken fixtures must be rejected by both tools)
+        run: python3 scripts/parity_check.py --negative

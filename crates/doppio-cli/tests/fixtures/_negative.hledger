@@ -1,0 +1,11 @@
+; Deliberately broken fixture for the parity-check negative control.
+; A future change that turns the parity job into a silent no-op would
+; make this case pass-by-omission instead of failing as it should.
+;
+; The transaction below does not balance: the cash leg is -100 USD but
+; the expense leg is +50 USD. Both `hledger check` and doppio's
+; elaborator must reject.
+
+2024-03-15 * Unbalanced lunch
+    expenses:food       $50.00
+    assets:cash        $-100.00
