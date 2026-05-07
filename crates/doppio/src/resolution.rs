@@ -115,8 +115,18 @@ pub(crate) struct Define {
     pub body: ast::DefineBody,
 }
 
-/// Global properties of commodities and accounts that are shared across all
-/// contexts (i.e. not invalidated by later directives).
+/// Per-journal state populated during resolution.
+///
+/// Holds journal-derived metadata (commodity / account / tag properties,
+/// per-commodity tolerance overrides set by `option` directives) — i.e.
+/// things the resolver builds from directives in the source file. The
+/// elaborator's *semantic configuration* (default tolerance rule, balance
+/// mode, assertion scope, ...) is **not** here -- that lives in
+/// [`ElaborationConfig`] and is passed explicitly to `elaborate()`. The
+/// two layers are deliberately separate: a frontend's job is to parse a
+/// dialect into the AST, the resolver canonicalises the AST into the
+/// HIR, and the elaborator applies a semantic ruleset that the caller
+/// chooses (typically the matching tool's defaults, but freely mixable).
 #[derive(Default, Debug)]
 pub struct GlobalContext {
     /// Properties declared in `commodity` directives.
@@ -125,16 +135,45 @@ pub struct GlobalContext {
     pub account_properties: BTreeMap<String, AccountProperties>,
     /// Properties declared in `tag` directives.
     pub tag_properties: BTreeMap<String, TagProperties>,
-    /// How the elaborator handles small per-transaction balance
-    /// residuals. See [`ToleranceMode`].
-    pub tolerance_mode: ToleranceMode,
-    /// Per-commodity absolute tolerance overrides, layered on top of
-    /// [`Self::tolerance_mode`]. Populated by Beancount's
-    /// `option "inferred_tolerance_default" "COMMODITY:VALUE"`
-    /// directive. When a commodity is present in this map, the
-    /// elaborator uses the override directly; otherwise it falls back
-    /// to the `tolerance_mode` rule.
+    /// Per-commodity absolute tolerance overrides populated by Beancount's
+    /// `option "inferred_tolerance_default" "COMMODITY:VALUE"` directive.
+    /// When a commodity is present in this map, the elaborator uses the
+    /// override directly; otherwise it falls back to
+    /// [`ElaborationConfig::tolerance_mode`]. This map is journal state
+    /// (mutated by directives during resolution), not config -- and is
+    /// therefore the one tolerance-related field that stays on
+    /// `GlobalContext`.
     pub tolerance_overrides: BTreeMap<String, rust_decimal::Decimal>,
+}
+
+/// The elaborator's semantic configuration.
+///
+/// Passed explicitly to [`crate::elaborate`] alongside the [`HIR`].
+/// Keeps elaboration semantics decoupled from the frontend that parsed
+/// the source: a journal in beancount syntax can be elaborated under
+/// ledger-cli rules, hledger syntax under beancount rules, or any
+/// mix-and-match combination. The expected common case --
+/// "use the same tool's defaults that produced this dialect" -- is
+/// served by the [`crate::frontend::Frontend::defaults`] convenience
+/// per-frontend default constants.
+///
+/// # Layering with journal-injected overrides
+///
+/// Journal directives can override individual fields per commodity /
+/// account: the most prominent example is Beancount's
+/// `option "inferred_tolerance_default" "COMMODITY:VALUE"` which
+/// populates [`GlobalContext::tolerance_overrides`]. The elaborator
+/// reads the override map first and falls back to the config's
+/// [`Self::tolerance_mode`] when no override is present. The config
+/// stays immutable per elaboration call; the override map is
+/// journal-derived and lives on `GlobalContext`.
+#[derive(Debug, Clone, Default)]
+pub struct ElaborationConfig {
+    /// Default per-transaction balance-residual tolerance. Per-commodity
+    /// overrides on [`GlobalContext::tolerance_overrides`] take
+    /// precedence; this rule applies to commodities not present in the
+    /// override map. See [`ToleranceMode`].
+    pub tolerance_mode: ToleranceMode,
     /// How the elaborator computes a posting's cash-equivalent for
     /// transaction balance when the posting carries both `{cost}` and
     /// `@price` annotations. See [`BalanceMode`].

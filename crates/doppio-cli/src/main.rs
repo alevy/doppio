@@ -228,12 +228,19 @@ fn load_proto_journal_with_tolerance(
         let base_path = path.parent().unwrap_or(std::path::Path::new(""));
         let mut file = String::new();
         File::open(path)?.read_to_string(&mut file)?;
-        let mut hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
-        if let Some(fraction) = tolerance_override {
-            hir.global_context.tolerance_mode =
-                doppio::resolution::ToleranceMode::FractionOfSmallestPrecision(fraction);
-        }
-        Ok(doppio::elaborate(hir)?)
+        let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
+        // Start from the matching tool's default semantics; override the
+        // tolerance fraction if `--tolerance` was passed on the CLI.
+        let config = match tolerance_override {
+            None => frontend.defaults().clone(),
+            Some(fraction) => doppio::resolution::ElaborationConfig {
+                tolerance_mode: doppio::resolution::ToleranceMode::FractionOfSmallestPrecision(
+                    fraction,
+                ),
+                ..frontend.defaults().clone()
+            },
+        };
+        Ok(doppio::elaborate(hir, &config)?)
     }
 }
 
@@ -420,7 +427,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut file = String::new();
             File::open(&source)?.read_to_string(&mut file)?;
             let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
-            let journal: doppio::elaboration::Journal = doppio::elaborate(hir)?;
+            let journal: doppio::elaboration::Journal =
+                doppio::elaborate(hir, frontend.defaults())?;
             let compression = if no_compression {
                 doppio::Compression::None
             } else {

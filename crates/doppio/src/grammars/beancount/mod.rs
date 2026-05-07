@@ -861,9 +861,35 @@ pub(crate) fn parse_beancount_with_options(
 /// full mapping table and known gaps.
 pub struct BeancountFrontend;
 
+/// Default elaboration semantics for files written in Beancount syntax.
+///
+/// Half-smallest-precision per-transaction balance tolerance (matching
+/// bean-check's `0.5 * 10^(-min_scale)` rule, #198), cost-basis lot
+/// pricing with explicit gain/loss postings (so `{cost}` annotations
+/// drive the cash-equivalent for balance), and subtree-aware top-level
+/// `balance` directives (matching bean-check's account-tree aggregation,
+/// #214).
+///
+/// Per-commodity tolerance overrides set via Beancount's
+/// `option "inferred_tolerance_default" "COMMODITY:VALUE"` are journal-
+/// level state and live on [`crate::resolution::GlobalContext::tolerance_overrides`];
+/// they layer on top of this default at elaboration time.
+pub static BEANCOUNT_DEFAULTS: std::sync::LazyLock<crate::resolution::ElaborationConfig> =
+    std::sync::LazyLock::new(|| crate::resolution::ElaborationConfig {
+        tolerance_mode: crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
+            rust_decimal::Decimal::new(5, 1),
+        ),
+        balance_mode: crate::resolution::BalanceMode::CostBasis,
+        assertion_scope: crate::resolution::AssertionScope::Subtree,
+    });
+
 impl crate::frontend::Frontend for BeancountFrontend {
     fn extensions(&self) -> &'static [&'static str] {
         &["beancount"]
+    }
+
+    fn defaults(&self) -> &'static crate::resolution::ElaborationConfig {
+        &BEANCOUNT_DEFAULTS
     }
 
     fn parse(
@@ -886,23 +912,13 @@ impl crate::frontend::Frontend for BeancountFrontend {
         // chronological order.
         sort_entries_by_date(&mut ast_journal.entries);
         let mut hir: crate::resolution::HIR = ast_journal.try_into()?;
-        // Beancount applies a per-transaction balance tolerance by
-        // default (#198). Default fraction is 0.5 -- half the
-        // least-precise posting's decimal place -- matching
-        // bean-check's behaviour.
-        hir.global_context.tolerance_mode =
-            crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
-                rust_decimal::Decimal::new(5, 1),
-            );
-        // Beancount's `balance` directive aggregates the entire
-        // account subtree (#214). A `pad` that targets the same
-        // account synthesizes its corrective amount against the
-        // subtree sum.
-        hir.global_context.assertion_scope = crate::resolution::AssertionScope::Subtree;
         // Honour `option "inferred_tolerance_default" "COMMODITY:VALUE"`
         // directives. Each occurrence overrides any previous value for
         // the same commodity (last write wins). The directive is
-        // file-level; nested includes contribute to the same map.
+        // file-level; nested includes contribute to the same map. This
+        // is journal state derived from the source and stays on
+        // GlobalContext -- the per-commodity override layers on top of
+        // ElaborationConfig::tolerance_mode at elaboration time.
         for (k, v) in &parser.options {
             if k == "inferred_tolerance_default"
                 && let Some((commodity, decimal)) = v.split_once(':')
@@ -1530,8 +1546,7 @@ mod tests {
         // passes.
         let journal = parse_beancount(SAMPLE).expect("parse sample.beancount");
         let hir: crate::resolution::HIR = journal.try_into().expect("resolve sample.beancount");
-        let elab: crate::elaboration::Journal = hir
-            .try_into()
+        let elab: crate::elaboration::Journal = crate::elaborate(hir, &BEANCOUNT_DEFAULTS)
             .expect("elaborate sample.beancount (pad+balance must reconcile)");
         // The synthesized pad transaction is tagged with metadata `pad: <source>`.
         let pad_tx_count = elab
@@ -2004,17 +2019,10 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
     fn elaborate(input: &str) -> Result<crate::elaboration::Journal, Box<dyn std::error::Error>> {
         let (journal, options) = parse_beancount_with_options(input)?;
         let mut hir: crate::resolution::HIR = journal.try_into()?;
-        // Match BeancountFrontend's default (fraction = 0.5) so the
-        // elaborator applies Beancount-style tolerance.
-        hir.global_context.tolerance_mode =
-            crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
-                rust_decimal::Decimal::new(5, 1),
-            );
-        // Match BeancountFrontend's subtree-aware `balance` semantics
-        // (#214). bean-check aggregates the entire account subtree;
-        // pad uses the same scope when computing its corrective
-        // amount.
-        hir.global_context.assertion_scope = crate::resolution::AssertionScope::Subtree;
+        // Beancount's `option "inferred_tolerance_default"` populates
+        // `tolerance_overrides` (per-commodity overrides; layer on top
+        // of `BEANCOUNT_DEFAULTS.tolerance_mode` at elaboration time).
+        // The base semantic config is BEANCOUNT_DEFAULTS itself.
         for (k, v) in &options {
             if k == "inferred_tolerance_default"
                 && let Some((commodity, decimal)) = v.split_once(':')
@@ -2025,7 +2033,7 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
                     .insert(commodity.trim().to_string(), d);
             }
         }
-        Ok(hir.try_into()?)
+        Ok(crate::elaborate(hir, &BEANCOUNT_DEFAULTS)?)
     }
 
     #[test]

@@ -280,9 +280,31 @@ pub(crate) fn parse_ledger(input: &str) -> Result<Journal, Box<dyn std::error::E
 /// ```
 pub struct LedgerFrontend;
 
+/// Default elaboration semantics for files written in ledger-cli syntax.
+///
+/// Strict per-transaction balance, cost-basis lot pricing with explicit
+/// gain/loss postings, and direct-account balance assertions -- mirroring
+/// what `ledger`'s own elaborator does. Pass this to [`crate::elaborate`]
+/// to elaborate a ledger-cli journal under ledger-cli rules. Or don't:
+/// the elaborator accepts any [`crate::resolution::ElaborationConfig`],
+/// which is the whole point of the syntax/semantics decoupling
+/// introduced in #239.
+pub static LEDGER_DEFAULTS: std::sync::LazyLock<crate::resolution::ElaborationConfig> =
+    std::sync::LazyLock::new(|| crate::resolution::ElaborationConfig {
+        tolerance_mode: crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
+            rust_decimal::Decimal::ZERO,
+        ),
+        balance_mode: crate::resolution::BalanceMode::CostBasis,
+        assertion_scope: crate::resolution::AssertionScope::Direct,
+    });
+
 impl crate::frontend::Frontend for LedgerFrontend {
     fn extensions(&self) -> &'static [&'static str] {
         &["ledger"]
+    }
+
+    fn defaults(&self) -> &'static crate::resolution::ElaborationConfig {
+        &LEDGER_DEFAULTS
     }
 
     fn parse(
