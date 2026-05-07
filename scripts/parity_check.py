@@ -214,15 +214,19 @@ class Case:
 
 
 POSITIVE: list[Case] = [
+    # The "primary" fixtures live where their primary consumers do --
+    # near each crate's tests, not under a top-level e2e dir. The
+    # parity harness reaches in to validate them; new comprehensive
+    # corpora go under tests/parity/ alongside the negative fixtures.
     Case("beancount", REPO / "crates/doppio/tests/fixtures/sample.beancount", beancount_balances),
     Case("hledger",   REPO / "crates/doppio-cli/tests/fixtures/sample.hledger", hledger_balances),
     Case("ledger",    REPO / "web/fixtures/sample.ledger", ledger_balances),
 ]
 
 NEGATIVE: list[Case] = [
-    Case("beancount", REPO / "crates/doppio/tests/fixtures/_negative.beancount", beancount_balances),
-    Case("hledger",   REPO / "crates/doppio-cli/tests/fixtures/_negative.hledger", hledger_balances),
-    Case("ledger",    REPO / "web/fixtures/_negative.ledger", ledger_balances),
+    Case("beancount", REPO / "tests/parity/bad-balance.beancount", beancount_balances),
+    Case("hledger",   REPO / "tests/parity/bad-balance.hledger",   hledger_balances),
+    Case("ledger",    REPO / "tests/parity/bad-balance.ledger",    ledger_balances),
 ]
 
 
