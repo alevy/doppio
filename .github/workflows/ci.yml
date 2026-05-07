@@ -69,3 +69,5 @@ jobs:
         run: python3 scripts/parity_check.py
       - name: Parity (negative — broken fixtures must be rejected by both tools)
         run: python3 scripts/parity_check.py --negative
+      - name: Parity (comparator self-test — diff funcs catch deliberate regressions)
+        run: python3 scripts/parity_check.py --self-test
