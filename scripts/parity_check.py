@@ -43,7 +43,14 @@ Tuple3 = tuple[str, str, Decimal]
 
 def beancount_balances(fixture: Path) -> set[Tuple3]:
     """Use the Beancount Python API directly. Cleaner than parsing
-    `bean-report` text and survives the 2.x → 3.x transition."""
+    `bean-report` text and survives the 2.x → 3.x transition.
+
+    Aggregates per-lot positions into a single (account, commodity,
+    total) tuple so the comparison matches doppio's aggregate balance
+    view. Beancount tracks lots individually (so an account holding
+    three ITOT purchases at different costs has three position rows
+    for the same currency); doppio reports the aggregate. Per-lot
+    inventory comparison is its own concern (#185)."""
     from beancount.loader import load_file
     from beancount.core.realization import realize, iter_children
 
@@ -51,13 +58,15 @@ def beancount_balances(fixture: Path) -> set[Tuple3]:
     if errors:
         raise RuntimeError(f"beancount errors loading {fixture}: {errors}")
     real_root = realize(entries)
-    out: set[Tuple3] = set()
+    aggregated: dict[tuple[str, str], Decimal] = {}
     for ra in iter_children(real_root):
         for pos in ra.balance.get_positions():
             amt = pos.units.number
-            if amt is not None and amt != 0:
-                out.add((ra.account, pos.units.currency, Decimal(str(amt))))
-    return out
+            if amt is None:
+                continue
+            key = (ra.account, pos.units.currency)
+            aggregated[key] = aggregated.get(key, Decimal(0)) + Decimal(str(amt))
+    return {(acct, comm, total) for (acct, comm), total in aggregated.items() if total != 0}
 
 
 def hledger_balances(fixture: Path) -> set[Tuple3]:
@@ -226,6 +235,7 @@ POSITIVE: list[Case] = [
     Case("hledger:ascii",         REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
     Case("hledger:zerostar",      REPO / "tests/parity/hledger-zerostar.journal", hledger_balances),
     Case("hledger:block-comment", REPO / "tests/parity/hledger-block-comment.journal", hledger_balances),
+    Case("beancount:example",     REPO / "tests/parity/bean-example.beancount", beancount_balances),
 ]
 
 NEGATIVE: list[Case] = [
