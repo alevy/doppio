@@ -475,27 +475,33 @@ fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::er
     })
 }
 
-/// Parse the inner text of a Beancount `{...}` lot annotation.
+/// Parse the inner text of a Beancount `{...}` or `{{...}}` lot
+/// annotation.
 ///
 /// Best-effort: comma-split the inner text and classify each part.
 /// - First amount-looking part (`<number> <COMMODITY>`) becomes the cost.
 /// - First ISO date becomes the lot date.
 /// - First quoted string becomes the lot label.
+/// - A bare `*` token (the cost wildcard) is skipped.
 ///
-/// # Known gaps (TODO #185)
+/// Both single- and double-brace forms route through this function;
+/// the caller (`parse_amount_logic`) detects the `{{...}}` shape and
+/// sets [`LotAnnotation::cost_is_total`] on the accumulator before
+/// merging, and the elaborator divides by the posting's unit count
+/// when applying a total-cost lot. The cost commodity is preserved
+/// in the elaborated `Lot.cost` (a multi-commodity [`Amount`] on the
+/// wire format), so downstream consumers can distinguish the cost
+/// basis commodity from the held commodity.
 ///
-/// - The wildcard `{*}` / `{*, ...}` form ("automatic cost") is silently
-///   dropped: there is no AST representation for "infer this lot's cost
-///   from the inventory."
-/// - The cost commodity is not distinguished from the held commodity:
-///   `10 AAPL {150 USD}` should let downstream consumers tell which
-///   commodity is the basis vs the held lot, but today the inner cost
-///   expression is captured as a single `ValueExpr` with no extra
-///   structural hint.
+/// # Known gap
 ///
-/// The total-cost `{{total}}` form is rejected at the call site
-/// (`parse_amount_logic`) before this function is invoked; full
-/// support is tracked cross-frontend in #193.
+/// The wildcard `{*}` / `{*, ...}` form ("automatic cost") is parsed
+/// without error but the wildcard sentinel is dropped: there is no
+/// AST representation for "infer this lot's cost from the
+/// inventory." This is intentional -- bean-check 3.2.0 itself
+/// errors with "Cost merging is not supported yet" on the same
+/// input, so there is no canonical reference behaviour to mirror.
+/// File a fresh issue if a real consumer surfaces a need.
 fn merge_lot_annotation_into(pair: Pair<Rule>, acc: &mut LotAnnotation) {
     // lot_annotation = ${ ("{{" ~ lot_inner_total ~ "}}") | ("{" ~ lot_inner ~ "}") }
     let inner = pair
