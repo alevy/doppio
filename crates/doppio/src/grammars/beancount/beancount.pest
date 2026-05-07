@@ -55,6 +55,8 @@ entry = _{
     | popmeta_directive
     | comment_line
     | org_mode_heading
+    | shebang_line
+    | org_mode_meta
 }
 
 // --- Transactions ---
@@ -295,6 +297,17 @@ comment_line = @{ ";" ~ (!NEWLINE ~ ANY)* }
 // beginning with `*` cannot be a transaction (transactions are
 // `<date> <flag> ...`, not `<flag> <date>`).
 org_mode_heading = @{ "*" ~ (!NEWLINE ~ ANY)* }
+
+// Shebang: `#!/usr/bin/env bean-web` etc. Beancount accepts these
+// at the top of a file (a journal that is also runnable). We accept
+// them anywhere a top-level entry can appear.
+shebang_line = @{ "#!" ~ (!NEWLINE ~ ANY)* }
+
+// Org-mode file-level startup directives like `#+STARTUP: showall`
+// or `#+TITLE: My Journal`. The file-level analogue of the `*`
+// outline headings -- semantically a no-op, useful only when the
+// journal is edited in Emacs Org-mode.
+org_mode_meta = @{ "#+" ~ (!NEWLINE ~ ANY)* }
 
 identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
 
