@@ -138,6 +138,12 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     // frontend's behaviour. Tracked under #219;
                     // elaboration is deferred behind a real consumer.
                 }
+                Rule::apply_tag_directive | Rule::end_tag_directive => {
+                    // `apply tag` / `end tag` blocks parse but don't
+                    // propagate. Tracked under #222; full elaboration
+                    // (active tag stack flowing into enclosed
+                    // transactions) is deferred behind a real consumer.
+                }
                 _ => {}
             }
         }
@@ -1580,6 +1586,57 @@ mod directed_tests {
             .filter(|e| matches!(e, Entry::Transaction(_)))
             .collect();
         assert_eq!(transactions.len(), 1, "exactly one transaction expected");
+    }
+
+    /// `apply tag X: Y` ... `end tag` blocks parse without error and
+    /// transactions inside them parse normally. The block's tag is not
+    /// (yet) propagated onto the enclosed transactions; #222 tracks
+    /// the elaboration follow-up.
+    #[test]
+    fn test_apply_tag_block_parse_only() {
+        let input = "\
+apply tag hastag: true
+apply tag nestedtag: true
+2024-01-15 * Bookstore
+    Expenses:Books                       $20.00
+    Liabilities:MasterCard
+end tag
+end tag
+2024-01-20 * Sale
+    Assets:Cash                          $30.00
+    Income:Sales
+";
+        let journal = parse_ledger(input).expect("parse must accept apply-tag block");
+        let transactions: Vec<_> = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .collect();
+        assert_eq!(
+            transactions.len(),
+            2,
+            "both transactions (inside and outside the block) must surface"
+        );
+    }
+
+    /// `end apply tag` is the alternate closing form (used in
+    /// ledger-cli's own sample.dat). Verify the grammar accepts it.
+    #[test]
+    fn test_end_apply_tag_alternate_closer() {
+        let input = "\
+apply tag foo
+2024-01-15 * Test
+    Assets:Cash    $10.00
+    Income:Random
+end apply tag
+";
+        let journal = parse_ledger(input).expect("parse must accept `end apply tag` closer");
+        let transactions: Vec<_> = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .collect();
+        assert_eq!(transactions.len(), 1);
     }
 
     #[test]
