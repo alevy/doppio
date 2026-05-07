@@ -565,6 +565,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 *running.entry(commodity.clone()).or_default() += amount;
                                 let running_total =
                                     running.get(commodity.as_str()).copied().unwrap_or_default();
+                                // Tags / metadata are emitted with sorted keys
+                                // so JSON consumers (incl. the parity harness)
+                                // can rely on deterministic order.
+                                let mut txn_tags = txn.tags.clone();
+                                txn_tags.sort();
+                                let txn_metadata: BTreeMap<&str, &str> = txn
+                                    .metadata
+                                    .iter()
+                                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                                    .collect();
+                                let mut posting_tags = posting.tags.clone();
+                                posting_tags.sort();
+                                let posting_metadata: BTreeMap<&str, &str> = posting
+                                    .metadata
+                                    .iter()
+                                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                                    .collect();
                                 rows.push(serde_json::json!({
                                     "date": date,
                                     "description": txn.description,
@@ -572,6 +589,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     "commodity": commodity,
                                     "amount": amount.to_string(),
                                     "running_total": running_total.to_string(),
+                                    "txn_tags": txn_tags,
+                                    "txn_metadata": txn_metadata,
+                                    "posting_tags": posting_tags,
+                                    "posting_metadata": posting_metadata,
                                 }));
                             }
                         }
