@@ -125,6 +125,33 @@ pub struct GlobalContext {
     pub account_properties: BTreeMap<String, AccountProperties>,
     /// Properties declared in `tag` directives.
     pub tag_properties: BTreeMap<String, TagProperties>,
+    /// How the elaborator handles small per-transaction balance
+    /// residuals. The Beancount frontend sets this to
+    /// [`ToleranceMode::HalfSmallestPrecision`] (matching bean-check's
+    /// behaviour); the ledger and hledger frontends leave it
+    /// [`ToleranceMode::Strict`] (every transaction must balance to
+    /// exact zero per commodity).
+    pub tolerance_mode: ToleranceMode,
+}
+
+/// Per-transaction balance tolerance policy.
+///
+/// When a transaction's postings sum to a non-zero residual, the
+/// elaborator either rejects the transaction (strict) or absorbs the
+/// residual into a synthesized posting whose account is the empty
+/// string `""` -- the doppio convention for "rounding residual; not
+/// a user-named account."
+#[derive(Default, Debug, Clone, Copy)]
+pub enum ToleranceMode {
+    /// Every transaction must balance to exact zero per commodity.
+    /// Default. Matches ledger-cli and hledger semantics.
+    #[default]
+    Strict,
+    /// Accept residuals whose absolute value is at most half the
+    /// smallest decimal precision among the transaction's explicit
+    /// postings. Matches Beancount's default behaviour. The residual
+    /// is absorbed by a synthesized posting with `account: ""`.
+    HalfSmallestPrecision,
 }
 
 /// Validation rules for a tag declared with a `tag` directive.

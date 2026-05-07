@@ -799,7 +799,13 @@ impl crate::frontend::Frontend for BeancountFrontend {
         // so resolver + elaborator can treat the entries as already in
         // chronological order.
         sort_entries_by_date(&mut ast_journal.entries);
-        Ok(ast_journal.try_into()?)
+        let mut hir: crate::resolution::HIR = ast_journal.try_into()?;
+        // Beancount applies a per-transaction balance tolerance by
+        // default (#198). Switch the elaborator out of strict mode so
+        // sub-tolerance residuals get absorbed into a synthesized
+        // posting rather than rejected.
+        hir.global_context.tolerance_mode = crate::resolution::ToleranceMode::HalfSmallestPrecision;
+        Ok(hir)
     }
 }
 
@@ -1669,11 +1675,74 @@ popmeta tag:
         );
     }
 
+    // -- balance tolerance (#198) -------------------------------------------
+
+    #[test]
+    fn sub_tolerance_residual_is_absorbed_into_synthetic_account() {
+        // 100.00 + (-100.005) = -0.005 USD. Tolerance for the
+        // least-precise posting (scale 2) is 0.5 * 10^-2 = 0.005.
+        // residual <= tolerance, so the elaborator synthesizes a
+        // posting on the empty-string account that absorbs +0.005 USD.
+        let input = "\
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Salary USD
+
+2024-01-15 * \"Sub-tolerance residual\"
+  Assets:Cash         100.00 USD
+  Income:Salary      -100.005 USD
+";
+        let elab = elaborate(input).expect("sub-tolerance residual must elaborate");
+        // Locate the synthesized rounding posting (account == "").
+        let mut found = None;
+        for tx in &elab.transactions {
+            for p in &tx.postings {
+                if p.account.is_empty() {
+                    found = Some(p);
+                }
+            }
+        }
+        let p = found.expect("a synthesized empty-account posting should exist");
+        let amt = p
+            .amount
+            .as_ref()
+            .and_then(|a| a.by_commodity.get("USD"))
+            .expect("rounding posting in USD");
+        // 0.005 -> mantissa 5, scale 3, mantissa_high 0
+        assert_eq!(
+            (amt.mantissa_low, amt.mantissa_high, amt.scale),
+            (5, 0, 3),
+            "rounding posting should absorb +0.005 USD"
+        );
+    }
+
+    #[test]
+    fn over_tolerance_residual_still_errors() {
+        // 100.00 + (-100.05) = -0.05 USD. Tolerance for scale-2 postings
+        // is 0.005. 0.05 > 0.005 -> reject.
+        let input = "\
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Salary USD
+
+2024-01-15 * \"Over-tolerance residual\"
+  Assets:Cash         100.00 USD
+  Income:Salary      -100.05 USD
+";
+        let err = elaborate(input).expect_err("over-tolerance residual must reject");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("TransactionDoesNotBalance"),
+            "expected TransactionDoesNotBalance, got: {msg}"
+        );
+    }
+
     // -- pad evaluator (#147) -----------------------------------------------
 
     fn elaborate(input: &str) -> Result<crate::elaboration::Journal, Box<dyn std::error::Error>> {
         let journal = parse_beancount(input)?;
-        let hir: crate::resolution::HIR = journal.try_into()?;
+        let mut hir: crate::resolution::HIR = journal.try_into()?;
+        // Match BeancountFrontend's default so the elaborator applies
+        // Beancount-style tolerance to sub-cent residuals.
+        hir.global_context.tolerance_mode = crate::resolution::ToleranceMode::HalfSmallestPrecision;
         Ok(hir.try_into()?)
     }
 

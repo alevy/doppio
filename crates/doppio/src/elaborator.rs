@@ -373,6 +373,8 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
             );
         }
 
+        let tolerance_mode = value.global_context.tolerance_mode;
+
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
             match entry.data {
@@ -862,15 +864,74 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             lot: None,
                         });
                     } else {
-                        // Check that transaction state is all zeros to balance the transaction.
-                        // Virtual-unbalanced postings have already been excluded from
-                        // transaction_state, so a transaction consisting solely of
-                        // virtual-unbalanced postings will have an empty (zero) state and
-                        // will not trigger this error -- which is the correct ledger-cli behaviour.
-                        if transaction_state.0.values().any(|value| !value.is_zero()) {
-                            return Err(ElaborationError::TransactionDoesNotBalance(
-                                transaction_state,
-                            ));
+                        // No null posting. The transaction must balance to
+                        // zero per commodity, modulo the active tolerance
+                        // policy. Sub-tolerance residuals are absorbed into a
+                        // single multi-commodity synthesized posting whose
+                        // account is `""` (doppio's "rounding residual"
+                        // sentinel; see #198).
+                        //
+                        // Virtual-unbalanced postings have already been
+                        // excluded from `transaction_state`, so a transaction
+                        // consisting solely of virtual-unbalanced postings
+                        // has an empty (zero) state and bypasses this check.
+                        let residuals: Vec<(String, Decimal)> = transaction_state
+                            .0
+                            .iter()
+                            .filter(|(_, v)| !v.is_zero())
+                            .map(|(c, v)| (c.clone(), *v))
+                            .collect();
+                        let mut absorbed: BTreeMap<String, Decimal> = BTreeMap::new();
+                        for (commodity, residual) in &residuals {
+                            let tolerance = match tolerance_mode {
+                                resolution::ToleranceMode::Strict => Decimal::ZERO,
+                                resolution::ToleranceMode::HalfSmallestPrecision => {
+                                    // Beancount's rule: tolerance is half the
+                                    // LEAST-precise posting's decimal place
+                                    // (i.e. the MIN scale among postings in
+                                    // this commodity), not the most precise.
+                                    // For postings of 100.00 + -100.005 (scales
+                                    // 2 and 3), tolerance is 0.5 * 10^-2 = 0.005.
+                                    let min_scale = resolved_postings
+                                        .iter()
+                                        .filter_map(|p| {
+                                            p.amount.as_ref()?.by_commodity.get(commodity)
+                                        })
+                                        .map(|d| d.scale)
+                                        .min()
+                                        .unwrap_or(0);
+                                    // tolerance = 0.5 * 10^-scale = 5 * 10^-(scale+1)
+                                    Decimal::new(5, min_scale + 1)
+                                }
+                            };
+                            if residual.abs() > tolerance {
+                                return Err(ElaborationError::TransactionDoesNotBalance(
+                                    transaction_state,
+                                ));
+                            }
+                            absorbed.insert(commodity.clone(), -*residual);
+                        }
+                        // Synthesize one multi-commodity posting that
+                        // absorbs every (sub-tolerance) residual. The
+                        // empty-string account is intentionally not added
+                        // to `accounts` or `account_balances`: it's a
+                        // wire-format artefact, not a user-facing account.
+                        if !absorbed.is_empty() {
+                            let by_commodity: BTreeMap<String, crate::elaboration::Decimal> =
+                                absorbed
+                                    .iter()
+                                    .map(|(c, v)| (c.clone(), crate::decimal_to_proto(*v)))
+                                    .collect();
+                            resolved_postings.push(crate::elaboration::Posting {
+                                account: String::new(),
+                                payee: payee.clone(),
+                                amount: Some(crate::elaboration::Amount { by_commodity }),
+                                state: crate::state_to_proto(&TransactionState::Cleared),
+                                tags: vec![],
+                                metadata: BTreeMap::new(),
+                                kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
+                                lot: None,
+                            });
                         }
                     }
 

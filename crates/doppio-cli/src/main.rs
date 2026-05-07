@@ -81,6 +81,12 @@ enum Commands {
         /// and a warning is printed to stderr.
         #[arg(long, short = 'X')]
         exchange: Option<String>,
+        /// Show postings on the synthetic doppio rounding-residual account
+        /// (account name `""`), introduced by Beancount-style tolerance
+        /// absorption (#198). Hidden by default; pass this flag to surface
+        /// them when auditing rounding behaviour.
+        #[arg(long, default_value_t = false)]
+        show_rounding: bool,
     },
 
     /// List individual postings, optionally filtered by account name.
@@ -699,6 +705,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
             real,
             exchange,
+            show_rounding,
         } => {
             let format = OutputFormat::parse(&format)?;
             let filter =
@@ -722,6 +729,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                     if real && !posting.is_real() {
+                        continue;
+                    }
+                    // Hide doppio's synthetic rounding-residual postings
+                    // (account == "") unless the user opts in. See #198.
+                    if !show_rounding && posting.account.is_empty() {
                         continue;
                     }
                     let account = match depth {
