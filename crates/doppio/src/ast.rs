@@ -575,12 +575,15 @@ impl Display for AmountDetails {
             AmountDetails::BalanceAssignment(value) => {
                 write!(f, "={value}")
             }
-            // The all-commodities qualifier is hledger-specific syntax;
-            // the `Display` impl is otherwise ledger-syntax-shaped (used
-            // by `write_ledger`), so render lossy as a single-commodity
-            // assignment. Per-frontend output is a separate concern.
+            // hledger-specific syntax with no ledger-cli equivalent:
+            // ledger's `= X` is single-commodity assignment, which is
+            // semantically different from "zero every commodity in
+            // the inventory." Render as `==* X` (the original
+            // hledger source form); output containing this variant
+            // therefore does NOT round-trip through the ledger
+            // parser. Proper per-frontend writers are #206.
             AmountDetails::BalanceAssignmentAllCommodities(value) => {
-                write!(f, "={value}")
+                write!(f, "==* {value}")
             }
         }
     }
