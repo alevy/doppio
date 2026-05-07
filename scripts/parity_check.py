@@ -15,8 +15,12 @@ assert that BOTH tools reject them. This is the test-of-the-test: if a future
 change accidentally turns the parity job into a silent no-op, the negative
 controls fail loudly.
 
+Run with `--self-test` to exercise the diff functions themselves with
+hand-crafted matching/mismatching pairs. This proves each comparator
+catches divergences instead of silently returning None (#226 acceptance).
+
 Usage:
-    python3 scripts/parity_check.py [--dop-bin path/to/dop] [--negative]
+    python3 scripts/parity_check.py [--dop-bin path/to/dop] [--negative | --self-test]
 """
 from __future__ import annotations
 
@@ -820,13 +824,140 @@ def run_negative(case: Case, dop_bin: Path) -> bool:
     return False
 
 
+def self_test() -> int:
+    """Negative-control self-test for the four comparators (#226 acceptance).
+
+    For each diff function (`diff_sets`, `diff_fingerprints`, `diff_prices`,
+    `diff_pad_fingerprints`), assert:
+
+      1. A pair of equal inputs returns None ("no diff").
+      2. A pair with a single deliberate divergence (a tag dropped, a
+         price changed, a pad date shifted, a balance moved) returns a
+         non-None message that mentions the divergent item.
+
+    The aim is to prove the comparators actually catch divergences --
+    closing the silent-no-op-CI risk that #226 was filed against, but
+    one level up at the comparator itself rather than at the harness.
+
+    Exits 0 on success, 1 on failure. Self-contained: no fixtures, no
+    external tool invocations."""
+    failures: list[str] = []
+
+    def check(label: str, expected_none: bool, actual: str | None) -> None:
+        if expected_none and actual is not None:
+            failures.append(f"  {label}: expected None, got: {actual}")
+        elif not expected_none and actual is None:
+            failures.append(f"  {label}: expected non-None diff, got None (false-positive risk)")
+
+    # --- diff_sets (Phase 0: balance) -------------------------------------
+    a = {("Assets:Cash", "USD", Decimal("100"))}
+    b = {("Assets:Cash", "USD", Decimal("100"))}
+    check("diff_sets equal", True, diff_sets(a, b))
+    b2 = {("Assets:Cash", "USD", Decimal("99"))}
+    check("diff_sets amount mismatch", False, diff_sets(a, b2))
+    b3 = set()
+    check("diff_sets account dropped", False, diff_sets(a, b3))
+
+    # --- diff_fingerprints (Phase 1: tags + metadata) --------------------
+    fp_a: list[Fingerprint] = [
+        ("2024-01-15", "Bookstore", frozenset({"household"}), frozenset({("phase", "Q1")})),
+    ]
+    fp_b = list(fp_a)
+    check("diff_fingerprints equal", True, diff_fingerprints(fp_a, fp_b))
+    fp_drop_tag: list[Fingerprint] = [
+        ("2024-01-15", "Bookstore", frozenset(), frozenset({("phase", "Q1")})),
+    ]
+    check("diff_fingerprints tag dropped", False, diff_fingerprints(fp_a, fp_drop_tag))
+    fp_meta_drift: list[Fingerprint] = [
+        # Surrounding-quote regression that Phase 1 actually fixed.
+        ("2024-01-15", "Bookstore", frozenset({"household"}), frozenset({("phase", '"Q1"')})),
+    ]
+    check("diff_fingerprints meta value drift", False, diff_fingerprints(fp_a, fp_meta_drift))
+
+    # --- diff_prices (Phase 2) -------------------------------------------
+    pr_a: set[PriceQuad] = {("2024-01-02", "EUR", "USD", Decimal("1.10"))}
+    pr_b = set(pr_a)
+    check("diff_prices equal", True, diff_prices(pr_a, pr_b))
+    pr_value_drift = {("2024-01-02", "EUR", "USD", Decimal("1.11"))}
+    check("diff_prices value drift", False, diff_prices(pr_a, pr_value_drift))
+    check("diff_prices quote dropped", False, diff_prices(pr_a, set()))
+
+    # --- diff_pad_fingerprints (Phase 3) ---------------------------------
+    pad_a: set[PadFingerprint] = {
+        (
+            "2024-01-01",
+            frozenset(
+                {
+                    ("Assets:Cash", "USD", Decimal("700")),
+                    ("Equity:OpeningBalances", "USD", Decimal("-700")),
+                }
+            ),
+        )
+    }
+    pad_b = set(pad_a)
+    check("diff_pad_fingerprints equal", True, diff_pad_fingerprints(pad_a, pad_b))
+    # Source account renamed: Equity:OpeningBalances -> Equity:Other.
+    pad_source_renamed: set[PadFingerprint] = {
+        (
+            "2024-01-01",
+            frozenset(
+                {
+                    ("Assets:Cash", "USD", Decimal("700")),
+                    ("Equity:Other", "USD", Decimal("-700")),
+                }
+            ),
+        )
+    }
+    check(
+        "diff_pad_fingerprints source renamed",
+        False,
+        diff_pad_fingerprints(pad_a, pad_source_renamed),
+    )
+    # Date shifted by one day.
+    pad_date_shift: set[PadFingerprint] = {
+        (
+            "2024-01-02",
+            frozenset(
+                {
+                    ("Assets:Cash", "USD", Decimal("700")),
+                    ("Equity:OpeningBalances", "USD", Decimal("-700")),
+                }
+            ),
+        )
+    }
+    check(
+        "diff_pad_fingerprints date shifted",
+        False,
+        diff_pad_fingerprints(pad_a, pad_date_shift),
+    )
+
+    if failures:
+        print("Self-test FAILED:", file=sys.stderr)
+        for line in failures:
+            print(line, file=sys.stderr)
+        return 1
+    print("Self-test passed: 12/12 comparator assertions held.")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     default_dop = REPO / "target" / "release" / "dop"
     p.add_argument("--dop-bin", default=os.environ.get("DOP_BIN") or str(default_dop))
-    p.add_argument("--negative", action="store_true",
-                   help="Run negative-control fixtures (assert both tools reject)")
+    p.add_argument(
+        "--negative", action="store_true",
+        help="Run negative-control fixtures (assert both tools reject)",
+    )
+    p.add_argument(
+        "--self-test", action="store_true",
+        help="Run hand-crafted negative-control assertions on each diff "
+             "function. Proves the comparators catch divergences instead of "
+             "silently returning None. Self-contained -- no fixtures, no tool invocations.",
+    )
     args = p.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     dop_bin = Path(args.dop_bin)
     if not dop_bin.exists():
