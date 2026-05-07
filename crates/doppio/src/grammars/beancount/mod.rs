@@ -801,10 +801,13 @@ impl crate::frontend::Frontend for BeancountFrontend {
         sort_entries_by_date(&mut ast_journal.entries);
         let mut hir: crate::resolution::HIR = ast_journal.try_into()?;
         // Beancount applies a per-transaction balance tolerance by
-        // default (#198). Switch the elaborator out of strict mode so
-        // sub-tolerance residuals get absorbed into a synthesized
-        // posting rather than rejected.
-        hir.global_context.tolerance_mode = crate::resolution::ToleranceMode::HalfSmallestPrecision;
+        // default (#198). Default fraction is 0.5 -- half the
+        // least-precise posting's decimal place -- matching
+        // bean-check's behaviour.
+        hir.global_context.tolerance_mode =
+            crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
+                rust_decimal::Decimal::new(5, 1),
+            );
         Ok(hir)
     }
 }
@@ -1740,9 +1743,12 @@ popmeta tag:
     fn elaborate(input: &str) -> Result<crate::elaboration::Journal, Box<dyn std::error::Error>> {
         let journal = parse_beancount(input)?;
         let mut hir: crate::resolution::HIR = journal.try_into()?;
-        // Match BeancountFrontend's default so the elaborator applies
-        // Beancount-style tolerance to sub-cent residuals.
-        hir.global_context.tolerance_mode = crate::resolution::ToleranceMode::HalfSmallestPrecision;
+        // Match BeancountFrontend's default (fraction = 0.5) so the
+        // elaborator applies Beancount-style tolerance.
+        hir.global_context.tolerance_mode =
+            crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
+                rust_decimal::Decimal::new(5, 1),
+            );
         Ok(hir.try_into()?)
     }
 

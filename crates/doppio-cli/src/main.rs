@@ -87,6 +87,16 @@ enum Commands {
         /// them when auditing rounding behaviour.
         #[arg(long, default_value_t = false)]
         show_rounding: bool,
+        /// Override the per-frontend default balance tolerance. The value
+        /// is the fraction of the least-precise posting's decimal place
+        /// to absorb as rounding residual. `0` = strict (every transaction
+        /// must balance to exact zero, ledger/hledger default).
+        /// `0.5` = Beancount's default (half the smallest decimal).
+        /// Sub-tolerance residuals are absorbed into a synthesized
+        /// posting on the empty-string account; over-tolerance still
+        /// rejects.
+        #[arg(long)]
+        tolerance: Option<rust_decimal::Decimal>,
     },
 
     /// List individual postings, optionally filtered by account name.
@@ -191,7 +201,16 @@ impl OutputFormat {
 fn load_proto_journal(
     path: &PathBuf,
 ) -> Result<doppio::elaboration::Journal, Box<dyn std::error::Error>> {
+    load_proto_journal_with_tolerance(path, None)
+}
+
+fn load_proto_journal_with_tolerance(
+    path: &PathBuf,
+    tolerance_override: Option<rust_decimal::Decimal>,
+) -> Result<doppio::elaboration::Journal, Box<dyn std::error::Error>> {
     if let Some("dop") = path.extension().and_then(|e| e.to_str()) {
+        // .dop files are pre-elaborated; tolerance was applied when
+        // they were originally compiled and cannot be overridden here.
         let mut f = File::open(path)?;
         doppio::read_dop(&mut f, path)
     } else {
@@ -200,7 +219,11 @@ fn load_proto_journal(
         let base_path = path.parent().unwrap_or(std::path::Path::new(""));
         let mut file = String::new();
         File::open(path)?.read_to_string(&mut file)?;
-        let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
+        let mut hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
+        if let Some(fraction) = tolerance_override {
+            hir.global_context.tolerance_mode =
+                doppio::resolution::ToleranceMode::FractionOfSmallestPrecision(fraction);
+        }
         Ok(doppio::elaborate(hir)?)
     }
 }
@@ -706,11 +729,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             real,
             exchange,
             show_rounding,
+            tolerance,
         } => {
             let format = OutputFormat::parse(&format)?;
             let filter =
                 JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
-            let journal = load_proto_journal(&source)?;
+            let journal = load_proto_journal_with_tolerance(&source, tolerance)?;
             // as_of for FX lookup: use --end if provided, else None (latest quote).
             let fx_as_of = filter.end_date;
 

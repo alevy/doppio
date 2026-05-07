@@ -137,21 +137,32 @@ pub struct GlobalContext {
 /// Per-transaction balance tolerance policy.
 ///
 /// When a transaction's postings sum to a non-zero residual, the
-/// elaborator either rejects the transaction (strict) or absorbs the
-/// residual into a synthesized posting whose account is the empty
-/// string `""` -- the doppio convention for "rounding residual; not
-/// a user-named account."
-#[derive(Default, Debug, Clone, Copy)]
+/// elaborator either rejects the transaction (residual exceeds
+/// tolerance) or absorbs the residual into a synthesized posting
+/// whose account is the empty string `""` -- the doppio convention
+/// for "rounding residual; not a user-named account."
+#[derive(Debug, Clone, Copy)]
 pub enum ToleranceMode {
-    /// Every transaction must balance to exact zero per commodity.
-    /// Default. Matches ledger-cli and hledger semantics.
-    #[default]
-    Strict,
-    /// Accept residuals whose absolute value is at most half the
-    /// smallest decimal precision among the transaction's explicit
-    /// postings. Matches Beancount's default behaviour. The residual
-    /// is absorbed by a synthesized posting with `account: ""`.
-    HalfSmallestPrecision,
+    /// Accept residuals whose absolute value is at most
+    /// `fraction * 10^(-min_scale)` per commodity, where `min_scale`
+    /// is the smallest decimal precision among the transaction's
+    /// explicit postings in that commodity.
+    ///
+    /// - `fraction = 0`: every transaction must balance to exact
+    ///   zero per commodity. This is the default and matches
+    ///   ledger-cli + hledger semantics.
+    /// - `fraction = 0.5`: accept residuals up to half the
+    ///   least-precise posting's decimal place. Matches Beancount's
+    ///   default (e.g. for scale-2 USD postings, tolerance = 0.005).
+    /// - Other fractions are valid; the CLI exposes a `--tolerance`
+    ///   flag that accepts any decimal in `[0, 1)`.
+    FractionOfSmallestPrecision(rust_decimal::Decimal),
+}
+
+impl Default for ToleranceMode {
+    fn default() -> Self {
+        Self::FractionOfSmallestPrecision(rust_decimal::Decimal::ZERO)
+    }
 }
 
 /// Validation rules for a tag declared with a `tag` directive.

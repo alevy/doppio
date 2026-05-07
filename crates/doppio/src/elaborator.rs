@@ -883,26 +883,25 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             .collect();
                         let mut absorbed: BTreeMap<String, Decimal> = BTreeMap::new();
                         for (commodity, residual) in &residuals {
-                            let tolerance = match tolerance_mode {
-                                resolution::ToleranceMode::Strict => Decimal::ZERO,
-                                resolution::ToleranceMode::HalfSmallestPrecision => {
-                                    // Beancount's rule: tolerance is half the
-                                    // LEAST-precise posting's decimal place
-                                    // (i.e. the MIN scale among postings in
-                                    // this commodity), not the most precise.
-                                    // For postings of 100.00 + -100.005 (scales
-                                    // 2 and 3), tolerance is 0.5 * 10^-2 = 0.005.
-                                    let min_scale = resolved_postings
-                                        .iter()
-                                        .filter_map(|p| {
-                                            p.amount.as_ref()?.by_commodity.get(commodity)
-                                        })
-                                        .map(|d| d.scale)
-                                        .min()
-                                        .unwrap_or(0);
-                                    // tolerance = 0.5 * 10^-scale = 5 * 10^-(scale+1)
-                                    Decimal::new(5, min_scale + 1)
-                                }
+                            let resolution::ToleranceMode::FractionOfSmallestPrecision(fraction) =
+                                tolerance_mode;
+                            let tolerance = if fraction.is_zero() {
+                                Decimal::ZERO
+                            } else {
+                                // tolerance = fraction * 10^(-min_scale).
+                                // Beancount's default fraction is 0.5 and
+                                // min_scale is the LEAST-precise posting's
+                                // decimal place (Beancount's actual rule);
+                                // for scale-2 postings that's 0.5 * 0.01 =
+                                // 0.005.
+                                let min_scale = resolved_postings
+                                    .iter()
+                                    .filter_map(|p| p.amount.as_ref()?.by_commodity.get(commodity))
+                                    .map(|d| d.scale)
+                                    .min()
+                                    .unwrap_or(0);
+                                let one_unit = Decimal::new(1, min_scale);
+                                fraction * one_unit
                             };
                             if residual.abs() > tolerance {
                                 return Err(ElaborationError::TransactionDoesNotBalance(
