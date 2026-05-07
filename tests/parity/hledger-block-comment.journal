@@ -1,0 +1,27 @@
+; Hand-crafted fixture exercising hledger's `comment` / `end comment`
+; block-comment syntax (#205). Both a closed block (mid-file) and an
+; unclosed block (at EOF, hledger treats as comment-to-EOF) are
+; covered. Real upstream files (e.g. hledger's own multicurrency.journal)
+; use both forms.
+
+2024-01-01 * Salary
+    Assets:Bank      1000.00 USD
+    Income:Salary   -1000.00 USD
+
+comment
+This is a block comment in the middle of the journal. hledger
+ignores every line between `comment` and `end comment`. The text
+inside can look like a journal entry without affecting parsing:
+    Assets:Fake    9999.99 USD
+    Income:Phantom -9999.99 USD
+end comment
+
+2024-01-15 * Groceries
+    Expenses:Food    50.00 USD
+    Assets:Bank     -50.00 USD
+
+comment
+Trailing comment block with no `end comment`; hledger treats it
+as a comment-to-EOF. Anything below this line is ignored.
+    More fake content
+    Even more fake content

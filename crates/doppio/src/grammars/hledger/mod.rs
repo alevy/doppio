@@ -16,8 +16,15 @@
 //!   the `auto_rule` grammar rule captures the shape of an automated posting
 //!   rule but postings whose amounts use `*N` will produce a parse error.
 //!   See TODO(#103).
-//! - `comment` / `end comment` block comments are not yet supported.
 //! - Full date inference from a `Y year` directive is not implemented.
+//!
+//! ## Block comments
+//!
+//! `comment` ... `end comment` block comments are accepted; the
+//! contents are preserved verbatim as `Entry::Comment` and resolution
+//! discards them. An unclosed `comment` block (no matching
+//! `end comment`) is implicitly terminated at EOF, matching hledger's
+//! own behaviour.
 //!
 //! ## Lot-cost forms
 //!
@@ -69,6 +76,12 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     entries.push(Entry::Transaction(parse_transaction(pair)?));
                 }
                 Rule::comment_line => {
+                    entries.push(Entry::Comment(pair.as_str().to_string()));
+                }
+                Rule::block_comment => {
+                    // Preserve the full source text (including the
+                    // `comment` / `end comment` markers) so the round-trip
+                    // representation is faithful; resolution discards.
                     entries.push(Entry::Comment(pair.as_str().to_string()));
                 }
                 Rule::historical_price => {
@@ -1272,6 +1285,58 @@ P 2024-02-15 AAPL $182.50
     }
 
     #[test]
+    #[test]
+    fn block_comment_closed_and_unclosed() {
+        // Closed `comment` ... `end comment` block in the middle of a journal.
+        let closed = "\
+2024-01-01 * Salary
+    Assets:Bank      $100
+    Income:Salary
+
+comment
+this is ignored
+    Assets:Fake     $999
+end comment
+
+2024-01-02 * Coffee
+    Expenses:Food    $5
+    Assets:Bank
+";
+        let journal = parse_hledger(closed).expect("parse closed block-comment");
+        let txs: Vec<_> = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .collect();
+        assert_eq!(
+            txs.len(),
+            2,
+            "block comment must not consume the second txn"
+        );
+
+        // Unclosed block at EOF: hledger treats it as comment-to-EOF.
+        let unclosed = "\
+2024-01-01 * Salary
+    Assets:Bank      $100
+    Income:Salary
+
+comment
+trailing notes about the journal
+nothing after this matters
+";
+        let journal = parse_hledger(unclosed).expect("parse unclosed block-comment");
+        let txs: Vec<_> = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .collect();
+        assert_eq!(
+            txs.len(),
+            1,
+            "the single transaction before the unclosed block must parse"
+        );
+    }
+
     #[test]
     fn assertion_op_recognises_star_qualifier() {
         // The grammar accepts `=`, `==`, `=*`, `==*`. The `*` qualifier
