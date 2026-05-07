@@ -73,13 +73,40 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
     /// - an `include` directive's opener call fails (e.g. file not found,
     ///   glob with no matches, I/O error).
     pub fn parse(&mut self, input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
+        // Stack of active `apply tag` markers. Persists across recursive
+        // include resolution so a tag opened in the parent applies to
+        // transactions parsed from an included file. See #222.
+        let mut active_tags: Vec<(String, Option<String>)> = Vec::new();
+        let journal = self.parse_inner(input, &mut active_tags)?;
+        validate_regexes(&journal)?;
+        Ok(journal)
+    }
+
+    fn parse_inner(
+        &mut self,
+        input: &str,
+        active_tags: &mut Vec<(String, Option<String>)>,
+    ) -> Result<Journal, Box<dyn std::error::Error>> {
         let pairs = LedgerParser::parse(Rule::journal, input)?;
         let mut entries = Vec::new();
 
         for pair in pairs.into_iter().next().unwrap().into_inner() {
             match pair.as_rule() {
                 Rule::transaction => {
-                    entries.push(Entry::Transaction(parse_transaction(pair)?));
+                    let mut tx = parse_transaction(pair)?;
+                    // Append a note for each currently-active `apply tag`.
+                    // `key: value` form lands in the metadata bucket;
+                    // bare `key` lands as a `:tag:` note. The resolver's
+                    // `resolve_metadata` parses each note independently
+                    // and unions tags across notes.
+                    for (key, value) in active_tags.iter() {
+                        let note = match value {
+                            Some(v) => format!("{key}: {v}"),
+                            None => format!(":{key}:"),
+                        };
+                        tx.notes.push(note);
+                    }
+                    entries.push(Entry::Transaction(tx));
                 }
                 Rule::comment_line => {
                     entries.push(Entry::Comment(pair.as_str().to_string()));
@@ -121,7 +148,7 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                         .map(std::path::PathBuf::from)
                         .unwrap_or_else(|| self.base_path.clone());
                     let old_base_path = std::mem::replace(&mut self.base_path, new_base_path);
-                    entries.append(&mut self.parse(&new_input)?.entries);
+                    entries.append(&mut self.parse_inner(&new_input, active_tags)?.entries);
                     // Restore the original base_path for subsequent entries in
                     // the parent file.
                     let _ = std::mem::replace(&mut self.base_path, old_base_path);
@@ -138,19 +165,33 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     // frontend's behaviour. Tracked under #219;
                     // elaboration is deferred behind a real consumer.
                 }
-                Rule::apply_tag_directive | Rule::end_tag_directive => {
-                    // `apply tag` / `end tag` blocks parse but don't
-                    // propagate. Tracked under #222; full elaboration
-                    // (active tag stack flowing into enclosed
-                    // transactions) is deferred behind a real consumer.
+                Rule::apply_tag_directive => {
+                    // `apply tag <key>` or `apply tag <key>: <value>`. Push
+                    // onto the active stack so subsequent transactions
+                    // (including those from included files) inherit the tag.
+                    let body = pair
+                        .into_inner()
+                        .find(|p| p.as_rule() == Rule::apply_tag_body)
+                        .map(|p| p.as_str().trim().to_string())
+                        .unwrap_or_default();
+                    let (key, value) = match body.split_once(':') {
+                        Some((k, v)) => (k.trim().to_string(), Some(v.trim().to_string())),
+                        None => (body, None),
+                    };
+                    active_tags.push((key, value));
+                }
+                Rule::end_tag_directive => {
+                    // `end tag` / `end apply tag` pops the most recently
+                    // pushed marker. Mismatched pops (no active tag) are
+                    // silently ignored -- ledger-cli emits a diagnostic
+                    // but we have no warning channel.
+                    active_tags.pop();
                 }
                 _ => {}
             }
         }
 
-        let journal = Journal { entries };
-        validate_regexes(&journal)?;
-        Ok(journal)
+        Ok(Journal { entries })
     }
 }
 
@@ -1588,55 +1629,141 @@ mod directed_tests {
         assert_eq!(transactions.len(), 1, "exactly one transaction expected");
     }
 
-    /// `apply tag X: Y` ... `end tag` blocks parse without error and
-    /// transactions inside them parse normally. The block's tag is not
-    /// (yet) propagated onto the enclosed transactions; #222 tracks
-    /// the elaboration follow-up.
+    /// `apply tag X: Y` blocks: the active tag is appended to every
+    /// transaction declared inside the block as a `key: value`
+    /// metadata note. Transactions outside the block carry no extra
+    /// notes. #222.
     #[test]
-    fn test_apply_tag_block_parse_only() {
+    fn test_apply_tag_propagates_metadata() {
         let input = "\
 apply tag hastag: true
-apply tag nestedtag: true
 2024-01-15 * Bookstore
     Expenses:Books                       $20.00
     Liabilities:MasterCard
-end tag
 end tag
 2024-01-20 * Sale
     Assets:Cash                          $30.00
     Income:Sales
 ";
         let journal = parse_ledger(input).expect("parse must accept apply-tag block");
-        let transactions: Vec<_> = journal
+        let txs: Vec<&Transaction> = journal
             .entries
             .iter()
-            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .filter_map(|e| match e {
+                Entry::Transaction(t) => Some(t),
+                _ => None,
+            })
             .collect();
-        assert_eq!(
-            transactions.len(),
-            2,
-            "both transactions (inside and outside the block) must surface"
+        assert_eq!(txs.len(), 2);
+        // Inside-block transaction inherits the `hastag: true` note.
+        assert!(
+            txs[0].notes.iter().any(|n| n == "hastag: true"),
+            "inside-block transaction should carry `hastag: true` note; got {:?}",
+            txs[0].notes
+        );
+        // Outside-block transaction carries no inherited notes.
+        assert!(
+            txs[1].notes.iter().all(|n| n != "hastag: true"),
+            "outside-block transaction must not carry the popped tag; got {:?}",
+            txs[1].notes
         );
     }
 
-    /// `end apply tag` is the alternate closing form (used in
-    /// ledger-cli's own sample.dat). Verify the grammar accepts it.
+    /// Nested `apply tag` markers: every active tag in the stack is
+    /// appended to enclosed transactions, in push order.
+    #[test]
+    fn test_apply_tag_nested_blocks_propagate_full_stack() {
+        let input = "\
+apply tag outer: 1
+apply tag inner: 2
+2024-01-15 * Inside both
+    Expenses:Books                       $20.00
+    Liabilities:MasterCard
+end tag
+2024-01-16 * Inside outer only
+    Expenses:Food                        $10.00
+    Assets:Cash
+end tag
+";
+        let journal = parse_ledger(input).expect("parse must accept nested apply-tag block");
+        let txs: Vec<&Transaction> = journal
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Transaction(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(txs.len(), 2);
+        assert!(
+            txs[0].notes.iter().any(|n| n == "outer: 1")
+                && txs[0].notes.iter().any(|n| n == "inner: 2"),
+            "inner transaction inherits both stacked tags; got {:?}",
+            txs[0].notes
+        );
+        assert!(
+            txs[1].notes.iter().any(|n| n == "outer: 1")
+                && txs[1].notes.iter().all(|n| n != "inner: 2"),
+            "after popping inner, only outer remains; got {:?}",
+            txs[1].notes
+        );
+    }
+
+    /// Bare `apply tag <key>` (no value) propagates as a `:key:`
+    /// note that the resolver parses as a flag-style tag.
+    #[test]
+    fn test_apply_tag_bare_key_propagates_as_tag_note() {
+        let input = "\
+apply tag urgent
+2024-01-15 * Test
+    Assets:Cash                          $10.00
+    Income:Random
+end apply tag
+";
+        let journal = parse_ledger(input).expect("parse must accept bare apply-tag");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected Transaction");
+        };
+        assert!(
+            tx.notes.iter().any(|n| n == ":urgent:"),
+            "bare apply-tag should land as `:urgent:` tag-note; got {:?}",
+            tx.notes
+        );
+    }
+
+    /// `end apply tag` is the alternate closer (used in ledger-cli's
+    /// own sample.dat). Pops just like `end tag`.
     #[test]
     fn test_end_apply_tag_alternate_closer() {
         let input = "\
 apply tag foo
-2024-01-15 * Test
+2024-01-15 * Inside
     Assets:Cash    $10.00
     Income:Random
 end apply tag
+2024-01-16 * After-close
+    Assets:Cash    $5.00
+    Income:Other
 ";
         let journal = parse_ledger(input).expect("parse must accept `end apply tag` closer");
-        let transactions: Vec<_> = journal
+        let txs: Vec<&Transaction> = journal
             .entries
             .iter()
-            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .filter_map(|e| match e {
+                Entry::Transaction(t) => Some(t),
+                _ => None,
+            })
             .collect();
-        assert_eq!(transactions.len(), 1);
+        assert!(
+            txs[0].notes.iter().any(|n| n == ":foo:"),
+            "inside-block transaction inherits `:foo:`; got {:?}",
+            txs[0].notes
+        );
+        assert!(
+            txs[1].notes.iter().all(|n| n != ":foo:"),
+            "after `end apply tag`, the tag is popped; got {:?}",
+            txs[1].notes
+        );
     }
 
     #[test]

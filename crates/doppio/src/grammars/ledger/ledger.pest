@@ -69,13 +69,11 @@ auto_rule = ${
 rule_query = @{ (!(NEWLINE | ";") ~ ANY)+ }
 
 // `apply tag <key>[: <value>]` opens a tag scope; `end tag` (or
-// `end apply tag`) closes it. ledger-cli applies the active tag
-// stack to every transaction declared between the two markers.
-//
-// Parse-only for now (#222): the directive is recognised so source
-// files using tag scopes load without error, but the active stack is
-// not propagated onto enclosed transactions. Same posture as the
-// auto_rule and budget productions.
+// `end apply tag`) closes it. ledger-cli appends the active tag
+// stack to every transaction declared between the two markers
+// (#222). The Parser threads the stack through recursive include
+// resolution; transaction parsing reads it and appends a note per
+// active tag.
 apply_tag_directive = ${ "apply" ~ ws+ ~ "tag" ~ ws+ ~ apply_tag_body ~ (NEWLINE | EOI) }
 apply_tag_body = @{ (!NEWLINE ~ ANY)+ }
 end_tag_directive = ${ "end" ~ ws+ ~ ("apply" ~ ws+)? ~ "tag" ~ ws* ~ (NEWLINE | EOI) }
