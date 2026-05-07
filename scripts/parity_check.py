@@ -382,6 +382,143 @@ _register_tags_meta_extractors()
 
 
 # ---------------------------------------------------------------------------
+# Historical-price extractors (#226 Phase 2).
+#
+# Quadruple per quote: (date, source_commodity, target_commodity, value).
+# Compared as a set: order doesn't matter, duplicates are collapsed.
+# ---------------------------------------------------------------------------
+
+PriceQuad = tuple[str, str, str, Decimal]
+
+
+def beancount_prices(fixture: Path) -> set[PriceQuad]:
+    """Per-quote price tuples via the Beancount Python API.
+
+    Each `Price` entry has `.date`, `.currency` (the source commodity),
+    and `.amount` (a `(number, currency)` pair). Beancount auto-derives
+    additional price entries from `@`/`@@` annotations on transaction
+    postings; doppio's `Journal.prices` only carries explicit `P` /
+    `price` directives. To compare like-with-like, filter out
+    auto-derived entries by inspecting `entry.meta`: bean-check tags
+    auto-derived prices with `__implicit_prices__` in newer versions or
+    omits a real source line; defensively, accept entries whose
+    `meta['filename']` matches the fixture path."""
+    from beancount.loader import load_file
+    from beancount.core.data import Price
+
+    entries, errors, _ = load_file(str(fixture))
+    if errors:
+        raise RuntimeError(f"beancount errors loading {fixture}: {errors}")
+    out: set[PriceQuad] = set()
+    # bean-check populates `entry.meta['filename']` with the resolved
+    # absolute path of the source file; canonicalise the fixture path
+    # the same way for the comparison.
+    fixture_abs = str(fixture.resolve())
+    for entry in entries:
+        if not isinstance(entry, Price):
+            continue
+        # Skip auto-derived quotes that bean-check synthesises from
+        # `@`/`@@` postings (Beancount's "implicit price" mechanism).
+        # Such entries have a synthetic filename set by the synthesiser,
+        # not the user-visible path. doppio doesn't synthesise these,
+        # so filtering keeps the comparison apples-to-apples.
+        meta = entry.meta or {}
+        if meta.get("filename") != fixture_abs:
+            continue
+        out.add(
+            (
+                entry.date.isoformat(),
+                entry.currency,
+                entry.amount.currency,
+                entry.amount.number,
+            )
+        )
+    return out
+
+
+def hledger_prices(fixture: Path) -> set[PriceQuad]:
+    """Per-quote price tuples via `hledger prices`. Outputs lines of the
+    form `P <date> <commodity> <amount>` where `<amount>` is in
+    ledger-style (`$1.10` / `0.70 EUR`). hledger only emits explicit
+    source-defined `P` directives -- it does NOT synthesise quotes from
+    `@`/`@@` posting annotations, so this matches doppio's posture."""
+    raw = subprocess.run(
+        ["hledger", "-f", str(fixture), "prices"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    out: set[PriceQuad] = set()
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("P "):
+            continue
+        # P <date> <commodity> <amount>
+        parts = line[2:].split(None, 2)
+        if len(parts) != 3:
+            continue
+        date, commodity, amount_str = parts
+        target_commodity, value = _parse_ledger_amount(amount_str)
+        out.add((date, commodity, target_commodity, value))
+    return out
+
+
+def doppio_prices(fixture: Path, dop_bin: Path) -> set[PriceQuad]:
+    """Read explicit `P` / `price` directives via `dop prices --format=json`."""
+    raw = subprocess.run(
+        [str(dop_bin), "prices", "--format=json", str(fixture)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    payload = json.loads(raw)
+    out: set[PriceQuad] = set()
+    for row in payload:
+        out.add(
+            (
+                row["date"],
+                row["commodity"],
+                row["price_commodity"],
+                Decimal(row["price_amount"]),
+            )
+        )
+    return out
+
+
+def diff_prices(canonical: set[PriceQuad], doppio: set[PriceQuad]) -> str | None:
+    """Compare price quote sets; return None on match."""
+    if canonical == doppio:
+        return None
+    only_canon = canonical - doppio
+    only_dop = doppio - canonical
+    lines = []
+    if only_canon:
+        lines.append("  price quotes only in canonical:")
+        for q in sorted(only_canon):
+            date, src, tgt, val = q
+            lines.append(f"    [{date}] {src} -> {tgt}: {val}")
+    if only_dop:
+        lines.append("  price quotes only in doppio:")
+        for q in sorted(only_dop):
+            date, src, tgt, val = q
+            lines.append(f"    [{date}] {src} -> {tgt}: {val}")
+    return "\n".join(lines)
+
+
+PRICES_EXTRACTOR: dict[CanonicalFn, Callable[[Path], set[PriceQuad]] | None] = {}
+
+
+def _register_prices_extractors() -> None:
+    """ledger-cli's `prices` / `pricedb` mixes explicit `P` directives
+    with auto-derived quotes from lot annotations and `@`/`@@`
+    annotations, with no clean way to filter to just the explicit
+    ones. Skip ledger-cli for Phase 2; same posture as Phase 1's
+    tag-metadata skip. Filed as a follow-on under #226."""
+    PRICES_EXTRACTOR[beancount_balances] = beancount_prices
+    PRICES_EXTRACTOR[hledger_balances] = hledger_prices
+    PRICES_EXTRACTOR[ledger_balances] = None
+
+
+_register_prices_extractors()
+
+
+# ---------------------------------------------------------------------------
 # Test catalog
 # ---------------------------------------------------------------------------
 
@@ -472,13 +609,22 @@ def run_positive(case: Case, dop_bin: Path) -> bool:
     # Phase 1: per-transaction tags + metadata (#226). Skipped for ledger-cli
     # since its native output doesn't expose tags structurally.
     tags_meta_diff: str | None = None
-    extractor = TAGS_META_EXTRACTOR.get(case.canonical)
-    if extractor is not None:
-        canonical_fps = extractor(case.fixture)
+    tm_extractor = TAGS_META_EXTRACTOR.get(case.canonical)
+    if tm_extractor is not None:
+        canonical_fps = tm_extractor(case.fixture)
         doppio_fps = doppio_tags_metadata(case.fixture, dop_bin)
         tags_meta_diff = diff_fingerprints(canonical_fps, doppio_fps)
 
-    if bal_diff is None and tags_meta_diff is None:
+    # Phase 2: explicit historical-price quotes (#226). Skipped for ledger-cli
+    # since its `prices`/`pricedb` output mixes inferred quotes from `@`/`{cost}`.
+    prices_diff: str | None = None
+    pr_extractor = PRICES_EXTRACTOR.get(case.canonical)
+    if pr_extractor is not None:
+        canonical_prices = pr_extractor(case.fixture)
+        doppio_prices_set = doppio_prices(case.fixture, dop_bin)
+        prices_diff = diff_prices(canonical_prices, doppio_prices_set)
+
+    if bal_diff is None and tags_meta_diff is None and prices_diff is None:
         print("OK")
         return True
     print("MISMATCH")
@@ -488,6 +634,9 @@ def run_positive(case: Case, dop_bin: Path) -> bool:
     if tags_meta_diff is not None:
         print("  tags + metadata:", file=sys.stderr)
         print(tags_meta_diff, file=sys.stderr)
+    if prices_diff is not None:
+        print("  prices:", file=sys.stderr)
+        print(prices_diff, file=sys.stderr)
     return False
 
 
