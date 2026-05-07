@@ -214,13 +214,16 @@ class Case:
 
 
 POSITIVE: list[Case] = [
-    # The "primary" fixtures live where their primary consumers do --
-    # near each crate's tests, not under a top-level e2e dir. The
-    # parity harness reaches in to validate them; new comprehensive
-    # corpora go under tests/parity/ alongside the negative fixtures.
-    Case("beancount", REPO / "crates/doppio/tests/fixtures/sample.beancount", beancount_balances),
-    Case("hledger",   REPO / "crates/doppio-cli/tests/fixtures/sample.hledger", hledger_balances),
-    Case("ledger",    REPO / "web/fixtures/sample.ledger", ledger_balances),
+    # "Primary" fixtures live where their primary consumers do -- near
+    # each crate's tests, not under a top-level e2e dir. The parity
+    # harness reaches in to validate them.
+    Case("beancount:sample", REPO / "crates/doppio/tests/fixtures/sample.beancount", beancount_balances),
+    Case("hledger:sample",   REPO / "crates/doppio-cli/tests/fixtures/sample.hledger", hledger_balances),
+    Case("ledger:sample",    REPO / "web/fixtures/sample.ledger", ledger_balances),
+    # Upstream-sourced corpus under tests/parity/. Each fixture's
+    # leading comment block records source URL + commit SHA + license
+    # per the convention documented in tests/parity/README.md.
+    Case("hledger:ascii",    REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
 ]
 
 NEGATIVE: list[Case] = [
