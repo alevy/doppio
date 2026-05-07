@@ -529,20 +529,20 @@ fn running_balance() {
 
 #[test]
 fn lot_persistence_cost() {
-    // Fixture: 10 AAPL {$150} @ $155.
+    // Fixture: 10 AAPL {$150} @ $155 (ledger frontend).
     //
-    // Cost basis ($150/share) is the historical lot annotation; price
-    // ($155) is the actual transaction value. The cash side balances
-    // against the price, not the cost -- the `@` price wins over `{cost}`
-    // when both are present.
+    // Per ledger-cli's actual semantics (#210): `{cost}` drives the
+    // cash balance; `@price` is informational only. Cost basis
+    // ($150/share) and the @price ($155) are both stored on the lot;
+    // cost wins for the null-posting cash inference.
     let j = compile("lot_persistence_cost.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings.len(), 2);
     assert_eq!(t.postings[0].account, "Assets:Brokerage");
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-    // Cash side null posting: -(10 * $155) = -$1550. Price drives balance.
+    // Cash side null posting: -(10 * $150) = -$1500. Cost drives balance.
     assert_eq!(t.postings[1].account, "Assets:Cash");
-    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1550)));
+    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
     // Lot annotation preserved on the proto posting.
     let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
     assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
@@ -599,22 +599,26 @@ fn lot_persistence_combined() {
 
 #[test]
 fn lot_persistence_cost_vs_price() {
-    // Fixture: 10 AAPL {$150} @ $155.
-    // Price ($155) drives the cash balance; cost ($150) is the lot basis.
-    // This is the canonical cost-vs-price scenario: they differ because of
-    // e.g. a non-cash acquisition or a price at time of split.
+    // Fixture: 10 AAPL {$150} @ $155 (ledger frontend).
+    //
+    // Per ledger-cli's actual semantics (#210): `{cost}` drives cash
+    // balance; `@price` is informational. Both are preserved on the
+    // proto Lot. The two differ in scenarios like a non-cash
+    // acquisition, a price at time of split, or a sale at gain --
+    // ledger-cli requires the user to write an explicit gain/loss
+    // posting that absorbs the cost-vs-price residual.
     let j = compile("lot_persistence_cost_vs_price.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings[0].account, "Assets:Brokerage");
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-    // Price ($155/share) drives cash: -(10 * $155) = -$1550.
+    // Cost ($150/share) drives cash: -(10 * $150) = -$1500.
     assert_eq!(t.postings[1].account, "Assets:Cash");
-    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1550)));
-    // Lot cost annotation preserved as $150 (NOT $155).
+    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
+    // Lot cost annotation preserved as $150.
     assert_eq!(
         t.postings[0].lot_cost_in("$"),
         Some(dec!(150)),
-        "lot cost should be $150, not the price $155"
+        "lot cost should be $150"
     );
 }
 
