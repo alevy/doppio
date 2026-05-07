@@ -2123,6 +2123,76 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
         );
     }
 
+    /// After a pad has fired for a commodity, a real direct posting on
+    /// the target followed by a second balance assertion in the *same*
+    /// commodity must FAIL if the new assertion doesn't match running.
+    /// The pad must not silently re-fire and rescue the assertion.
+    /// bean-check rejects this; doppio must too. Regression for the
+    /// bug surfaced in PR #225 review.
+    #[test]
+    fn pad_does_not_re_fire_after_real_posting_in_same_commodity() {
+        let input = "\
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Equity:Open
+2024-01-01 open Expenses:Food USD
+
+2024-01-01 pad  Assets:Cash  Equity:Open
+
+2024-01-15 balance  Assets:Cash    100 USD
+
+2024-02-01 * \"Spend\"
+  Assets:Cash    -50 USD
+  Expenses:Food
+
+2024-03-01 balance  Assets:Cash    25 USD
+";
+        let err = elaborate(input).expect_err(
+            "second USD assertion must fail because the pad was consumed by the first; \
+             a real posting between them moved running to 50, not 25",
+        );
+        let s = format!("{err:?}");
+        assert!(
+            s.contains("BalanceAssertionFailed"),
+            "expected BalanceAssertionFailed, got: {s}"
+        );
+    }
+
+    /// Per-commodity firing is independent: the EUR pad fires
+    /// independently of the USD firing, even after a real EUR posting
+    /// between pad and EUR balance. bean-check accepts this; doppio
+    /// must match.
+    #[test]
+    fn pad_per_commodity_independent_of_other_commodity_postings() {
+        let input = "\
+2024-01-01 open Assets:Cash
+2024-01-01 open Equity:Open
+2024-01-01 open Equity:Other
+
+2024-01-01 pad  Assets:Cash  Equity:Open
+
+2024-01-15 balance  Assets:Cash    100 USD
+
+2024-02-01 * \"Buy EUR\"
+  Assets:Cash    50 EUR
+  Equity:Other
+
+2024-03-01 balance  Assets:Cash    200 EUR
+";
+        let elab = elaborate(input).expect(
+            "EUR pad must fire independently; USD prior firing does not consume it for EUR",
+        );
+        let pad_txs: Vec<_> = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .collect();
+        assert_eq!(
+            pad_txs.len(),
+            2,
+            "one pad txn per fired commodity (USD, EUR)"
+        );
+    }
+
     #[test]
     fn pad_with_zero_gap_emits_no_transaction() {
         // If the running balance already equals the asserted amount, the
