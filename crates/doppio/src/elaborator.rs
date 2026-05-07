@@ -374,6 +374,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
         }
 
         let tolerance_mode = value.global_context.tolerance_mode;
+        let tolerance_overrides = value.global_context.tolerance_overrides.clone();
 
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
@@ -883,26 +884,38 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                             .collect();
                         let mut absorbed: BTreeMap<String, Decimal> = BTreeMap::new();
                         for (commodity, residual) in &residuals {
-                            let resolution::ToleranceMode::FractionOfSmallestPrecision(fraction) =
-                                tolerance_mode;
-                            let tolerance = if fraction.is_zero() {
-                                Decimal::ZERO
-                            } else {
-                                // tolerance = fraction * 10^(-min_scale).
-                                // Beancount's default fraction is 0.5 and
-                                // min_scale is the LEAST-precise posting's
-                                // decimal place (Beancount's actual rule);
-                                // for scale-2 postings that's 0.5 * 0.01 =
-                                // 0.005.
-                                let min_scale = resolved_postings
-                                    .iter()
-                                    .filter_map(|p| p.amount.as_ref()?.by_commodity.get(commodity))
-                                    .map(|d| d.scale)
-                                    .min()
-                                    .unwrap_or(0);
-                                let one_unit = Decimal::new(1, min_scale);
-                                fraction * one_unit
-                            };
+                            // Per-commodity override (e.g. from Beancount's
+                            // `option "inferred_tolerance_default"
+                            // "USD:0.005"`) wins over the rule-based
+                            // fraction-of-smallest-precision default.
+                            let tolerance =
+                                if let Some(absolute) = tolerance_overrides.get(commodity) {
+                                    *absolute
+                                } else {
+                                    let resolution::ToleranceMode::FractionOfSmallestPrecision(
+                                        fraction,
+                                    ) = tolerance_mode;
+                                    if fraction.is_zero() {
+                                        Decimal::ZERO
+                                    } else {
+                                        // tolerance = fraction * 10^(-min_scale).
+                                        // Beancount's default fraction is 0.5 and
+                                        // min_scale is the LEAST-precise posting's
+                                        // decimal place (Beancount's actual rule);
+                                        // for scale-2 postings that's 0.5 * 0.01 =
+                                        // 0.005.
+                                        let min_scale = resolved_postings
+                                            .iter()
+                                            .filter_map(|p| {
+                                                p.amount.as_ref()?.by_commodity.get(commodity)
+                                            })
+                                            .map(|d| d.scale)
+                                            .min()
+                                            .unwrap_or(0);
+                                        let one_unit = Decimal::new(1, min_scale);
+                                        fraction * one_unit
+                                    }
+                                };
                             if residual.abs() > tolerance {
                                 return Err(ElaborationError::TransactionDoesNotBalance(
                                     transaction_state,

@@ -95,6 +95,11 @@ struct Parser<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> {
     /// and removed by `popmeta`. Stack semantics mirror `active_tags`
     /// so the most-recent value wins for a given key.
     active_meta: Vec<(String, String)>,
+    /// `option "key" "value"` directives encountered during the parse.
+    /// Captured here (rather than just dropped as `Entry::Comment`) so
+    /// the frontend can interpret options like
+    /// `inferred_tolerance_default` after the parse.
+    options: Vec<(String, String)>,
 }
 
 impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
@@ -141,12 +146,23 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                 Rule::pad_directive => {
                     entries.push(Entry::Pad(parse_pad_directive(pair)));
                 }
+                Rule::option_directive => {
+                    // Capture the (key, value) for later interpretation
+                    // by BeancountFrontend (e.g. inferred_tolerance_default).
+                    // Also push as Comment so the source line survives the
+                    // round-trip.
+                    let raw = pair.as_str().trim().to_string();
+                    let mut inner = pair.into_inner();
+                    let key = string_inner(inner.next().expect("option key"));
+                    let value = string_inner(inner.next().expect("option value"));
+                    self.options.push((key, value));
+                    entries.push(Entry::Comment(raw));
+                }
                 Rule::note_directive
                 | Rule::document_directive
                 | Rule::event_directive
                 | Rule::query_directive
                 | Rule::custom_directive
-                | Rule::option_directive
                 | Rule::plugin_directive => {
                     entries.push(Entry::Comment(pair.as_str().trim().to_string()));
                 }
@@ -741,15 +757,26 @@ fn entry_date_key(entry: &Entry) -> Option<Date> {
 /// Beancount language semantics).
 #[cfg(test)]
 pub(crate) fn parse_beancount(input: &str) -> Result<Journal, Box<dyn std::error::Error>> {
-    let mut journal = Parser {
+    Ok(parse_beancount_with_options(input)?.0)
+}
+
+/// Like [`parse_beancount`] but also returns any `option` directives
+/// captured during the parse. Used by the elaboration test helper to
+/// honour `inferred_tolerance_default`.
+#[cfg(test)]
+pub(crate) fn parse_beancount_with_options(
+    input: &str,
+) -> Result<(Journal, Vec<(String, String)>), Box<dyn std::error::Error>> {
+    let mut parser = Parser {
         opener: |_| Ok(String::new()),
         base_path: PathBuf::new(),
         active_tags: Vec::new(),
         active_meta: Vec::new(),
-    }
-    .parse(input)?;
+        options: Vec::new(),
+    };
+    let mut journal = parser.parse(input)?;
     sort_entries_by_date(&mut journal.entries);
-    Ok(journal)
+    Ok((journal, parser.options))
 }
 
 // ---
@@ -787,13 +814,14 @@ impl crate::frontend::Frontend for BeancountFrontend {
         base_path: &std::path::Path,
         opener: &crate::frontend::Opener,
     ) -> Result<crate::resolution::HIR, Box<dyn std::error::Error>> {
-        let mut ast_journal = Parser {
+        let mut parser = Parser {
             opener: |path: &str| opener(path),
             base_path: base_path.to_path_buf(),
             active_tags: Vec::new(),
             active_meta: Vec::new(),
-        }
-        .parse(input)?;
+            options: Vec::new(),
+        };
+        let mut ast_journal = parser.parse(input)?;
         // Beancount is date-ordered, not source-ordered. Sort once at the
         // outermost call (after include resolution has flattened the tree)
         // so resolver + elaborator can treat the entries as already in
@@ -808,6 +836,20 @@ impl crate::frontend::Frontend for BeancountFrontend {
             crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
                 rust_decimal::Decimal::new(5, 1),
             );
+        // Honour `option "inferred_tolerance_default" "COMMODITY:VALUE"`
+        // directives. Each occurrence overrides any previous value for
+        // the same commodity (last write wins). The directive is
+        // file-level; nested includes contribute to the same map.
+        for (k, v) in &parser.options {
+            if k == "inferred_tolerance_default"
+                && let Some((commodity, decimal)) = v.split_once(':')
+                && let Ok(d) = decimal.trim().parse::<rust_decimal::Decimal>()
+            {
+                hir.global_context
+                    .tolerance_overrides
+                    .insert(commodity.trim().to_string(), d);
+            }
+        }
         Ok(hir)
     }
 }
@@ -1738,10 +1780,67 @@ popmeta tag:
         );
     }
 
+    #[test]
+    fn inferred_tolerance_default_option_overrides_per_commodity() {
+        // Without the option directive, this 0.05 USD residual is over
+        // tolerance and rejects (covered by `over_tolerance_residual_still_errors`).
+        // With `option \"inferred_tolerance_default\" \"USD:0.1\"`, the
+        // per-commodity override raises USD's tolerance to 0.1 absolute,
+        // so the same 0.05 residual is now within tolerance.
+        let input = "\
+option \"inferred_tolerance_default\" \"USD:0.1\"
+
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Salary USD
+
+2024-01-15 * \"Larger residual within override\"
+  Assets:Cash         100.00 USD
+  Income:Salary      -100.05 USD
+";
+        let elab = elaborate(input).expect("USD override should accept the 0.05 residual");
+        // Synthesized empty-account posting should absorb +0.05 USD.
+        let mut found_amt: Option<rust_decimal::Decimal> = None;
+        for tx in &elab.transactions {
+            for p in &tx.postings {
+                if p.account.is_empty() {
+                    if let Some(amt) = p.amount.as_ref().and_then(|a| a.by_commodity.get("USD")) {
+                        // Reconstruct decimal: mantissa / 10^scale (sign in mantissa_high).
+                        let mantissa = (amt.mantissa_high as i128) << 64 | amt.mantissa_low as i128;
+                        let d = rust_decimal::Decimal::from_i128_with_scale(mantissa, amt.scale);
+                        found_amt = Some(d);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            found_amt,
+            Some(rust_decimal::Decimal::new(5, 2)),
+            "rounding posting should absorb +0.05 USD when override permits it"
+        );
+    }
+
+    #[test]
+    fn inferred_tolerance_default_does_not_apply_to_other_commodities() {
+        // The override is per-commodity. A USD override doesn't widen
+        // EUR tolerance.
+        let input = "\
+option \"inferred_tolerance_default\" \"USD:0.1\"
+
+2024-01-01 open Assets:Cash:EUR EUR
+2024-01-01 open Income:Salary:EUR EUR
+
+2024-01-15 * \"EUR over default tolerance\"
+  Assets:Cash:EUR         100.00 EUR
+  Income:Salary:EUR      -100.05 EUR
+";
+        let err = elaborate(input).expect_err("USD override must not affect EUR");
+        assert!(format!("{err:?}").contains("TransactionDoesNotBalance"));
+    }
+
     // -- pad evaluator (#147) -----------------------------------------------
 
     fn elaborate(input: &str) -> Result<crate::elaboration::Journal, Box<dyn std::error::Error>> {
-        let journal = parse_beancount(input)?;
+        let (journal, options) = parse_beancount_with_options(input)?;
         let mut hir: crate::resolution::HIR = journal.try_into()?;
         // Match BeancountFrontend's default (fraction = 0.5) so the
         // elaborator applies Beancount-style tolerance.
@@ -1749,6 +1848,16 @@ popmeta tag:
             crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
                 rust_decimal::Decimal::new(5, 1),
             );
+        for (k, v) in &options {
+            if k == "inferred_tolerance_default"
+                && let Some((commodity, decimal)) = v.split_once(':')
+                && let Ok(d) = decimal.trim().parse::<rust_decimal::Decimal>()
+            {
+                hir.global_context
+                    .tolerance_overrides
+                    .insert(commodity.trim().to_string(), d);
+            }
+        }
         Ok(hir.try_into()?)
     }
 

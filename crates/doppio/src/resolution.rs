@@ -126,12 +126,15 @@ pub struct GlobalContext {
     /// Properties declared in `tag` directives.
     pub tag_properties: BTreeMap<String, TagProperties>,
     /// How the elaborator handles small per-transaction balance
-    /// residuals. The Beancount frontend sets this to
-    /// [`ToleranceMode::HalfSmallestPrecision`] (matching bean-check's
-    /// behaviour); the ledger and hledger frontends leave it
-    /// [`ToleranceMode::Strict`] (every transaction must balance to
-    /// exact zero per commodity).
+    /// residuals. See [`ToleranceMode`].
     pub tolerance_mode: ToleranceMode,
+    /// Per-commodity absolute tolerance overrides, layered on top of
+    /// [`Self::tolerance_mode`]. Populated by Beancount's
+    /// `option "inferred_tolerance_default" "COMMODITY:VALUE"`
+    /// directive. When a commodity is present in this map, the
+    /// elaborator uses the override directly; otherwise it falls back
+    /// to the `tolerance_mode` rule.
+    pub tolerance_overrides: BTreeMap<String, rust_decimal::Decimal>,
 }
 
 /// Per-transaction balance tolerance policy.
