@@ -1418,6 +1418,36 @@ nothing after this matters
         assert_eq!(re.amount_in("EUR"), Some(dec!(-30.00)));
     }
 
+    /// hledger's `account Foo ; type:R` tag is captured as metadata on
+    /// the declared account; the elaborator's existing ancestor walk
+    /// then propagates it to undeclared descendants. No tree type, no
+    /// new path — generic metadata inheritance already covers the type
+    /// tag. Pinning this here so the behaviour can't silently regress.
+    #[test]
+    fn account_type_tag_inherits_to_undeclared_descendant() {
+        let input = "\
+account Income          ; type:R
+
+2024-01-15 * Salary
+    Income:Salary    -100 USD
+    Assets:Cash       100 USD
+";
+        let ast = parse_hledger(input).expect("parse");
+        let hir: crate::resolution::HIR = ast.try_into().expect("resolution");
+        let journal: crate::elaboration::Journal = crate::elaborate(hir).expect("elaboration");
+        let salary = journal
+            .accounts
+            .get("Income:Salary")
+            .expect("Income:Salary in elaborated accounts");
+        assert_eq!(
+            salary.metadata.get("type").map(String::as_str),
+            Some("R"),
+            "type:R declared on parent Income must propagate to undeclared Income:Salary; \
+             got metadata = {:?}",
+            salary.metadata
+        );
+    }
+
     #[test]
     fn test_lot_annotation_double_brace_total_form() {
         // `{{$1500}}` declares the total lot cost. The adapter records
