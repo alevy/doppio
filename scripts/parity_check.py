@@ -109,7 +109,7 @@ _LEDGER_AMOUNT = re.compile(
     r"\s*"
     r"(?P<num>[-+]?[\d,]+(?:\.\d+)?)"           # numeric body
     r"\s*"
-    r"(?P<suffix>[A-Z][A-Z0-9_'.\-]*)?"         # commodity suffix word
+    r"(?P<suffix>[A-Za-z][A-Za-z0-9_'.\-]*)?"   # commodity suffix word (case-insensitive; ledger-cli allows lowercase like `bytes`)
     r"\s*$"
 )
 
@@ -232,6 +232,8 @@ POSITIVE: list[Case] = [
     # Upstream-sourced corpus under tests/parity/. Each fixture's
     # leading comment block records source URL + commit SHA + license
     # per the convention documented in tests/parity/README.md.
+    Case("ledger:transfer",       REPO / "tests/parity/ledger-transfer.ledger",  ledger_balances),
+    Case("hledger:quickstart",    REPO / "tests/parity/hledger-quickstart.journal", hledger_balances),
     Case("hledger:ascii",         REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
     Case("hledger:zerostar",      REPO / "tests/parity/hledger-zerostar.journal", hledger_balances),
     Case("hledger:zerostar-subtree", REPO / "tests/parity/hledger-zerostar-subtree.journal", hledger_balances),
@@ -239,6 +241,7 @@ POSITIVE: list[Case] = [
     Case("beancount:example",     REPO / "tests/parity/bean-example.beancount", beancount_balances),
     Case("beancount:subtree-balance", REPO / "tests/parity/beancount-subtree-balance.beancount", beancount_balances),
     Case("beancount:subtree-pad",     REPO / "tests/parity/beancount-subtree-pad.beancount",     beancount_balances),
+    Case("beancount:starter",         REPO / "tests/parity/beancount-starter.beancount",         beancount_balances),
 ]
 
 NEGATIVE: list[Case] = [
