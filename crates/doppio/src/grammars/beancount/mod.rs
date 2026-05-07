@@ -1346,6 +1346,105 @@ mod tests {
         );
     }
 
+    /// Cost-spec arithmetic: parenthesised expressions inside the
+    /// `{...}` lot annotation evaluate per the same Pratt parser the
+    /// posting amount uses. Pin a few representative shapes so a
+    /// future grammar / adapter refactor can't silently drop them.
+    /// Probed against bean-check 3.2.0; same per-unit basis on both
+    /// sides. Refs #185.
+    #[test]
+    fn lot_cost_parenthesised_addition() {
+        // {(150 + 5) USD} → per-unit 155 USD; transaction balances at -1550.
+        let input = "\
+2024-01-01 open Assets:Brokerage USD
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-02-15 * \"Buy with computed basis\"
+  Assets:Brokerage    10 AAPL {(150.00 + 5.00) USD}
+  Assets:Bank:Checking      -1550.00 USD
+";
+        let elab = elaborate(input).expect("parenthesised lot-cost arithmetic must elaborate");
+        let lot = elab.transactions[0].postings[0]
+            .lot
+            .as_ref()
+            .expect("lot present");
+        let cost = lot.cost.as_ref().expect("cost present");
+        let usd = cost
+            .by_commodity
+            .get("USD")
+            .expect("USD cost present")
+            .to_decimal();
+        assert_eq!(
+            usd,
+            dec!(155.00),
+            "per-unit basis from `(150 + 5) USD` should be 155.00; got {usd}"
+        );
+    }
+
+    /// Cost-spec arithmetic: division derives the per-unit basis from
+    /// a total. Equivalent to `{{1500 USD}}` for 10 units but written
+    /// as `{1500/10 USD}` instead of the double-brace shorthand. Both
+    /// must produce the same elaborated lot.
+    #[test]
+    fn lot_cost_division_matches_double_brace_total_form() {
+        let arithmetic_form = "\
+2024-01-01 open Assets:Brokerage USD
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-02-15 * \"Buy with explicit divide\"
+  Assets:Brokerage    10 AAPL {(1500.00 / 10) USD}
+  Assets:Bank:Checking      -1500.00 USD
+";
+        let total_brace_form = "\
+2024-01-01 open Assets:Brokerage USD
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-02-15 * \"Buy with double-brace total\"
+  Assets:Brokerage    10 AAPL {{1500.00 USD}}
+  Assets:Bank:Checking      -1500.00 USD
+";
+        let lhs = elaborate(arithmetic_form).expect("explicit-divide lot must elaborate");
+        let rhs = elaborate(total_brace_form).expect("double-brace lot must elaborate");
+        let lhs_lot = lhs.transactions[0].postings[0]
+            .lot
+            .as_ref()
+            .expect("lot present (arithmetic)");
+        let rhs_lot = rhs.transactions[0].postings[0]
+            .lot
+            .as_ref()
+            .expect("lot present (double-brace)");
+        assert_eq!(
+            lhs_lot, rhs_lot,
+            "explicit-divide and double-brace forms should produce identical elaborated lots"
+        );
+    }
+
+    /// Cost-spec arithmetic: nested parentheses + mixed operators.
+    /// `((1500 + 50) / 10) USD` → per-unit 155.00.
+    #[test]
+    fn lot_cost_nested_parens_with_mixed_operators() {
+        let input = "\
+2024-01-01 open Assets:Brokerage USD
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-02-15 * \"Buy with computed basis (commission included)\"
+  Assets:Brokerage    10 AAPL {((1500.00 + 50.00) / 10) USD}
+  Assets:Bank:Checking      -1550.00 USD
+";
+        let elab = elaborate(input).expect("nested-parens lot-cost must elaborate");
+        let lot = elab.transactions[0].postings[0]
+            .lot
+            .as_ref()
+            .expect("lot present");
+        let cost = lot.cost.as_ref().expect("cost present");
+        let usd = cost
+            .by_commodity
+            .get("USD")
+            .expect("USD cost present")
+            .to_decimal();
+        assert_eq!(usd, dec!(155.00));
+    }
+
     #[test]
     fn lot_price_at_per_unit() {
         let input = "\
