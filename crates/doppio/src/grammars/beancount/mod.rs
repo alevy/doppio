@@ -43,8 +43,11 @@
 //!   The proto wire format always carries the canonical per-unit form.
 //! - `pad` is preserved as an [`Entry::Pad`] marker but the elaborator does
 //!   not yet act on it; the algorithm is the subject of #147.
-//! - Org-mode outline headings (`*`, `**`, `***`, ... at column 0) are
-//!   accepted and silently dropped, matching Beancount itself.
+//! - Org-mode outline headings (`*`, `**`, `***`, ... at column 0)
+//!   are accepted and silently dropped, matching Beancount itself.
+//! - Shebang lines (`#!/usr/bin/env bean-check`) and Org-mode
+//!   file-level startup directives (`#+TITLE: ...`, `#+STARTUP:
+//!   showall`, etc.) are accepted and silently dropped.
 //!
 //! ## String escape sequences
 //!
@@ -191,10 +194,13 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                 Rule::comment_line => {
                     entries.push(Entry::Comment(pair.as_str().to_string()));
                 }
-                Rule::org_mode_heading => {
-                    // Beancount accepts org-mode `*` outline headings as
-                    // top-level no-ops. Preserve as a comment so the source
-                    // line survives the round-trip; resolution discards it.
+                Rule::org_mode_heading | Rule::shebang_line | Rule::org_mode_meta => {
+                    // Beancount accepts these as top-level no-ops:
+                    //   - `*` / `**` / ... outline headings (#190)
+                    //   - `#!/usr/bin/env bean-web` shebangs (#199)
+                    //   - `#+STARTUP: showall` org-mode startup (#199)
+                    // Preserve as comments so the source line survives
+                    // the round-trip; resolution discards them.
                     entries.push(Entry::Comment(pair.as_str().to_string()));
                 }
                 Rule::include_directive => {
@@ -921,6 +927,50 @@ mod tests {
         parse_one(Rule::org_mode_heading, "* Personal");
         parse_one(Rule::org_mode_heading, "** Bank accounts");
         parse_one(Rule::org_mode_heading, "*** Deeply nested");
+    }
+
+    #[test]
+    fn shebang_and_org_mode_meta_grammar_rules() {
+        parse_one(Rule::shebang_line, "#!/usr/bin/env bean-check");
+        parse_one(Rule::shebang_line, "#!/usr/bin/python3");
+        parse_one(Rule::org_mode_meta, "#+STARTUP: showall");
+        parse_one(Rule::org_mode_meta, "#+TITLE: My Personal Journal");
+        parse_one(Rule::org_mode_meta, "#+OPTIONS: toc:nil");
+    }
+
+    #[test]
+    fn beancount_file_with_shebang_and_org_meta_prelude() {
+        // Real upstream Beancount files (e.g. the bean-web examples)
+        // open with a shebang and one or more org-mode #+ directives;
+        // both must be accepted as top-level no-ops.
+        let input = "\
+#!/usr/bin/env bean-check
+#+TITLE: Test journal
+#+STARTUP: showall
+
+2024-01-01 open Assets:Cash USD
+2024-01-15 * \"Test\"
+  Assets:Cash      100.00 USD
+  Income:Initial  -100.00 USD
+";
+        let journal = parse_beancount(input).expect("parse with prelude");
+        let txn_count = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Transaction(_)))
+            .count();
+        assert_eq!(txn_count, 1, "transaction should still be picked up");
+        // Shebang + two #+ lines preserved as comments.
+        let comment_count = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Comment(_)))
+            .count();
+        assert!(
+            comment_count >= 3,
+            "shebang + 2 #+ lines should each become Entry::Comment, got {} comments",
+            comment_count
+        );
     }
 
     // -- adapter / Frontend tests --------------------------------------------

@@ -1,3 +1,7 @@
+#!/usr/bin/env bean-check
+;; -*- mode: org; mode: beancount; -*-
+#+TITLE: doppio Beancount sample fixture
+;
 ; Sample Beancount journal exercising every directive the grammar
 ; supports (except `plugin`, which is exercised at the grammar-rule
 ; level in `mod.rs` -- including a real plugin name here would tie the
