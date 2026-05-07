@@ -22,7 +22,6 @@
 //   - Automated posting arithmetic bodies (`= query\n    account  *1.1`):
 //     the auto_rule rule captures the shape but the posting amounts inside
 //     automated rules that use `*N` will fail to parse.  See TODO(#103).
-//   - `comment` / `end comment` block comment syntax.
 //   - Full hledger date inference from a preceding `Y year` directive.
 //   - Directive-attached tags (metadata on the same line as a directive).
 // ============================================================
@@ -40,6 +39,7 @@ entry = _{
     | commodity_directive
     | default_directive
     | include_directive
+    | block_comment
     | comment_line
 }
 
@@ -187,6 +187,24 @@ ws = _{ " " | "\t" }
 note = ${ ";" ~ note_str }
 note_str = ${ (!NEWLINE ~ ANY)* }
 comment_line = @{ (";" | "#") ~ (!NEWLINE ~ ANY)* }
+
+// `comment` ... `end comment` block-comment form. hledger ignores
+// every line in between; we capture the inner text verbatim and
+// pass it through as Entry::Comment so resolution discards it like
+// any other comment. The opening `comment` must appear on its own
+// line; an unclosed block (no matching `end comment`) is implicitly
+// terminated by EOF, matching hledger's behaviour.
+//
+// The body lookahead requires `end comment` to be followed by
+// NEWLINE or EOI so that a literal `end comment` *substring* inside
+// the body's prose (e.g. inside backticks) does not prematurely
+// terminate the block.
+block_comment = ${
+    "comment" ~ NEWLINE ~
+    block_comment_body ~
+    (("end comment" ~ (NEWLINE | EOI)) | EOI)
+}
+block_comment_body = @{ (!("end comment" ~ (NEWLINE | EOI)) ~ ANY)* }
 
 // --- Historical prices ---
 

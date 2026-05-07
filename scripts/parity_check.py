@@ -223,8 +223,9 @@ POSITIVE: list[Case] = [
     # Upstream-sourced corpus under tests/parity/. Each fixture's
     # leading comment block records source URL + commit SHA + license
     # per the convention documented in tests/parity/README.md.
-    Case("hledger:ascii",    REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
-    Case("hledger:zerostar", REPO / "tests/parity/hledger-zerostar.journal", hledger_balances),
+    Case("hledger:ascii",         REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
+    Case("hledger:zerostar",      REPO / "tests/parity/hledger-zerostar.journal", hledger_balances),
+    Case("hledger:block-comment", REPO / "tests/parity/hledger-block-comment.journal", hledger_balances),
 ]
 
 NEGATIVE: list[Case] = [
