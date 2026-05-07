@@ -1,0 +1,26 @@
+; Beancount's `balance` directive aggregates the entire account
+; subtree (parent + every descendant). Introduced for #214.
+;
+; Setup: only the descendant `Income:Salary:Base` has direct postings
+; (-100 USD); the parent `Income:Salary` has none.
+;   - subtree sum on `Income:Salary` = -100 USD
+;   - direct balance on `Income:Salary` = 0 USD
+;
+; Asserting `-100 USD` on `Income:Salary` therefore distinguishes the
+; two: subtree-aware semantics pass, direct-only semantics fail.
+;
+; bean-check 3.2.0 accepts this file (exit 0), confirming subtree
+; semantics. doppio's frontend selects the same scope via
+; `AssertionScope::Subtree`.
+
+option "operating_currency" "USD"
+
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Salary USD
+2024-01-01 open Income:Salary:Base USD
+
+2024-06-01 * "Salary"
+    Assets:Cash             100.00 USD
+    Income:Salary:Base     -100.00 USD
+
+2024-12-31 balance Income:Salary -100 USD

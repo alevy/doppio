@@ -376,6 +376,7 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
         let tolerance_mode = value.global_context.tolerance_mode;
         let tolerance_overrides = value.global_context.tolerance_overrides.clone();
         let balance_mode = value.global_context.balance_mode.clone();
+        let assertion_scope = value.global_context.assertion_scope;
 
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
@@ -403,12 +404,27 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                         )?;
 
                     // Look up the account's current balance for this commodity.
-                    let mut actual_amount = state
-                        .account_balances
-                        .get(&assertion.account)
-                        .and_then(|ab| ab.commodity.get(&expected_commodity))
-                        .copied()
-                        .unwrap_or(Decimal::ZERO);
+                    // Beancount's `balance` directive aggregates the entire account
+                    // subtree (parent + every descendant); ledger-cli/hledger's
+                    // posting-level `=`/`==` and the doppio-extended top-level form
+                    // check the named account in isolation. The frontend selects via
+                    // [`crate::resolution::AssertionScope`]. A pending pad on the
+                    // same account uses the same lookup so the synthesized
+                    // pad amount is the residual against the right scope.
+                    let mut actual_amount = match assertion_scope {
+                        crate::resolution::AssertionScope::Direct => state
+                            .account_balances
+                            .get(&assertion.account)
+                            .and_then(|ab| ab.commodity.get(&expected_commodity))
+                            .copied()
+                            .unwrap_or(Decimal::ZERO),
+                        crate::resolution::AssertionScope::Subtree => {
+                            subtree_commodity_balance(&state.account_balances, &assertion.account)
+                                .get(&expected_commodity)
+                                .copied()
+                                .unwrap_or(Decimal::ZERO)
+                        }
+                    };
 
                     // If a pad on this account is pending, synthesize a
                     // balancing transaction (back-dated to the pad's date)
@@ -765,29 +781,17 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                                         &state,
                                     )?;
 
-                                    // Aggregate the named account *and its subtree* (every
-                                    // account whose name has `account_name + ":"` as a prefix).
-                                    // hledger's `==*` operates on the entire subtree, not just
-                                    // the named account: e.g. `Income ==* 0` zeroes the whole
-                                    // `Income:*` subtree by synthesizing a corrective posting
-                                    // on `Income` itself.
-                                    let prefix = format!("{account_name}:");
-                                    let mut subtree_totals: BTreeMap<String, Decimal> =
-                                        BTreeMap::new();
-                                    for (name, balances) in &state.account_balances {
-                                        if name == &account_name || name.starts_with(&prefix) {
-                                            for (c, v) in &balances.commodity {
-                                                if !v.is_zero() {
-                                                    *subtree_totals
-                                                        .entry(c.clone())
-                                                        .or_default() += *v;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    let deltas: Vec<(String, Decimal)> = subtree_totals
+                                    // Aggregate the named account *and its subtree*. hledger's
+                                    // `==*` operates on the entire subtree, not just the named
+                                    // account: e.g. `Income ==* 0` zeroes the whole `Income:*`
+                                    // subtree by synthesizing a corrective posting on `Income`
+                                    // itself.
+                                    let deltas: Vec<(String, Decimal)> =
+                                        subtree_commodity_balance(
+                                            &state.account_balances,
+                                            &account_name,
+                                        )
                                         .into_iter()
-                                        .filter(|(_, v)| !v.is_zero())
                                         .map(|(c, v)| (c, target_value - v))
                                         .collect();
 
@@ -1326,6 +1330,46 @@ fn ancestor_prefixes(name: &str) -> Vec<String> {
     }
     prefixes.push(name.to_string());
     prefixes
+}
+
+/// Visit `account` itself (if present in `map`) and every descendant
+/// whose name has `account + ":"` as a prefix, in lexicographic order.
+///
+/// Account names are colon-separated paths. With keys held in a flat
+/// `BTreeMap<String, _>`, the subtree is exactly the half-open range
+/// `[account + ":", account + ";")`: `:` is `0x3A` and `;` is `0x3B`,
+/// and no byte sequence sorts strictly between them, so every key in
+/// that range begins with `account + ":"`. The named account itself
+/// is fetched separately because it sorts immediately before the
+/// range.
+fn for_each_descendant<T>(map: &BTreeMap<String, T>, account: &str, mut f: impl FnMut(&str, &T)) {
+    let prefix = format!("{account}:");
+    let upper = format!("{account};");
+    if let Some((k, v)) = map.get_key_value(account) {
+        f(k.as_str(), v);
+    }
+    for (k, v) in map.range::<String, _>(prefix..upper) {
+        f(k.as_str(), v);
+    }
+}
+
+/// Per-commodity sum of the running balance across `account` and
+/// every descendant. Used by Beancount's subtree-aware `balance`
+/// directive (#214) and by hledger's `==*` synthesis (#207). Zero
+/// entries are dropped.
+fn subtree_commodity_balance(
+    account_balances: &BTreeMap<String, AccountBalances>,
+    account: &str,
+) -> BTreeMap<String, Decimal> {
+    let mut out: BTreeMap<String, Decimal> = BTreeMap::new();
+    for_each_descendant(account_balances, account, |_, balances| {
+        for (c, v) in &balances.commodity {
+            if !v.is_zero() {
+                *out.entry(c.clone()).or_default() += *v;
+            }
+        }
+    });
+    out
 }
 
 /// Evaluate tag-level assert/check directives for a set of metadata key-value pairs.
