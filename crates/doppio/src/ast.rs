@@ -521,6 +521,12 @@ pub enum AmountDetails {
     /// A balance assignment: `= target_balance`, with no explicit debit/credit
     /// value. The posting amount is computed as `target - current_balance`.
     BalanceAssignment(ValueExpr),
+    /// hledger's "balance everything" form: `=* target` or `==* target`,
+    /// typically `==* 0` in retained-earnings transactions. Synthesizes a
+    /// multi-commodity posting that brings the account's balance in
+    /// every commodity it currently holds to `target` (which is
+    /// expected to be a bare number with no commodity).
+    BalanceAssignmentAllCommodities(ValueExpr),
 }
 
 impl<I: Into<ValueExpr>> From<I> for AmountDetails {
@@ -568,6 +574,9 @@ impl Display for AmountDetails {
             }
             AmountDetails::BalanceAssignment(value) => {
                 write!(f, "={value}")
+            }
+            AmountDetails::BalanceAssignmentAllCommodities(value) => {
+                write!(f, "==* {value}")
             }
         }
     }
