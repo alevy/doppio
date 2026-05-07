@@ -433,7 +433,18 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
                     // below passes by construction. The synthesized
                     // transaction is also pushed into the output journal so
                     // downstream consumers see the inserted postings.
-                    if let Some(pad) = state.pending_pads.remove(&assertion.account) {
+                    //
+                    // The pad is *not* consumed on first use: a single pad
+                    // covers every commodity asserted on the same target
+                    // account up to the next non-zero direct posting. Each
+                    // assertion in a different commodity sees `actual_amount
+                    // == 0` (no prior postings in that commodity) and
+                    // synthesises its own pad transaction; subsequent
+                    // assertions in an already-padded commodity see
+                    // `actual == expected`, compute `diff = 0`, and skip
+                    // synthesis naturally. This matches bean-check 3.2.0's
+                    // multi-commodity pad behaviour. See #220.
+                    if let Some(pad) = state.pending_pads.get(&assertion.account).cloned() {
                         let diff = expected_amount - actual_amount;
                         if !diff.is_zero() {
                             // Ensure both accounts exist in the accounts map

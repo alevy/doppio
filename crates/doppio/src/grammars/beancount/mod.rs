@@ -2039,6 +2039,90 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
         );
     }
 
+    /// A pad followed by two same-day assertions on different
+    /// commodities synthesises a separate pad transaction per
+    /// commodity. The pad is not consumed by the first assertion.
+    /// See #220.
+    #[test]
+    fn pad_covers_every_asserted_commodity_on_same_target() {
+        let input = "\
+2024-01-01 open Assets:Cash
+2024-01-01 open Equity:OpeningBalances
+
+2024-01-02 pad  Assets:Cash  Equity:OpeningBalances
+
+2024-01-15 balance  Assets:Cash    200 CAD
+2024-01-15 balance  Assets:Cash    300 USD
+";
+        let elab = elaborate(input).expect("multi-commodity pad must reconcile");
+        let pad_txs: Vec<_> = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .collect();
+        assert_eq!(
+            pad_txs.len(),
+            2,
+            "one pad txn per asserted commodity, expected 2"
+        );
+        // Each pad txn places its delta on the literal pad target.
+        let cad_pad = pad_txs
+            .iter()
+            .find(|t| {
+                t.postings
+                    .iter()
+                    .any(|p| p.account == "Assets:Cash" && p.amount_in("CAD").is_some())
+            })
+            .expect("CAD pad txn");
+        let cad_target = cad_pad
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .unwrap();
+        assert_eq!(cad_target.amount_in("CAD"), Some(dec!(200)));
+        let usd_pad = pad_txs
+            .iter()
+            .find(|t| {
+                t.postings
+                    .iter()
+                    .any(|p| p.account == "Assets:Cash" && p.amount_in("USD").is_some())
+            })
+            .expect("USD pad txn");
+        let usd_target = usd_pad
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .unwrap();
+        assert_eq!(usd_target.amount_in("USD"), Some(dec!(300)));
+    }
+
+    /// Repeating an assertion on an already-padded commodity is a
+    /// no-op: the pad's `diff` is zero so no second pad transaction
+    /// is synthesised. Pins the natural-no-op behaviour after the
+    /// pad-not-consumed change for #220.
+    #[test]
+    fn pad_does_not_double_synthesise_for_repeated_commodity() {
+        let input = "\
+2024-01-01 open Assets:Cash
+2024-01-01 open Equity:OpeningBalances
+
+2024-01-02 pad  Assets:Cash  Equity:OpeningBalances
+
+2024-01-15 balance  Assets:Cash    200 USD
+2024-01-31 balance  Assets:Cash    200 USD
+";
+        let elab = elaborate(input).expect("repeated same-commodity assertion must not double-pad");
+        let pad_txs = elab
+            .transactions
+            .iter()
+            .filter(|t| t.metadata.contains_key("pad"))
+            .count();
+        assert_eq!(
+            pad_txs, 1,
+            "exactly one pad txn for the single padded commodity"
+        );
+    }
+
     #[test]
     fn pad_with_zero_gap_emits_no_transaction() {
         // If the running balance already equals the asserted amount, the
