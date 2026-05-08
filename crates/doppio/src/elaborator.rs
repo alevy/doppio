@@ -583,44 +583,11 @@ pub fn elaborate(
         let assertion_scope = config.assertion_scope;
         let lot_validation_mode = config.lot_validation_mode;
 
-        // Pre-compile auto-rule queries to regex patterns so they can be
-        // applied efficiently during the per-transaction loop below.
-        // Invalid patterns propagate as ElaborationError::EvaluationError
-        // (reusing the existing InvalidRegexPattern variant).
-        //
-        // Extract auto_rules from `value` before the entry loop so we
-        // can iterate `value.entries` (consuming it) without conflicting
-        // with a borrow on `value.auto_rules`.
+        // Auto-rule queries are pre-compiled to regexes during resolution;
+        // here we just need to extract the rules so we can iterate
+        // `value.entries` (consuming it) without conflicting with a borrow
+        // on `value.auto_rules`.
         let auto_rules = value.auto_rules;
-        let compiled_auto_rules: Vec<(regex::Regex, Vec<resolution::ResolvedAutoRulePosting>)> =
-            auto_rules
-                .into_iter()
-                .map(|rule| {
-                    // Strip surrounding `/` delimiters if the query is a regex
-                    // literal `/.../`; otherwise treat the string as a literal
-                    // account-name prefix anchored at the start. This mirrors
-                    // ledger-cli's matching behaviour: bare strings match as
-                    // case-insensitive substrings; for simplicity doppio treats
-                    // them as case-insensitive substring regexes.
-                    let pattern = if rule.query.starts_with('/')
-                        && rule.query.ends_with('/')
-                        && rule.query.len() >= 2
-                    {
-                        rule.query[1..rule.query.len() - 1].to_string()
-                    } else {
-                        // Bare string: match as case-insensitive substring.
-                        format!("(?i){}", regex::escape(&rule.query))
-                    };
-                    regex::Regex::new(&pattern)
-                        .map(|re| (re, rule.postings))
-                        .map_err(|e| {
-                            ElaborationError::EvaluationError(EvaluationError::InvalidRegexPattern(
-                                pattern,
-                                e.to_string(),
-                            ))
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
 
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
@@ -1752,7 +1719,7 @@ pub fn elaborate(
                     // against the postings that existed BEFORE rule application
                     // (snapshot the length first).
                     let base_posting_count = resolved_postings.len();
-                    for (regex, rule_postings) in &compiled_auto_rules {
+                    for rule in &auto_rules {
                         // Walk postings that existed before any rule application
                         // (indices 0..base_posting_count). Collect the account
                         // name and amounts eagerly so we don't hold a borrow on
@@ -1761,7 +1728,7 @@ pub fn elaborate(
                             ..base_posting_count)
                             .filter_map(|pi| {
                                 let p = &resolved_postings[pi];
-                                if !regex.is_match(&p.account) {
+                                if !rule.query.is_match(&p.account) {
                                     return None;
                                 }
                                 let amounts: Vec<(String, Decimal)> =
@@ -1771,7 +1738,7 @@ pub fn elaborate(
                             .collect();
 
                         for (_matched_account, matched_amounts) in matches {
-                            for rule_posting in rule_postings.iter() {
+                            for rule_posting in rule.postings.iter() {
                                 let synth_account = entry_context
                                     .account_aliases
                                     .get(&rule_posting.account)
@@ -6003,6 +5970,29 @@ account Assets:Savings
             2,
             "no synthesised postings expected from Beancount journal"
         );
+    }
+
+    /// An auto-rule with an invalid regex query fails at *resolution* time
+    /// (a syntactic error in the source), not during elaboration.
+    #[test]
+    fn auto_rule_invalid_regex_fails_at_resolution() {
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let input = "\
+= /[unclosed/
+    (Liabilities:Bad)  $1.00
+
+2024-01-01 * Salary
+    Income:Salary  $-100.00
+    Assets:Checking
+";
+        let ast = parse_ledger(input).expect("parse should succeed");
+        let err = HIR::try_from(ast).expect_err("resolution should reject invalid regex");
+        match err {
+            resolution::ResolutionError::InvalidAutoRuleQuery(query, _) => {
+                assert_eq!(query, "/[unclosed/");
+            }
+            other => panic!("expected InvalidAutoRuleQuery, got {other:?}"),
+        }
     }
 
     /// hledger auto-rule with multiplier semantics matches ledger behaviour.
