@@ -1931,4 +1931,33 @@ account Assets:Savings
         let input = "define assetChecker(amt) = (amt > -100.00 or (tag(\"TaxImplication\") !~ /^\\s*$/ and tag(\"Entity\") !~ /^\\s*$/))\n";
         parse_ledger(input).expect("issue #89 input should parse");
     }
+
+    #[test]
+    fn test_issue_247_null_posting_with_trailing_whitespace() {
+        // Regression test for issue #247: real-world journals (e.g.
+        // ledger-cli's own test/input/standard.dat) pad account names
+        // to a fixed column with trailing spaces, even on null
+        // postings. The parser must tolerate trailing whitespace
+        // between the last meaningful token on a posting line and the
+        // newline. (Built via concat! so trailing whitespace is
+        // explicit and survives editor trimming.)
+        let input = concat!(
+            "2002/01/01 * Test\n",
+            "    Assets:Checking         $100.00\n",
+            "    Equity:Opening              \n",
+        );
+        parse_ledger(input).expect("trailing whitespace on null posting should parse");
+    }
+
+    #[test]
+    fn test_issue_247_amount_posting_with_trailing_whitespace() {
+        // Same regression but with an explicit amount: trailing
+        // whitespace after the amount must also parse.
+        let input = concat!(
+            "2002/01/01 * Test\n",
+            "    Assets:Checking         $100.00      \n",
+            "    Equity:Opening         $-100.00\n",
+        );
+        parse_ledger(input).expect("trailing whitespace on amount posting should parse");
+    }
 }
