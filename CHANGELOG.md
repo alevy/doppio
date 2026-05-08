@@ -30,6 +30,14 @@
 
 ### Added
 
+- **Double-quoted commodity names** (#262): both the ledger-cli and hledger
+  frontends now accept commodity identifiers enclosed in double quotes, e.g.
+  `"Plans: Wildthorn Mail"`.  The surrounding quotes are stripped so the stored
+  commodity name is the bare string without delimiters.  This is useful for
+  commodity names that contain spaces, colons, or other characters that are
+  not allowed in bare identifier form.  Empty quoted names (`""`) are rejected
+  by the grammar.
+
 - **Explicit `*N` multiplier syntax in automated-rule bodies** (#254): both the
   ledger-cli and hledger frontends now accept `*N` (e.g. `*-1`, `* 0.5`,
   `*0.12`) as a posting amount inside an `= QUERY` auto-rule body. The `*N`

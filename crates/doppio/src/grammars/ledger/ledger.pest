@@ -410,12 +410,18 @@ term = ${ (prefix_op ~ ws*)? ~ primary }
 // base_primary is silent, so the parser sees the child rule directly.
 primary = { base_primary ~ access* }
 
+// Ordering note: `amount` is tried before `string` so that commodity-first
+// quoted amounts like `"Long Name" 5` are consumed by the `amount` rule
+// (commodity ~ ws* ~ number) rather than by `string`.  A quoted string that
+// is *not* followed by a number still falls through to `string` because the
+// `amount` alternatives all require a numeric component.  `function_call` is
+// first because it starts with an identifier, not a quote.
 base_primary = _{
     function_call
+    | amount
     | string
     | "(" ~ bool_expr ~ ")"
     | "(" ~ expr ~ ")"
-    | amount
     | commodity
 }
 
@@ -450,10 +456,16 @@ number = @{
     | "." ~ ASCII_DIGIT+
 }
 
-// A commodity is either one or more currency symbols ($, €, £, ¥) or
-// an identifier-style name (USD, BTC, AAPL, …).
+// A commodity is either one or more currency symbols ($, €, £, ¥), a
+// double-quoted opaque name (e.g. "Plans: Wildthorn Mail"), or an
+// identifier-style name (USD, BTC, AAPL, …).  The quoted alternative is
+// listed second so that a leading `"` is always consumed by it rather than
+// by the symbol alternative; the identifier alternative is last so that bare
+// names still work.  Escape sequences are not supported inside quoted names
+// (ledger-cli does not support them either); embedded quotes are disallowed.
 commodity = @{
     symbol+
+    | "\"" ~ (!"\"" ~ ANY)+ ~ "\""
     | (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "." | ":" | "#")*
 }
 
