@@ -168,6 +168,9 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     let auto_rule = parse_auto_rule(pair)?;
                     entries.push(Entry::AutoRule(auto_rule));
                 }
+                Rule::c_directive => {
+                    entries.push(parse_c_directive(pair)?);
+                }
                 Rule::apply_tag_directive => {
                     // `apply tag <key>` or `apply tag <key>: <value>`. Push
                     // onto the active stack so subsequent transactions
@@ -369,6 +372,27 @@ fn parse_historical_price(pair: Pair<Rule>) -> HistoricalPrice {
         commodity,
         price: parse_expr(price_pair.expect("historical_price must have a price")),
     }
+}
+
+fn parse_c_directive(pair: Pair<Rule>) -> Result<Entry, Box<dyn std::error::Error>> {
+    let mut amounts = pair.into_inner().filter(|p| p.as_rule() == Rule::c_amount);
+    let lhs = parse_c_amount(amounts.next().ok_or("c_directive: missing LHS amount")?)?;
+    let rhs = parse_c_amount(amounts.next().ok_or("c_directive: missing RHS amount")?)?;
+    Ok(Entry::CommodityConversion { lhs, rhs })
+}
+
+fn parse_c_amount(pair: Pair<Rule>) -> Result<CommodityAmount, Box<dyn std::error::Error>> {
+    let mut inner = pair.into_inner();
+    let number_str = inner.next().ok_or("c_amount: missing c_number")?.as_str();
+    let commodity = inner
+        .next()
+        .ok_or("c_amount: missing commodity")?
+        .as_str()
+        .to_string();
+    let value = number_str
+        .parse::<Decimal>()
+        .map_err(|e| format!("c_amount: invalid number `{number_str}`: {e}"))?;
+    Ok(CommodityAmount { value, commodity })
 }
 
 fn parse_alias_directive(pair: Pair<Rule>) -> Directive {

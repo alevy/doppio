@@ -28,6 +28,7 @@ entry = _{
     | transaction
     | directive
     | historical_price
+    | c_directive
     | comment_line
     | budget
     | auto_rule
@@ -238,6 +239,28 @@ comment_line = @{ (";" | "#" | "*" | "%" | "|") ~ (!NEWLINE ~ ANY)* }
 // The time component is optional; when absent the price applies to the whole day.
 historical_price = ${ "P" ~ ws+ ~ date ~ ws+ ~ (time ~ ws+)? ~ commodity ~ ws+ ~ value_expr ~ (NEWLINE | EOI) }
 
+// --- Commodity Conversion Directive ---
+
+// `C N1 X = N2 Y` — declares a fixed exchange rate between two commodities.
+// The LHS commodity (X) is canonical; the RHS (Y) is the alias.  Amounts in Y
+// are divided by (N1 * N2) to obtain their X-equivalent.  Each amount is a
+// concrete `<number><commodity>` pair — no arithmetic in the C directive.
+//
+// Example:  C 1.00s = 100c   (1 silver = 100 copper; canonical is s)
+//           C 1.00G = 100s   (1 gold = 100 silver;  canonical is G)
+//
+// ledger-cli only — hledger has no equivalent directive at the grammar level.
+c_directive = ${
+    "C" ~ ws+ ~ c_amount ~ ws* ~ "=" ~ ws* ~ c_amount ~ (NEWLINE | EOI)
+}
+
+// A bare concrete amount inside a `C` directive: digits (with optional decimal
+// point), immediately followed by the commodity symbol (no space allowed).
+// Both `100c` and `1.00s` are valid; symbol-first like `$1` is NOT used by
+// ledger-cli's C directive in practice.
+c_amount = ${ c_number ~ ws* ~ commodity }
+c_number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? }
+
 // An optional wall-clock time: HH:MM or HH:MM:SS.
 time = ${ ASCII_DIGIT{2} ~ ":" ~ ASCII_DIGIT{2} ~ (":" ~ ASCII_DIGIT{2})? }
 
@@ -415,6 +438,7 @@ function_call = ${ identifier ~ ws* ~ "(" ~ ws* ~ (expr ~ (ws* ~ "," ~ ws* ~ exp
 amount = ${
     (commodity ~ ws* ~ number)
     | (number ~ ws+ ~ !bool_op ~ commodity)
+    | (number ~ commodity)
     | number
 }
 

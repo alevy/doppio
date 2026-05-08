@@ -2581,25 +2581,34 @@ mod evaluator {
         let empty_meta = BTreeMap::default();
         match eval(val, eval_context, running_state, &empty_meta, EVAL_BUDGET)? {
             ast::ValueExpr::Amount { value, commodity } => {
-                let commodity = if let Some(commodity) = commodity {
-                    // Apply commodity alias (e.g. "Bitcoin" -> "BTC").
-                    // The divisor stored in commodity_conversions is ignored in
-                    // stage 1; it will be applied in stage 2 (#248) when full
-                    // `C` conversion semantics are wired through elaboration.
-                    eval_context
-                        .commodity_conversions
-                        .get(&commodity)
-                        .map(|(canonical, _divisor)| canonical.clone())
-                        .unwrap_or(commodity)
+                let (value, commodity) = if let Some(commodity) = commodity {
+                    // Apply commodity conversion: if the commodity appears in
+                    // commodity_conversions, divide the amount by the stored divisor
+                    // and rebrand to the canonical commodity.
+                    //
+                    // For plain aliases (from `commodity X\n  alias Y`) the divisor
+                    // is Decimal::ONE (a 1:1 rename), so the amount is unchanged.
+                    //
+                    // For `C N1 X = N2 Y` directives, divisor = N1 * N2:
+                    //   250c / 100 = 2.50s  (for C 1s = 100c)
+                    //   250c / 100 = 2.50c  (for C 100c = 1s, posting in canonical)
+                    if let Some((canonical, divisor)) =
+                        eval_context.commodity_conversions.get(&commodity)
+                    {
+                        (value / divisor, canonical.clone())
+                    } else {
+                        (value, commodity)
+                    }
                 } else {
                     // No commodity in the expression -- try context default, then
                     // the caller-supplied fallback (e.g. inferred from account balance).
-                    eval_context
+                    let commodity = eval_context
                         .default_commodity
                         .as_deref()
                         .or(fallback_commodity)
                         .ok_or(ElaborationError::AmountWithNoCommodity)?
-                        .to_owned()
+                        .to_owned();
+                    (value, commodity)
                 };
                 Ok((value, commodity))
             }
@@ -6202,5 +6211,197 @@ account Assets:Savings
             rust_decimal::Decimal::from(-50),
             "*-1 of $50 should yield $-50"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // C directive (commodity conversion) tests — #248 stage 2
+    // -----------------------------------------------------------------------
+
+    /// `C 1.00s = 100c`: posting 250c converts to 2.50s.
+    ///
+    /// Divisor = N1 * N2 = 1 * 100 = 100.  Empirically verified against
+    /// ledger-cli: `250c / 100 = 2.50s`.
+    #[test]
+    fn test_c_directive_c_to_s() {
+        let input = "\
+C 1.00s = 100c
+
+2024-01-01 Test
+  Assets:Cash    250c
+  Equity
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let cash = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .unwrap();
+        assert_eq!(
+            cash.amount_in("s"),
+            Some(dec!(2.50)),
+            "250c / (1 * 100) should be 2.50s"
+        );
+    }
+
+    /// `C 100c = 1.00s`: LHS commodity is c (canonical), posting 250c -> 2.50c.
+    ///
+    /// N1 = 100, N2 = 1.  Posting in X (canonical): divisor = N1 = 100.
+    /// 250c / 100 = 2.50c.  Verified empirically against ledger-cli.
+    #[test]
+    fn test_c_directive_canonical_posting() {
+        let input = "\
+C 100c = 1.00s
+
+2024-01-01 Test
+  Assets:Cash    250c
+  Equity
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let cash = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .unwrap();
+        assert_eq!(
+            cash.amount_in("c"),
+            Some(dec!(2.50)),
+            "250c / 100 (= N1) should be 2.50c when c is the canonical LHS commodity"
+        );
+    }
+
+    /// Alias regression: plain `commodity X / alias Y` (divisor=1) should
+    /// still produce a 1:1 rename and NOT divide the amount.
+    #[test]
+    fn test_alias_divisor_one_regression() {
+        let input = "\
+commodity BTC
+  alias Bitcoin
+
+2024-01-01 Test
+  Assets:Wallet    2 Bitcoin
+  Equity
+";
+        let journal = elaborate(input);
+        let tx = &journal.transactions[0];
+        let wallet = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Wallet")
+            .unwrap();
+        // Should be 2 BTC (divisor=1 -> no scaling).
+        assert_eq!(
+            wallet.amount_in("BTC"),
+            Some(dec!(2)),
+            "alias with divisor=1 should be a plain rename, not scaled"
+        );
+    }
+
+    /// `C` directive does not retroactively affect transactions that appeared
+    /// before it in the source file (context-versioning invariant).
+    #[test]
+    fn test_c_directive_not_retroactive() {
+        let input = "\
+2024-01-01 Before
+  Assets:Cash    250c
+  Equity
+
+C 1.00s = 100c
+
+2024-01-02 After
+  Assets:Cash    250c
+  Equity
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+
+        // Transaction before the C directive: commodity should be unchanged 'c'.
+        let before = &journal.transactions[0];
+        let before_cash = before
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .unwrap();
+        assert_eq!(
+            before_cash.amount_in("c"),
+            Some(dec!(250)),
+            "posting before C directive should not be affected"
+        );
+
+        // Transaction after the C directive: 250c -> 2.50s.
+        let after = &journal.transactions[1];
+        let after_cash = after
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .unwrap();
+        assert_eq!(
+            after_cash.amount_in("s"),
+            Some(dec!(2.50)),
+            "posting after C directive should convert to canonical commodity"
+        );
+    }
+
+    /// Two-step chain: `C 1G = 100s` + `C 1s = 100c`.
+    ///
+    /// ledger-cli does NOT chain C directives transitively: 250c converts to
+    /// 2.50s (one hop) but NOT all the way to 0.025G.
+    /// Verified empirically.
+    #[test]
+    fn test_c_directive_no_chaining() {
+        let input = "\
+C 1.00G = 100s
+C 1.00s = 100c
+
+2024-01-01 Test
+  Assets:Cash    250c
+  Equity
+";
+        let journal = elaborate(input);
+        let tx = &journal.transactions[0];
+        let cash = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .unwrap();
+        // ledger-cli: 250c -> 2.50s (stops at first hop; does NOT chain to G).
+        assert_eq!(
+            cash.amount_in("s"),
+            Some(dec!(2.50)),
+            "C directives do not chain: 250c should convert to 2.50s, not 0.025G"
+        );
+        // Must NOT appear as G.
+        assert_eq!(
+            cash.amount_in("G"),
+            None,
+            "no G amount expected when conversion stops at s"
+        );
+    }
+
+    /// `C` does not affect Beancount-style journals; this is a compile-time
+    /// property (Beancount frontend never emits `Entry::CommodityConversion`),
+    /// but we verify the elaborator produces sane output for a plain USD
+    /// beancount journal run through the ledger pipeline.
+    #[test]
+    fn test_c_directive_parse_ledger_round_trip() {
+        // A trivially balanced transaction with no C directive — should parse
+        // and elaborate without issue.
+        let input = "\
+2024-01-01 Simple
+  Assets:Cash    100 USD
+  Equity
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let cash = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .unwrap();
+        assert_eq!(cash.amount_in("USD"), Some(dec!(100)));
     }
 }

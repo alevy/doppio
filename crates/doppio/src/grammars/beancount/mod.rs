@@ -816,7 +816,10 @@ fn entry_date_key(entry: &Entry) -> Option<Date> {
         Entry::Assertion(a) => Some(a.date.clone()),
         Entry::HistoricalPrice(hp) => Some(hp.date.clone()),
         Entry::Pad(p) => Some(p.date.clone()),
-        Entry::Directive(_) | Entry::Comment(_) | Entry::AutoRule(_) => None,
+        Entry::Directive(_)
+        | Entry::Comment(_)
+        | Entry::AutoRule(_)
+        | Entry::CommodityConversion { .. } => None,
     }
 }
 

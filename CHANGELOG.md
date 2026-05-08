@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`C N1 X = N2 Y` commodity-conversion directive** for the ledger-cli frontend (#248 stage 2).
+  Declaring `C 1.00s = 100c` makes every `c`-denominated posting convert to shillings at a
+  divisor of `N1 * N2` (empirically confirmed against ledger-cli): `250c / 100 = 2.50s`.
+  Postings in the canonical LHS commodity are similarly scaled by `N1`.  The conversion is
+  applied at elaboration time via the existing `commodity_conversions` map; aliases declared with
+  `commodity X / alias Y` continue to use `divisor = Decimal::ONE` (a 1:1 rename, unchanged).
+  The directive is context-versioned: transactions that precede a `C` directive in source order
+  are not retroactively affected.  **No chaining**: `C 1G = 100s` + `C 1s = 100c` converts
+  `c`-postings to `s` only (one hop), matching ledger-cli's observed behaviour.
+  Grammar addition: `number ~ commodity` (no-space number-first form, e.g. `1428c`) is now
+  accepted in posting amounts, enabling wow.dat-style postings.
+
 ### Internal
 
 - **`Context::commodity_aliases` renamed to `commodity_conversions`** (pre-stage for #248, no
@@ -10,6 +24,9 @@
   All existing alias insertions use `divisor = Decimal::ONE` (a 1:1 rename), so elaboration
   output is identical. This unification makes stage 2 of #248 (wiring the divisor through
   for full `C`-directive semantics) a natural extension rather than a new concept.
+- **`elaborator::evaluator::eval_and_normalize_amount_with_fallback` now applies the conversion
+  divisor** stored in `commodity_conversions`: amounts are divided by the divisor and rebranded
+  to the canonical commodity at evaluation time. Previously the divisor was stored but ignored.
 
 ### Added
 
