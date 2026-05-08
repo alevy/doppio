@@ -599,6 +599,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .iter()
                                     .map(|(k, v)| (k.as_str(), v.as_str()))
                                     .collect();
+                                // Lot annotation (cost / date / note),
+                                // emitted only when present so the
+                                // common case keeps a stable shape.
+                                // Per-lot parity comparators (#227)
+                                // accumulate across postings using
+                                // (commodity, lot_*) as the key.
+                                let lot_obj = posting.lot.as_ref().map(|l| {
+                                    let mut o = serde_json::Map::new();
+                                    if let Some(cost) = &l.cost
+                                        && let Some((cc, cv)) = cost.by_commodity.iter().next()
+                                    {
+                                        o.insert(
+                                            "cost_amount".to_string(),
+                                            serde_json::json!(cv.to_decimal().to_string()),
+                                        );
+                                        o.insert(
+                                            "cost_commodity".to_string(),
+                                            serde_json::json!(cc),
+                                        );
+                                    }
+                                    if let Some(d) = posting.lot_date_naive() {
+                                        o.insert(
+                                            "date".to_string(),
+                                            serde_json::json!(d.to_string()),
+                                        );
+                                    }
+                                    if let Some(n) = posting.lot_note() {
+                                        o.insert("note".to_string(), serde_json::json!(n));
+                                    }
+                                    serde_json::Value::Object(o)
+                                });
                                 rows.push(serde_json::json!({
                                     "date": date,
                                     "description": txn.description,
@@ -610,6 +641,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     "txn_metadata": txn_metadata,
                                     "posting_tags": posting_tags,
                                     "posting_metadata": posting_metadata,
+                                    "lot": lot_obj,
                                 }));
                             }
                         }

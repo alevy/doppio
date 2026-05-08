@@ -166,6 +166,22 @@ surface.
   with the realized gain (cash − sum of matched lot costs) rather
   than zero, matching bean-check. New parity fixture
   `tests/parity/beancount-fifo.beancount` exercises this end-to-end.
+- **Per-lot inventory parity comparator** (#227). The parity-test
+  harness now diffs per-`(account, commodity, cost, date, label)`
+  positions in addition to the existing aggregated-by-commodity
+  balance check. Catches lot-dimension regressions that the previous
+  comparator silently aggregated away (e.g. two augmentations at
+  different cost bases collapsed into one bucket).
+  `dop register --format=json` rows now carry an optional `lot`
+  object with `cost_amount` / `cost_commodity` / `date` / `note`
+  fields when present.
+- **Partial-spec lot resolution for reducing postings.** A reduction
+  like `-30 AAPL {185.40 USD}` (cost specified, date inherited as
+  None) now matches against the concrete dated inventory lot via the
+  same booking pass that handles `{}` — bean-check's strict booking
+  rewrites partial-spec reductions to the full lot key, and doppio
+  now mirrors that. Phantom-lot reductions (cost matches no inventory
+  lot) error with `OverReductionInBooking`. (#227)
 
 ---
 
