@@ -177,7 +177,15 @@ impl From<ast::TransactionState> for TransactionState {
 }
 
 /// Errors that can occur during the elaboration stage.
+///
+/// Marked `#[non_exhaustive]`: external matchers must include a `_`
+/// arm. New variants surface as we extend doppio's elaboration
+/// semantics (#237, #238, #242 added several; future booking modes
+/// and validators are expected to add more), so locking-out
+/// exhaustive matches up-front keeps additive variant work from
+/// forcing a major SemVer bump on every release.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ElaborationError {
     /// A posting amount evaluated to a bare number with no commodity, and no
     /// default commodity was set in the active context.
@@ -297,7 +305,13 @@ pub enum ElaborationError {
 ///
 /// This error is always wrapped in [`ElaborationError::EvaluationError`]; it
 /// is unlikely to be matched directly by callers.
+///
+/// `#[non_exhaustive]` for the same reason as
+/// [`ElaborationError`]: future expression / function additions are
+/// expected to surface new variants here, and we don't want each
+/// addition to count as a major SemVer break.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum EvaluationError {
     /// `*` or `/` used as a unary prefix operator, which is not meaningful.
     UnaryMultiplyOrDivide,

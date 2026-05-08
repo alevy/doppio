@@ -16,7 +16,7 @@ name = "dop"
 path = "src/main.rs"
 
 [dependencies]
-doppio = { path = "../doppio", version = "1.0.0" }
+doppio = { path = "../doppio", version = "2.0.0" }
 
 # CLI-specific deps not used by the library:
 chrono = { workspace = true }

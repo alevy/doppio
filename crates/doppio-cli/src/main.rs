@@ -231,15 +231,11 @@ fn load_proto_journal_with_tolerance(
         let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
         // Start from the matching tool's default semantics; override the
         // tolerance fraction if `--tolerance` was passed on the CLI.
-        let config = match tolerance_override {
-            None => frontend.elaboration_defaults(),
-            Some(fraction) => doppio::resolution::ElaborationConfig {
-                tolerance_mode: doppio::resolution::ToleranceMode::FractionOfSmallestPrecision(
-                    fraction,
-                ),
-                ..frontend.elaboration_defaults()
-            },
-        };
+        let mut config = frontend.elaboration_defaults();
+        if let Some(fraction) = tolerance_override {
+            config.tolerance_mode =
+                doppio::resolution::ToleranceMode::FractionOfSmallestPrecision(fraction);
+        }
         Ok(doppio::elaborate(hir, &config)?)
     }
 }
