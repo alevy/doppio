@@ -4,6 +4,25 @@
 
 ### Added
 
+- **Explicit `*N` multiplier syntax in automated-rule bodies** (#254): both the
+  ledger-cli and hledger frontends now accept `*N` (e.g. `*-1`, `* 0.5`,
+  `*0.12`) as a posting amount inside an `= QUERY` auto-rule body. The `*N`
+  form is lowered to the same bare-number multiplier representation as a plain
+  bare decimal — no new semantic path in the elaborator. `*-1` negates the
+  matched posting's amount; `*0.10` takes 10%, etc.
+
+### Test infrastructure
+
+- **Vendor `tests/parity/ledger-drewr3.dat`** (refs #257, refs #197): the
+  ledger-cli upstream `test/input/drewr3.dat` fixture is vendored with a
+  provenance comment block (source URL, commit SHA, license, exercises). It is
+  NOT yet wired into the positive parity harness: `drewr3.dat` exposed a
+  gap in how `dop balance --flat` reports the balance of intermediate accounts
+  that carry both direct postings and child-account postings (ledger-cli
+  aggregates the subtree; doppio reports only the direct balance). The fixture
+  is tracked in the repo so the gap is reproducible; the harness entry will be
+  added once the gap is resolved.
+
 - **Implicit cost-basis inference for ledger-cli and hledger** (#251): a
   two-real-posting multi-commodity transaction where neither posting carries an
   explicit `@`/`@@` price or `{cost}` lot annotation is now accepted by the

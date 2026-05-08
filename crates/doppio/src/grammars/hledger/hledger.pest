@@ -15,13 +15,11 @@
 //   - `account` directives may have a type comment on the header line
 //   - `commodity` directive accepts a commodity-format string, not just
 //     a bare commodity name
-//   - Automated posting rule bodies may reference `*N` multipliers;
-//     parsing of the multiplier expression is STUBBED out (see TODO below)
+//   - Automated posting rule bodies accept both bare decimal multipliers
+//     (e.g. `0.10`) and explicit `*N` prefix multipliers (e.g. `*-1`,
+//     `* 0.5`); see `auto_multiplier` rule below (#254)
 //
 // NOT YET SUPPORTED (stubbed / ignored):
-//   - Automated posting arithmetic bodies (`= query\n    account  *1.1`):
-//     the auto_rule rule captures the shape but the posting amounts inside
-//     automated rules that use `*N` will fail to parse.  See TODO(#103).
 //   - Full hledger date inference from a preceding `Y year` directive.
 //   - Directive-attached tags (metadata on the same line as a directive).
 // ============================================================
@@ -81,14 +79,13 @@ period_expr = @{ (!(NEWLINE | ";") ~ ANY)+ }
 //
 // `= QUERY\n POSTINGS…`
 //
-// Implicit multiplier semantics: a body posting amount that is a bare
-// commodity-less number (e.g. `0.10`) is interpreted as a multiplier of
-// the matched posting's amount in its commodity. A body posting amount with
-// an explicit commodity (e.g. `$10.00`) is taken literally. See elaborator.rs
-// and issue #249.
-//
-// The explicit `*N` prefix syntax is NOT yet supported and will produce a
-// parse error. See issue #249 for tracking.
+// Multiplier semantics: a body posting amount that is a bare commodity-less
+// number (e.g. `0.10`) is interpreted as a multiplier of the matched
+// posting's amount in its commodity. The explicit `*N` prefix form
+// (e.g. `*-1`, `* 0.5`) is also accepted and lowers to the same bare-number
+// multiplier representation — no new semantic path is required in the
+// elaborator. Body postings with an explicit commodity symbol (e.g. `$10.00`)
+// are taken as literal amounts. See `auto_multiplier` below and #254.
 auto_rule = ${
     "=" ~ ws+ ~ rule_query ~ NEWLINE ~
     (transaction_note | posting | empty_indented_line)*
@@ -128,12 +125,25 @@ virtual_account_inner = @{ (!("  " | ";" | "\t" | "=" | NEWLINE | ")" | "]") ~ A
 // Two or more spaces (or a tab) separate the account from the amount —
 // identical to the ledger-cli convention so that account names containing a
 // single space are parsed correctly.
+//
+// `auto_multiplier` is tried first so that the `*` prefix in automated-rule
+// body postings (e.g. `*-1`, `* 0.5`) is consumed before `value_logic`'s
+// expression parser. Outside auto-rule bodies this is harmless: regular
+// postings don't start with `*`.
 amount_logic = ${
     (ws{2,} | "\t") ~ (
-        value_logic
+        auto_multiplier
+        | value_logic
         | assertion
     )
 }
+
+// Explicit `*N` multiplier form used in automated-rule body postings.
+// Matches `*<number>` or `* <number>` with an optional leading sign on the
+// number (e.g. `*-1`, `*0.5`, `* 0.12`). Lowers to the same bare-number
+// `ValueExpr::Amount` as a plain bare decimal — the elaborator's
+// `is_bare_number_expr` treats both forms identically (#254).
+auto_multiplier = ${ "*" ~ ws* ~ (prefix_op ~ ws*)? ~ number }
 
 // A value expression, optionally followed by lot annotations and/or lot pricing
 // and/or a balance assertion check. Mirrors the ledger-cli grammar.
