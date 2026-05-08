@@ -4,559 +4,561 @@
 ;   license: BSD-3-Clause (ledger-cli project; compatible with redistribution under doppio's MIT)
 ;
 ; Exercises: `C N1 X = N2 Y` commodity-conversion directives with chained
-; commodity chain (c -> s -> G), `D` default-commodity directive, and a
+; commodity chain (COPPER -> SILVER -> GOLD; renamed from upstream `c`/`s`/`G` to
+; non-magic letters because ledger-cli treats `s`/`m`/`h` as built-in time units,
+; which collides with the C-directive when used as commodity names — see #270), `D` default-commodity directive, and a
 ; realistic World of Warcraft in-game gold economy posting structure.  Also
 ; exercises lot-note annotations with string identifiers (`"Plans: ..."`) and
 ; `{cost}` lot annotations, multi-posting transactions, and income/expense
 ; account patterns.  This fixture is the primary regression target for #248
 ; (stage 2: full C-directive semantics).
-C 1.00s = 100c
-C 1.00G = 100s
+C 1.00 SILVER = 100 COPPER
+C 1.00 GOLD = 100 SILVER
 
-D 1.00G
+D 1.00 GOLD
 
 2006/03/14 Opening Balances
-    Assets:Tajer                1339829c
-    Assets:Gruulmorg             248720c
+    Assets:Tajer                1339829 COPPER
+    Assets:Gruulmorg             248720 COPPER
     Equity:Gold
 
 2006/03/14 Auction House
-    Expenses:Fees:Auction          1428c
-    Expenses:Fees:Auction           768c
-    Expenses:Fees:Auction           612c
-    Expenses:Fees:Auction          4764c
-    Expenses:Fees:Auction          3372c
-    Expenses:Fees:Auction          1296c
-    Expenses:Fees:Auction          1332c
-    Expenses:Fees:Auction           660c
-    Expenses:Fees:Auction         10044c
-    Expenses:Fees:Auction          3588c
-    Expenses:Fees:Auction          1632c
-    Expenses:Fees:Auction          8388c
-    Expenses:Fees:Auction          9984c
-    Expenses:Fees:Auction          2316c
+    Expenses:Fees:Auction          1428 COPPER
+    Expenses:Fees:Auction           768 COPPER
+    Expenses:Fees:Auction           612 COPPER
+    Expenses:Fees:Auction          4764 COPPER
+    Expenses:Fees:Auction          3372 COPPER
+    Expenses:Fees:Auction          1296 COPPER
+    Expenses:Fees:Auction          1332 COPPER
+    Expenses:Fees:Auction           660 COPPER
+    Expenses:Fees:Auction         10044 COPPER
+    Expenses:Fees:Auction          3588 COPPER
+    Expenses:Fees:Auction          1632 COPPER
+    Expenses:Fees:Auction          8388 COPPER
+    Expenses:Fees:Auction          9984 COPPER
+    Expenses:Fees:Auction          2316 COPPER
     Assets:Tajer
 
 2006/03/14 Auction House
-    Assets:Tajer                 158860c
+    Assets:Tajer                 158860 COPPER
     Equity:Gold
 
 2006/03/14 Auction House
-    Expenses:Fees:Auction          1320c
+    Expenses:Fees:Auction          1320 COPPER
     Assets:Tajer
 
 2006/03/14 Auction House
-    Assets:Tajer                  11496c
+    Assets:Tajer                  11496 COPPER
     Equity:Gold
 
 2006/03/14 Auction House
-    Expenses:Fees:Auction          3216c
+    Expenses:Fees:Auction          3216 COPPER
     Assets:Tajer
 
 2006/03/14 Post
-    Expenses:Fees:Mail               30c
+    Expenses:Fees:Mail               30 COPPER
     Assets:Gruulmorg
 
 2006/03/14 Auction House
-    Assets:Tajer                  34678c
+    Assets:Tajer                  34678 COPPER
     Equity:Gold
 
 2006/03/14 Auction House
-    Expenses:Fees:Auction          2316c
+    Expenses:Fees:Auction          2316 COPPER
     Assets:Tajer
 
 2006/03/14 Auction House
-    Assets:Gruulmorg                  1G
+    Assets:Gruulmorg                  1 GOLD
     Equity:Gold
 
 2006/03/14 Auction House
-    Assets:Tajer                  59389c
+    Assets:Tajer                  59389 COPPER
     Equity:Gold
 
 2006/03/14 Post
-    Expenses:Fees:Mail              120c
+    Expenses:Fees:Mail              120 COPPER
     Assets:Tajer
 
 2006/03/14 Player
-    Assets:Tajer                      3G
+    Assets:Tajer                      3 GOLD
     Equity:Gold
 
 2006/03/14 Player
-    Assets:Tajer                      6G
+    Assets:Tajer                      6 GOLD
     Equity:Gold
 
 2006/03/14 Auction House
-    Expenses:Items                   35s
+    Expenses:Items                   35 SILVER
     Assets:Tajer
 
 2006/03/14 Auction House
-    Assets:Tajer:Items                  "Plans: Wildthorn Mail" 1 @ 125s
+    Assets:Tajer:Items                  "Plans: Wildthorn Mail" 1 @ 125 SILVER
     Assets:Tajer
 
 2006/03/14 Auction House
-    Assets:Bids                     259c
-    Assets:Bids                      45s
-    Assets:Bids                    4720c
+    Assets:Bids                     259 COPPER
+    Assets:Bids                      45 SILVER
+    Assets:Bids                    4720 COPPER
     Assets:Tajer
 
 2006/03/14 Post
-    Expenses:Fees:Mail              120c
+    Expenses:Fees:Mail              120 COPPER
     Assets:Tajer
 
 2006/03/14 Auction House
-    Expenses:Items                    8G
+    Expenses:Items                    8 GOLD
     Assets:Tajer
 
 2006/03/14 Post
-    Expenses:Fees:Mail              120c
+    Expenses:Fees:Mail              120 COPPER
     Assets:Tajer
 
 2006/03/14 Puldoost
-    Assets:Tajer                      8G
+    Assets:Tajer                      8 GOLD
     Expenses:Items
 
 2006/03/14 Auction House
-    Assets:Wyshona:Items                "Plans: Wildthorn Mail" 1 {1.25G}
+    Assets:Wyshona:Items                "Plans: Wildthorn Mail" 1 {1.25 GOLD}
     Assets:Tajer:Items
 
 2006/03/15 Auction House
-    Assets:Tajer                     45s
-    Assets:Tajer                    259c
+    Assets:Tajer                     45 SILVER
+    Assets:Tajer                    259 COPPER
     Assets:Bids
 
 2006/03/15 Auction House
-    Assets:Tajer                   4720c
+    Assets:Tajer                   4720 COPPER
     Assets:Bids
 
 2006/03/15 Auction House
-    Expenses:Fees:Auction         12542c  ; something got lost here
+    Expenses:Fees:Auction         12542 COPPER  ; something got lost here
     Assets:Tajer
 
 2006/03/15 Auction House
-    Expenses:Fees:Auction          2375c
-    Expenses:Fees:Auction         -2375c
+    Expenses:Fees:Auction          2375 COPPER
+    Expenses:Fees:Auction         -2375 COPPER
     Assets:Gruulmorg
 
 2006/03/15 Auction House
-    Assets:Danell                     4c
+    Assets:Danell                     4 COPPER
     Equity:Gold
 
 2006/03/15 Transfer
-    Assets:Gruulmorg                  2c
+    Assets:Gruulmorg                  2 COPPER
     Assets:Danell
 
 2006/03/15 Transfer
-    Assets:Danell                  4250c
-    Expenses:Fees:Auction           750c
-    Assets:Gruulmorg                -50s
+    Assets:Danell                  4250 COPPER
+    Expenses:Fees:Auction           750 COPPER
+    Assets:Gruulmorg                -50 SILVER
 
 2006/03/15 Post
-    Expenses:Fees:Mail               60c
+    Expenses:Fees:Mail               60 COPPER
     Assets:Danell
 
 2006/03/15 Player
-    Assets:Tajer                      3G
+    Assets:Tajer                      3 GOLD
     Equity:Gold
 
 2006/03/15 Post
-    Assets:Wyshona                   40s
-    Expenses:Fees:Mail               30c
+    Assets:Wyshona                   40 SILVER
+    Expenses:Fees:Mail               30 COPPER
     Assets:Danell
 
 2006/03/15 Auction House
-    Expenses:Fees:Auction             8s
-    Expenses:Fees:Auction            11s
+    Expenses:Fees:Auction             8 SILVER
+    Expenses:Fees:Auction            11 SILVER
     Assets:Wyshona
 
 2006/03/15 Auction House
-    Assets:Tajer:Items                  "Beaststalker's Belt" 1 @ 65G
+    Assets:Tajer:Items                  "Beaststalker's Belt" 1 @ 65 GOLD
     Assets:Tajer
 
 2006/03/15 Post
-    Expenses:Fees:Mail               30c
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/15 Auction House
-    Expenses:Fees:Auction          8268c
+    Expenses:Fees:Auction          8268 COPPER
     Assets:Tajer
 
 2006/03/15 Post
-    Expenses:Fees:Mail               30c
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/15 Vendor
-    Assets:Tajer                  16744c
-    Assets:Tajer                  16640c
+    Assets:Tajer                  16744 COPPER
+    Assets:Tajer                  16640 COPPER
     Equity:Gold
 
 2006/03/15 Post
-    Expenses:Fees:Mail               30c
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/15 Auction House
-    Expenses:Fees:Auction           772c
-    Expenses:Fees:Auction           544c
-    Expenses:Fees:Auction           444c
-    Expenses:Fees:Auction           432c
-    Expenses:Fees:Auction           204c
+    Expenses:Fees:Auction           772 COPPER
+    Expenses:Fees:Auction           544 COPPER
+    Expenses:Fees:Auction           444 COPPER
+    Expenses:Fees:Auction           432 COPPER
+    Expenses:Fees:Auction           204 COPPER
     Assets:Tajer
 
 2006/03/15 Player
-    Assets:Tajer                     12s
+    Assets:Tajer                     12 SILVER
     Equity:Gold
 
 2006/03/15 Vendor
-    Assets:Tajer                     22s
+    Assets:Tajer                     22 SILVER
     Equity:Gold
 
 2006/03/15 Auction House
-    Assets:Tajer:Items                  "Recipe: Elixir of Giant Growth" 1 @ 1G
+    Assets:Tajer:Items                  "Recipe: Elixir of Giant Growth" 1 @ 1 GOLD
     Assets:Tajer
 
 2006/03/15 Post
-    Expenses:Fees:Mail               30c
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/15 Auction House
-    Expenses:Fees:Auction          8268c
+    Expenses:Fees:Auction          8268 COPPER
     Assets:Tajer
 
 2006/03/15 Auction House
-    Assets:Tajer:Items                  "Plans: Mithril Shield Spike" 1 @ 21050c
+    Assets:Tajer:Items                  "Plans: Mithril Shield Spike" 1 @ 21050 COPPER
     Assets:Tajer
 
 2006/03/15 Auction House
-    Assets:Tajer:Items                  "Plans: Mithril Shield Spike" 1 @ 23000c
+    Assets:Tajer:Items                  "Plans: Mithril Shield Spike" 1 @ 23000 COPPER
     Assets:Tajer
 
 2006/03/15 Auction House
-    Assets:Tajer:Items                  "Recipe: Elixir of Giant Growth" 1 @ 150s
+    Assets:Tajer:Items                  "Recipe: Elixir of Giant Growth" 1 @ 150 SILVER
     Assets:Tajer
 
 2006/03/16 Player
-    Assets:Tajer                      3G
+    Assets:Tajer                      3 GOLD
     Equity:Gold
 
 2006/03/16 Post
-    Expenses:Fees:Mail               90c
+    Expenses:Fees:Mail               90 COPPER
     Assets:Tajer
 
 2006/03/16 Auction House
-    Assets:Tajer                1195768c
-    Assets:Tajer:Items                  "Beaststalker's Belt" -1 {65G} @ 1195768c
-    Income:Brokering            -545768c
+    Assets:Tajer                1195768 COPPER
+    Assets:Tajer:Items                  "Beaststalker's Belt" -1 {65 GOLD} @ 1195768 COPPER
+    Income:Brokering            -545768 COPPER
 
 2006/03/16 Auction House
-    Assets:Wyshona:Items                "Plans: Mithril Shield Spike" 1 {21050c}
-    Assets:Wyshona:Items                "Plans: Mithril Shield Spike" 1 {2.3G}
-    Assets:Wyshona:Items                "Recipe: Elixir of Giant Growth" 1 {1G}
-    Assets:Wyshona:Items                "Recipe: Elixir of Giant Growth" 1 {1.5G}
+    Assets:Wyshona:Items                "Plans: Mithril Shield Spike" 1 {21050 COPPER}
+    Assets:Wyshona:Items                "Plans: Mithril Shield Spike" 1 {2.3 GOLD}
+    Assets:Wyshona:Items                "Recipe: Elixir of Giant Growth" 1 {1 GOLD}
+    Assets:Wyshona:Items                "Recipe: Elixir of Giant Growth" 1 {1.5 GOLD}
     Assets:Tajer:Items
 
 2006/03/16 Player
-    Assets:Tajer                      4G
+    Assets:Tajer                      4 GOLD
     Equity:Gold
 
 2006/03/16 Auction House
-    Assets:Wyshona                 1341s
+    Assets:Wyshona                 1341 SILVER
     Equity:Gold
 
 2006/03/16 Auction House
-    Assets:Gruulmorg                  4c
+    Assets:Gruulmorg                  4 COPPER
     Assets:Danell
 
 2006/03/16 Auction House
-    Expenses:Fees:Auction             4c
-    Expenses:Fees:Mail              120c
+    Expenses:Fees:Auction             4 COPPER
+    Expenses:Fees:Mail              120 COPPER
     Assets:Danell
 
 2006/03/16 Auction House
-    Expenses:Fees:Auction            24s
-    Expenses:Fees:Auction            12s
-    Expenses:Fees:Auction            12s
-    Expenses:Fees:Auction            84c
-    Expenses:Fees:Auction            84c
+    Expenses:Fees:Auction            24 SILVER
+    Expenses:Fees:Auction            12 SILVER
+    Expenses:Fees:Auction            12 SILVER
+    Expenses:Fees:Auction            84 COPPER
+    Expenses:Fees:Auction            84 COPPER
     Assets:Wyshona
 
 2006/03/16 Crazy Cat Lady
-    Expenses:Items                   40s
-    Expenses:Items                   40s
+    Expenses:Items                   40 SILVER
+    Expenses:Items                   40 SILVER
     Assets:Wyshona
 
 2006/03/16 Transfer
-    Expenses:Fees:Mail               60c
-    Assets:Danell                     5G
+    Expenses:Fees:Mail               60 COPPER
+    Assets:Danell                     5 GOLD
     Assets:Wyshona
 
 2006/03/16 Transfer
-    Expenses:Fees:Mail               30c
-    Assets:Tajer                     20G
+    Expenses:Fees:Mail               30 COPPER
+    Assets:Tajer                     20 GOLD
     Assets:Gruulmorg
 
 2006/03/16 Auction House
-    Assets:Tajer:Items                  "Pulsating Hydra Heart" 1 @ 1G
+    Assets:Tajer:Items                  "Pulsating Hydra Heart" 1 @ 1 GOLD
     Assets:Tajer
 
 2006/03/16 Auction House
-    Expenses:Fees:Auction           936c
+    Expenses:Fees:Auction           936 COPPER
     Assets:Tajer
 
 2006/03/16 Transfer
-    Expenses:Fees:Mail               30c
-    Assets:Gruulmorg                 30G
+    Expenses:Fees:Mail               30 COPPER
+    Assets:Gruulmorg                 30 GOLD
     Assets:Tajer
 
 2006/03/16 Auction House
-    Assets:Gruulmorg:Items              "Ace of Warlords" 2 @ 15G
+    Assets:Gruulmorg:Items              "Ace of Warlords" 2 @ 15 GOLD
     Assets:Gruulmorg
 
 2006/03/16 Transfer
-    Assets:Tajer:Items                  "Ace of Warlords" 2 {15G}
+    Assets:Tajer:Items                  "Ace of Warlords" 2 {15 GOLD}
     Assets:Gruulmorg:Items
 
 2006/03/16 Post
-    Expenses:Fees:Mail               60c
+    Expenses:Fees:Mail               60 COPPER
     Assets:Gruulmorg
 
 2006/03/16 Post
-    Expenses:Fees:Mail              120c
+    Expenses:Fees:Mail              120 COPPER
     Assets:Tajer
 
 2006/03/16 Auction House
-    Assets:Tajer                   2104c
+    Assets:Tajer                   2104 COPPER
     Equity:Gold
 
 2006/03/16 Auction House
-    Expenses:Fees:Auction            75s
-    Expenses:Fees:Auction            75s
+    Expenses:Fees:Auction            75 SILVER
+    Expenses:Fees:Auction            75 SILVER
     Assets:Tajer
 
 2006/03/16 Transfer
-    Assets:Danell                     6c
+    Assets:Danell                     6 COPPER
     Assets:Gruulmorg
 
 2006/03/16 Post
-    Expenses:Fees:Mail               60c
+    Expenses:Fees:Mail               60 COPPER
     Assets:Gruulmorg
 
 2006/03/16 Post
-    Expenses:Fees:Mail               60c
+    Expenses:Fees:Mail               60 COPPER
     Assets:Tajer
 
 2006/03/16 General Goods Vendor
-    Expenses:Items                   50c  ; wrapping paper
+    Expenses:Items                   50 COPPER  ; wrapping paper
     Assets:Tajer
 
 2006/03/16 Player
-    Assets:Tajer                      1G
+    Assets:Tajer                      1 GOLD
     Equity:Gold
 
 2006/03/17 Auction House
-    Assets:Wyshona               180584c
-    Assets:Wyshona:Items                "Recipe: Elixir of Giant Growth" -1 {1.5G} @ 180584c
-    Income:Brokering            -165584c
+    Assets:Wyshona               180584 COPPER
+    Assets:Wyshona:Items                "Recipe: Elixir of Giant Growth" -1 {1.5 GOLD} @ 180584 COPPER
+    Income:Brokering            -165584 COPPER
 
 2006/03/17 Auction House
-    Assets:Wyshona               180584c
-    Assets:Wyshona:Items                "Recipe: Elixir of Giant Growth" -1 {1G} @ 180584c
-    Income:Brokering            -170584c
+    Assets:Wyshona               180584 COPPER
+    Assets:Wyshona:Items                "Recipe: Elixir of Giant Growth" -1 {1 GOLD} @ 180584 COPPER
+    Income:Brokering            -170584 COPPER
 
 2006/03/17 Post
-    Expenses:Fees:Mail               30c
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/17 Player: raev
-    Assets:Tajer:Items                  "Wildheart Belt" 1 {30G}
-    Assets:Tajer:Items                  "Ace of Warlords" -2 {15G}
+    Assets:Tajer:Items                  "Wildheart Belt" 1 {30 GOLD}
+    Assets:Tajer:Items                  "Ace of Warlords" -2 {15 GOLD}
 
 2006/03/17 Auction House
-    Expenses:Fees:Auction          7482c
+    Expenses:Fees:Auction          7482 COPPER
     Assets:Tajer
 
 2006/03/17 Post
-    Expenses:Fees:Mail              300c
+    Expenses:Fees:Mail              300 COPPER
     Assets:Wyshona
 
 2006/03/17 Player
-    Assets:Wyshona                    1G
-    Assets:Wyshona:Items                "Plans: Wildthorn Mail" -1 {1.25G} @ 1G
-    Expenses:Capital Loss            25s
+    Assets:Wyshona                    1 GOLD
+    Assets:Wyshona:Items                "Plans: Wildthorn Mail" -1 {1.25 GOLD} @ 1 GOLD
+    Expenses:Capital Loss            25 SILVER
 
 2006/03/17 Auction House (implicit transfer)
-    Expenses:Items                  279s  ; Recipe: Swiftness Potion
+    Expenses:Items                  279 SILVER  ; Recipe: Swiftness Potion
     Assets:Wyshona
 
 2006/03/17 Auction House (implicit transfer)
-    Assets:Danell:Items                 "Ace of Warlords" 1 @ 3G
-    Assets:Tajer:Items                  "Ace of Warlords" 1 @ 3.9G
-    Assets:Tajer:Items                  "Holy Bologna" 1 @ 2G
-    Assets:Tajer:Items                  "The Emerald Dream" 1 @ 4G
-    Assets:Tajer:Items                  "The Arcanist's Cookbook" 1 @ 4G
-    Assets:Tajer:Items                  "Harnessing Shadows" 1 @ 5G
-    Assets:Tajer:Items                  "Garona: Book on Treachery" 1 @ 4G
-    Assets:Tajer:Items                  "Preserved Holly" 5 @ 20s
+    Assets:Danell:Items                 "Ace of Warlords" 1 @ 3 GOLD
+    Assets:Tajer:Items                  "Ace of Warlords" 1 @ 3.9 GOLD
+    Assets:Tajer:Items                  "Holy Bologna" 1 @ 2 GOLD
+    Assets:Tajer:Items                  "The Emerald Dream" 1 @ 4 GOLD
+    Assets:Tajer:Items                  "The Arcanist's Cookbook" 1 @ 4 GOLD
+    Assets:Tajer:Items                  "Harnessing Shadows" 1 @ 5 GOLD
+    Assets:Tajer:Items                  "Garona: Book on Treachery" 1 @ 4 GOLD
+    Assets:Tajer:Items                  "Preserved Holly" 5 @ 20 SILVER
     Assets:Wyshona
 
 2006/03/17 Auction House
-    Assets:Tajer                      4G
-    Assets:Tajer:Items                  "Pulsating Hydra Heart" -1 {1G} @ 4G
-    Income:Brokering                 -3G
+    Assets:Tajer                      4 GOLD
+    Assets:Tajer:Items                  "Pulsating Hydra Heart" -1 {1 GOLD} @ 4 GOLD
+    Income:Brokering                 -3 GOLD
 
 2006/03/17 Auction House
-    Assets:Danell                  3171c
-    Assets:Danell:Items                 "Ace of Warlords" -1 {3G} @ 3171c
-    Expenses:Capital Loss         26829c
+    Assets:Danell                  3171 COPPER
+    Assets:Danell:Items                 "Ace of Warlords" -1 {3 GOLD} @ 3171 COPPER
+    Expenses:Capital Loss         26829 COPPER
 
 2006/03/17 Auction House
-    Expenses:Fees:Auction         12537c
+    Expenses:Fees:Auction         12537 COPPER
     Assets:Danell
 
 2006/03/17 Transfer
-    Assets:Gruulmorg                 15G
-    Expenses:Fees:Mail               30c
+    Assets:Gruulmorg                 15 GOLD
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/17 Auction House
-    Assets:Wyshona               362450c
-    Assets:Wyshona:Items                "Plans: Mithril Shield Spike" -1 {21050c} @ 181225c
-    Assets:Wyshona:Items                "Plans: Mithril Shield Spike" -1 {2.3G} @ 181225c
-    Income:Brokering            -318400c
+    Assets:Wyshona               362450 COPPER
+    Assets:Wyshona:Items                "Plans: Mithril Shield Spike" -1 {21050 COPPER} @ 181225 COPPER
+    Assets:Wyshona:Items                "Plans: Mithril Shield Spike" -1 {2.3 GOLD} @ 181225 COPPER
+    Income:Brokering            -318400 COPPER
 
 2006/03/17 Transfer
-    Assets:Danell                499560c
-    Expenses:Gifts                    1G
-    Expenses:Fees:Mail               30c
+    Assets:Danell                499560 COPPER
+    Expenses:Gifts                    1 GOLD
+    Expenses:Fees:Mail               30 COPPER
     Assets:Wyshona
 
 2006/03/17 Post
-    Expenses:Fees:Mail               90c
-    Expenses:Fees:Auction           166c
+    Expenses:Fees:Mail               90 COPPER
+    Expenses:Fees:Auction           166 COPPER
     Assets:Gruulmorg
 
 2006/03/17 Transfer
-    Assets:Gruulmorg             459211c
-    Expenses:Fees:Auction         81023c
-    Assets:Danell               -540234c
+    Assets:Gruulmorg             459211 COPPER
+    Expenses:Fees:Auction         81023 COPPER
+    Assets:Danell               -540234 COPPER
 
 2006/03/17 Transfer
-    Assets:Tajer                 662465c
-    Expenses:Fees:Mail               30c
+    Assets:Tajer                 662465 COPPER
+    Expenses:Fees:Mail               30 COPPER
     Assets:Gruulmorg
 
 2006/03/17 Auction House
-    Expenses:Fees:Auction            75s
-    Expenses:Fees:Mail               30c
+    Expenses:Fees:Auction            75 SILVER
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/18 Auction House
-    Assets:Tajer                     15G
-    Assets:Tajer:Items                  "Ace of Warlords" -1 {3.9G} @ 15G
-    Income:Brokering            -111000c
+    Assets:Tajer                     15 GOLD
+    Assets:Tajer:Items                  "Ace of Warlords" -1 {3.9 GOLD} @ 15 GOLD
+    Income:Brokering            -111000 COPPER
 
 2006/03/18 Auction House
-    Assets:Tajer                 434472c
-    Assets:Tajer:Items                  "Wildheart Belt" -1 {30G} @ 434472c
-    Income:Brokering            -134472c
+    Assets:Tajer                 434472 COPPER
+    Assets:Tajer:Items                  "Wildheart Belt" -1 {30 GOLD} @ 434472 COPPER
+    Income:Brokering            -134472 COPPER
 
 2006/03/18 Auction House
-    Assets:Tajer                   1995s
-    Assets:Tajer:Items                  "Harnessing Shadows" -1 {5G} @ 1995s
-    Income:Brokering              -1495s
+    Assets:Tajer                   1995 SILVER
+    Assets:Tajer:Items                  "Harnessing Shadows" -1 {5 GOLD} @ 1995 SILVER
+    Income:Brokering              -1495 SILVER
 
 2006/03/19 Auction House
-    Assets:Tajer                   2850s
-    Assets:Tajer:Items                  "Garona: Book on Treachery" -1 {4G} @ 2850s
-    Income:Brokering              -2450s
+    Assets:Tajer                   2850 SILVER
+    Assets:Tajer:Items                  "Garona: Book on Treachery" -1 {4 GOLD} @ 2850 SILVER
+    Income:Brokering              -2450 SILVER
 
 2006/03/19 Auction House
-    Assets:Tajer                   1710s
-    Assets:Tajer:Items                  "The Arcanist's Cookbook" -1 {4G} @ 1710s
-    Income:Brokering              -1310s
+    Assets:Tajer                   1710 SILVER
+    Assets:Tajer:Items                  "The Arcanist's Cookbook" -1 {4 GOLD} @ 1710 SILVER
+    Income:Brokering              -1310 SILVER
 
 2006/03/19 Auction House
-    Assets:Tajer                  46550c
-    Assets:Tajer:Items                  "Preserved Holly" -5 {20s} @ 9310c
-    Income:Brokering             -36550c
+    Assets:Tajer                  46550 COPPER
+    Assets:Tajer:Items                  "Preserved Holly" -5 {20 SILVER} @ 9310 COPPER
+    Income:Brokering             -36550 COPPER
 
 2006/03/19 Auction House
-    Assets:Tajer:Items                  "Two of Portals" 1 @ 3G
-    Assets:Tajer:Items                  "Two of Portals" 1 @ 2.5G
+    Assets:Tajer:Items                  "Two of Portals" 1 @ 3 GOLD
+    Assets:Tajer:Items                  "Two of Portals" 1 @ 2.5 GOLD
     Assets:Tajer
 
 2006/03/20 Auction House
-    Assets:Tajer                 163443c
-    Assets:Tajer:Items                  "Holy Bologna" -1 {2G} @ 163443c
-    Income:Brokering            -143443c
+    Assets:Tajer                 163443 COPPER
+    Assets:Tajer:Items                  "Holy Bologna" -1 {2 GOLD} @ 163443 COPPER
+    Income:Brokering            -143443 COPPER
 
 2006/03/20 Auction House
-    Assets:Tajer                      5G
-    Assets:Tajer:Items                  "Two of Portals" -1 {3G} @ 5G
-    Income:Brokering                 -2G
+    Assets:Tajer                      5 GOLD
+    Assets:Tajer:Items                  "Two of Portals" -1 {3 GOLD} @ 5 GOLD
+    Income:Brokering                 -2 GOLD
 
 2006/03/20 Auction House
-    Assets:Tajer                     15G
-    Assets:Tajer:Items                  "The Emerald Dream" -1 {4G} @ 15G
-    Income:Brokering                -11G
+    Assets:Tajer                     15 GOLD
+    Assets:Tajer:Items                  "The Emerald Dream" -1 {4 GOLD} @ 15 GOLD
+    Income:Brokering                -11 GOLD
 
 2006/03/20 Auction House
-    Expenses:Fees:Mail               60c
+    Expenses:Fees:Mail               60 COPPER
     Assets:Tajer
 
 2006/03/21 Auction House
-    Assets:Tajer:Items                  "Orb of Deception" 1 @ 170G
+    Assets:Tajer:Items                  "Orb of Deception" 1 @ 170 GOLD
     Assets:Tajer
 
 2006/03/21 Auction House
-    Expenses:Fees:Auction          2760c
-    Expenses:Fees:Auction          2760c
+    Expenses:Fees:Auction          2760 COPPER
+    Expenses:Fees:Auction          2760 COPPER
     Assets:Tajer
 
 2006/03/22 Auction House
-    Assets:Tajer:Items                  "Nightblade" 1 @ 200G
+    Assets:Tajer:Items                  "Nightblade" 1 @ 200 GOLD
     Assets:Tajer
 
 2006/03/22 Auction House
-    Expenses:Fees:Auction           177s
-    Expenses:Fees:Auction           177s
-    Expenses:Fees:Auction           177s
-    Expenses:Fees:Auction           177s
-    Expenses:Fees:Auction            75s
+    Expenses:Fees:Auction           177 SILVER
+    Expenses:Fees:Auction           177 SILVER
+    Expenses:Fees:Auction           177 SILVER
+    Expenses:Fees:Auction           177 SILVER
+    Expenses:Fees:Auction            75 SILVER
     Assets:Tajer
 
 2006/03/23 Auction House
-    Assets:Tajer                1665260c
-    Assets:Tajer:Items                  "Orb of Deception" -1 {170G} @ 1665260c
-    Expenses:Capital Loss         34740c
+    Assets:Tajer                1665260 COPPER
+    Assets:Tajer:Items                  "Orb of Deception" -1 {170 GOLD} @ 1665260 COPPER
+    Expenses:Capital Loss         34740 COPPER
 
 2006/03/26 Auction House
-    Assets:Tajer                  81980c
-    Assets:Tajer:Items                  "Two of Portals" -1 {2.5G} @ 81980c
-    Income:Brokering             -56980c
+    Assets:Tajer                  81980 COPPER
+    Assets:Tajer:Items                  "Two of Portals" -1 {2.5 GOLD} @ 81980 COPPER
+    Income:Brokering             -56980 COPPER
 
 2006/03/26 Player
-    Expenses:Items                  150s  ; Recipe: Elixir of Minor Agility
-    Expenses:Fees:Mail               30c
-    Expenses:Fees:Mail               30c
+    Expenses:Items                  150 SILVER  ; Recipe: Elixir of Minor Agility
+    Expenses:Fees:Mail               30 COPPER
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/27 Player
-    Assets:Tajer                    160G
-    Assets:Tajer:Items                  "Nightblade" -1 {200G} @ 160G
-    Expenses:Capital Loss            40G
+    Assets:Tajer                    160 GOLD
+    Assets:Tajer:Items                  "Nightblade" -1 {200 GOLD} @ 160 GOLD
+    Expenses:Capital Loss            40 GOLD
 
 2006/03/27 Player
-    Expenses:Fees:Mail               30c
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/03/26 Player
-    Expenses:Items                   (9G * 6)  ; Traveler's backpacks
-    Expenses:Items                   10G
-    Expenses:Fees:Bank               10G
-    Expenses:Fees:Mail              630c
-    Expenses:Fees:Mail              330c
-    Expenses:Fees:Mail               30c
+    Expenses:Items                   (9 GOLD * 6)  ; Traveler's backpacks
+    Expenses:Items                   10 GOLD
+    Expenses:Fees:Bank               10 GOLD
+    Expenses:Fees:Mail              630 COPPER
+    Expenses:Fees:Mail              330 COPPER
+    Expenses:Fees:Mail               30 COPPER
     Assets:Tajer
 
 2006/04/01 Auction House
-    Assets:Tajer:Items                  "Orb of Deception" 1 @ 155G
+    Assets:Tajer:Items                  "Orb of Deception" 1 @ 155 GOLD
     Assets:Tajer

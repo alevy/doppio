@@ -119,10 +119,29 @@ _LEDGER_AMOUNT = re.compile(
 
 
 def _parse_ledger_amount(s: str) -> tuple[str, Decimal]:
-    """Parse `$10,318.88` / `30 AAPL` / `-$48.20` / `420.00 EUR` into
-    (commodity_symbol, signed_decimal). Used for both ledger and any text
-    fall-back parsers."""
+    """Parse `$10,318.88` / `30 AAPL` / `-$48.20` / `420.00 EUR` /
+    `"Long Name" 1` into (commodity_symbol, signed_decimal). Used for both
+    ledger and any text fall-back parsers.
+
+    Quoted commodities (e.g. `"Plans: Wildthorn Mail"`) appear in ledger-cli's
+    output for items with names containing spaces or special characters. The
+    surrounding quotes are stripped from the returned commodity string so it
+    matches doppio's JSON output, which doesn't quote commodity names."""
     s = s.strip()
+    # Quoted-commodity-prefix form: `"Long Name" 5` (commodity-first, quoted).
+    # Treat the quoted span as the commodity and the rest as the number.
+    if s.startswith('"'):
+        end_quote = s.find('"', 1)
+        if end_quote == -1:
+            raise ValueError(f"unterminated quoted commodity in {s!r}")
+        commodity = s[1:end_quote]
+        rest = s[end_quote + 1:].strip().replace(",", "")
+        if not rest:
+            raise ValueError(f"missing number after quoted commodity in {s!r}")
+        try:
+            return commodity, Decimal(rest)
+        except Exception as e:
+            raise ValueError(f"non-numeric quantity for quoted commodity {commodity!r}: {rest!r} ({e})")
     m = _LEDGER_AMOUNT.match(s)
     if not m:
         raise ValueError(f"unparseable ledger amount: {s!r}")
