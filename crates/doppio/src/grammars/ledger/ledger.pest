@@ -420,8 +420,8 @@ base_primary = _{
     function_call
     | amount
     | string
-    | "(" ~ bool_expr ~ ")"
     | "(" ~ expr ~ ")"
+    | "(" ~ bool_expr ~ ")"
     | commodity
 }
 
