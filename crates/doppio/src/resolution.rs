@@ -1119,6 +1119,39 @@ impl TryFrom<ast::Journal> for HIR {
                         .collect();
                     result.auto_rules.push(ResolvedAutoRule { query, postings });
                 }
+                ast::Entry::CommodityConversion { lhs, rhs } => {
+                    // `C N1 X = N2 Y` — X (LHS commodity) is canonical, Y (RHS) is alias.
+                    //
+                    // Empirically (verified against ledger-cli): the divisor that converts
+                    // a Y-amount to its X-equivalent is N1 * N2.  For example:
+                    //   C 1.00s = 100c  -> divisor = 1 * 100 = 100; 250c / 100 = 2.50s
+                    //   C 100c = 1.00s  -> divisor = 100 * 1 = 100; 250c / 100 = 2.50c
+                    //
+                    // We insert TWO entries per directive:
+                    //   (rhs.commodity, (lhs.commodity, N1 * N2))
+                    //     — converts RHS-commodity postings into LHS canonical
+                    //   (lhs.commodity, (lhs.commodity, N1))
+                    //     — scales postings already in the canonical commodity by N1
+                    //     (empirically: C 100c = 1s, posting 250c -> 2.5c)
+                    //
+                    // ledger-cli does NOT chain C directives (c -> s -> G does NOT
+                    // produce a c -> G entry); each entry is a direct single-hop mapping.
+                    let divisor = lhs.value * rhs.value;
+                    new_context =
+                        Some(new_context.unwrap_or_else(|| context.clone())).map(|mut ctx| {
+                            // RHS commodity -> LHS canonical with product divisor.
+                            ctx.commodity_conversions
+                                .entry(rhs.commodity.clone())
+                                .or_insert_with(|| (lhs.commodity.clone(), divisor));
+                            // LHS commodity -> itself, scaled by N1 only.
+                            // This handles the "posting in canonical" case, e.g.
+                            // `C 100c = 1s` with `250c` posting -> `2.50c`.
+                            ctx.commodity_conversions
+                                .entry(lhs.commodity.clone())
+                                .or_insert_with(|| (lhs.commodity.clone(), lhs.value));
+                            ctx
+                        });
+                }
             }
 
             // If any directive modified the alias/default state, push a new

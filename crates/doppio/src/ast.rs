@@ -66,6 +66,31 @@ pub(crate) enum Entry {
     /// interpreted as multipliers of the matched posting's amount; amounts
     /// with an explicit commodity are taken literally.
     AutoRule(AutoRule),
+    /// A `C N1 X = N2 Y` commodity-conversion directive (ledger-cli).
+    ///
+    /// Declares a fixed exchange rate between commodity `X` (LHS / canonical)
+    /// and commodity `Y` (RHS / alias). The divisor that converts a Y-amount
+    /// to its X-equivalent is `N1 * N2`.
+    ///
+    /// See issue #248 for the full semantic specification.
+    CommodityConversion {
+        /// Amount on the LHS: `N1` units of commodity `X` (the canonical side).
+        lhs: CommodityAmount,
+        /// Amount on the RHS: `N2` units of commodity `Y` (the alias side).
+        rhs: CommodityAmount,
+    },
+}
+
+/// A bare `<number> <commodity>` pair used in `C` conversion directives.
+///
+/// Unlike [`ValueExpr`], these are fully concrete at parse time — no
+/// arithmetic or aliases are permitted inside a `C` directive amount.
+#[derive(Debug, Clone)]
+pub(crate) struct CommodityAmount {
+    /// The numeric value (e.g. `100.00` in `C 100.00c = 1.00s`).
+    pub value: Decimal,
+    /// The commodity symbol (e.g. `"c"` in `C 100.00c = 1.00s`).
+    pub commodity: String,
 }
 
 /// An automated posting rule (`= QUERY\n  POSTINGS…`).

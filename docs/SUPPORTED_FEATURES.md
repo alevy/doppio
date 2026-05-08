@@ -88,6 +88,7 @@ Status legend:
 | `~` budget / periodic directive | ~ | Parsed but not elaborated (intentional parse-and-discard). No effect on balances or reports |
 | `= query` automated transaction rules | + | v2.1.0 (#249). Body postings synthesized as `PostingKind::VirtualUnbalanced`. Bare decimal amounts act as multipliers of the matched posting's commodity amount; amounts with an explicit commodity symbol are literal. Query strings: `/pattern/` → regex, bare string → case-insensitive substring match |
 | Explicit `*N` multiplier syntax in rule bodies | + | (#254). `*N`, `*-1`, `* 0.5` etc. in auto-rule body posting amounts are accepted and lower to the same bare-number multiplier as a plain bare decimal |
+| `C N1 X = N2 Y` commodity-conversion directive | + | (#248 stage 2). X (LHS) is the canonical commodity; Y (RHS) postings divide by `N1 * N2` to yield X-equivalent amounts. Divisor is empirically confirmed against ledger-cli. No chaining: `C 1G = 100s` + `C 1s = 100c` converts `c` to `s` (one hop), not all the way to `G`. |
 
 ## Expression language
 
@@ -197,6 +198,7 @@ file extensions; selected automatically by `dop` and by
 | Feature | Status | Notes |
 |---|---|---|
 | `comment` / `end comment` block comments | - | Not yet supported |
+| `C N1 X = N2 Y` commodity-conversion directive | - | Not part of hledger syntax; ledger-cli only |
 | `Y year` directive (date inference) | - | Full four-digit year required in all dates |
 | Per-transaction `= DATE` effective date | - | hledger uses a different secondary-date syntax; not supported |
 | Multiple commodities per posting | - | v1 limitation shared with ledger-cli frontend |
