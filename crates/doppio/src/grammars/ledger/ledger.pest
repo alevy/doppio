@@ -436,13 +436,15 @@ string = ${ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 function_call = ${ identifier ~ ws* ~ "(" ~ ws* ~ (expr ~ (ws* ~ "," ~ ws* ~ expr)*)? ~ ws* ~ ")" }
 
 // An amount literal: commodity-prefixed, number-first, or bare number.
-//   "$100"      — symbol before number (no space required)
-//   "100 USD"   — identifier commodity after number (space required)
-//   "100"       — bare number (commodity filled in from context later)
+//   "$100"        — symbol before number (no space required)
+//   "100 USD"     — identifier commodity after number (space required)
+//   "100"         — bare number (commodity filled in from context later)
+//   `"Foo" -1`    — quoted commodity before a signed number (ledger-cli
+//                   accepts optional whitespace between sign and number)
 // The negative lookahead `!bool_op` in the number-first alternative prevents
 // `and`/`or` from being consumed as a commodity (e.g., `0 and` in `amount > 0 and`).
 amount = ${
-    (commodity ~ ws* ~ number)
+    (commodity ~ ws* ~ prefix_op? ~ ws* ~ number)
     | (number ~ ws+ ~ !bool_op ~ commodity)
     | (number ~ commodity)
     | number

@@ -295,8 +295,14 @@ base_primary = _{
     | commodity
 }
 
+// An amount literal: commodity-prefixed, number-first, or bare number.
+//   "$100"       — symbol before number (no space required)
+//   "100 USD"    — identifier commodity after number (space required)
+//   "100"        — bare number (commodity filled in from context later)
+//   `"Foo" -1`   — quoted commodity before a signed number; `prefix_op?`
+//                  allows both `"Foo" -1` and `"Foo" - 1` (permissive whitespace).
 amount = ${
-    (commodity ~ ws* ~ number)
+    (commodity ~ ws* ~ prefix_op? ~ ws* ~ number)
     | (number ~ ws+ ~ commodity)
     | number
 }
