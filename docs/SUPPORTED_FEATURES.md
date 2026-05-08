@@ -87,6 +87,7 @@ Status legend:
 | `D $1000.00` (default commodity) | + | Both the bare-`D` form and the `commodity ... default` form are supported; bare `D` is lowered at parse time to the same `Directive::Commodity` representation |
 | `~` budget / periodic directive | ~ | Parsed but not elaborated (intentional parse-and-discard). No effect on balances or reports |
 | `= query` automated transaction rules | + | v2.1.0 (#249). Body postings synthesized as `PostingKind::VirtualUnbalanced`. Bare decimal amounts act as multipliers of the matched posting's commodity amount; amounts with an explicit commodity symbol are literal. Query strings: `/pattern/` → regex, bare string → case-insensitive substring match |
+| Explicit `*N` multiplier syntax in rule bodies | + | (#254). `*N`, `*-1`, `* 0.5` etc. in auto-rule body posting amounts are accepted and lower to the same bare-number multiplier as a plain bare decimal |
 
 ## Expression language
 
@@ -189,7 +190,7 @@ file extensions; selected automatically by `dop` and by
 | Feature | Status | Notes |
 |---|---|---|
 | `= query` automated rules (account-name match, multiplier and literal amounts) | + | v2.1.0 (#249). Same semantics as the ledger-cli frontend |
-| Explicit `*N` multiplier syntax in rule bodies | - | Causes a parse error. Tracked in a follow-up issue |
+| Explicit `*N` multiplier syntax in rule bodies | + | (#254). Accepted and lowers to the same bare-number multiplier as a plain bare decimal |
 
 ### Known limitations
 

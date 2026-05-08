@@ -6031,4 +6031,173 @@ account Assets:Savings
             "10% of $50 = $5 expected"
         );
     }
+
+    // -------------------------------------------------------------------------
+    // Explicit `*N` multiplier syntax tests (#254)
+    // -------------------------------------------------------------------------
+
+    /// The explicit `*N` prefix form in a ledger auto-rule body is parsed
+    /// and lowers to the same bare-number multiplier as a plain bare decimal.
+    /// `*0.10` against `$-100.00` should produce `$-10.00` (10% tithe).
+    #[test]
+    fn ledger_star_n_multiplier_equals_bare_decimal() {
+        let input = "\
+= /^Income/
+    (Liabilities:Tithe)  *0.10
+
+2024-01-01 * Salary
+    Income:Salary  $-100.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Liabilities:Tithe")
+            .collect();
+        assert_eq!(synth.len(), 1, "one synthesised posting expected");
+        let amount = synth[0]
+            .amount
+            .as_ref()
+            .expect("synthesised posting has amount");
+        let decimal = amount.by_commodity.get("$").expect("$ commodity");
+        // *0.10 * $-100.00 = $-10.00 (same as bare 0.10)
+        assert_eq!(
+            decimal.to_decimal(),
+            rust_decimal::Decimal::from(-10),
+            "*0.10 of $-100 should yield $-10"
+        );
+    }
+
+    /// `*-1` negates the matched posting's amount — the canonical mirror-entry
+    /// pattern used to reflect income into a budget equity account.
+    #[test]
+    fn ledger_star_negative_one_negates_matched_amount() {
+        let input = "\
+= /^Income/
+    Equity:Budget  *-1
+
+2024-01-01 * Salary
+    Income:Salary  $-100.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Equity:Budget")
+            .collect();
+        assert_eq!(synth.len(), 1, "one synthesised posting expected");
+        let amount = synth[0]
+            .amount
+            .as_ref()
+            .expect("synthesised posting has amount");
+        let decimal = amount.by_commodity.get("$").expect("$ commodity");
+        // *-1 * $-100.00 = $100.00 (sign flip)
+        assert_eq!(
+            decimal.to_decimal(),
+            rust_decimal::Decimal::from(100),
+            "*-1 of $-100 should yield $100"
+        );
+    }
+
+    /// `* 0.5` with whitespace between `*` and the number is accepted.
+    #[test]
+    fn ledger_star_n_with_whitespace_is_accepted() {
+        let input = "\
+= /^Income/
+    (Split:Half)  * 0.5
+
+2024-01-01 * Salary
+    Income:Salary  $-200.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Split:Half")
+            .collect();
+        assert_eq!(synth.len(), 1);
+        let amount = synth[0].amount.as_ref().expect("has amount");
+        let decimal = amount.by_commodity.get("$").expect("$ commodity");
+        // * 0.5 * $-200.00 = $-100.00
+        assert_eq!(
+            decimal.to_decimal(),
+            rust_decimal::Decimal::from(-100),
+            "* 0.5 of $-200 should yield $-100"
+        );
+    }
+
+    /// hledger frontend: `*N` explicit multiplier is accepted and produces the
+    /// same result as the bare decimal form.
+    #[test]
+    fn hledger_star_n_multiplier_equals_bare_decimal() {
+        use crate::{grammars::hledger::parse_hledger, resolution::HIR};
+        let input = "\
+= expenses:groceries
+    (budget:groceries)  *0.10
+
+2024-01-01 * Shopping
+    expenses:groceries  $50
+    assets:cash
+";
+        let ast = parse_hledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let journal = crate::elaborate(hir, &crate::grammars::hledger::hledger_defaults())
+            .expect("elaboration failed");
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "budget:groceries")
+            .collect();
+        assert_eq!(synth.len(), 1, "one synthesised posting expected");
+        let amount = synth[0].amount.as_ref().expect("has amount");
+        let decimal = amount.by_commodity.get("$").expect("$ commodity");
+        // *0.10 * $50 = $5.00
+        assert_eq!(
+            decimal.to_decimal(),
+            rust_decimal::Decimal::from(5),
+            "*0.10 of $50 should yield $5"
+        );
+    }
+
+    /// hledger frontend: `*-1` (negative multiplier) negates the matched amount.
+    #[test]
+    fn hledger_star_negative_one_negates_matched_amount() {
+        use crate::{grammars::hledger::parse_hledger, resolution::HIR};
+        let input = "\
+= expenses:groceries
+    (budget:groceries)  *-1
+
+2024-01-01 * Shopping
+    expenses:groceries  $50
+    assets:cash
+";
+        let ast = parse_hledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let journal = crate::elaborate(hir, &crate::grammars::hledger::hledger_defaults())
+            .expect("elaboration failed");
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "budget:groceries")
+            .collect();
+        assert_eq!(synth.len(), 1, "one synthesised posting expected");
+        let amount = synth[0].amount.as_ref().expect("has amount");
+        let decimal = amount.by_commodity.get("$").expect("$ commodity");
+        // *-1 * $50 = $-50
+        assert_eq!(
+            decimal.to_decimal(),
+            rust_decimal::Decimal::from(-50),
+            "*-1 of $50 should yield $-50"
+        );
+    }
 }

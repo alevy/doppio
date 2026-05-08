@@ -842,6 +842,38 @@ fn parse_posting(pair: Pair<Rule>) -> Result<Posting, Box<dyn std::error::Error>
 fn parse_amount_logic(pair: Pair<Rule>) -> Result<AmountDetails, Box<dyn std::error::Error>> {
     let p = pair.into_inner().next().unwrap();
     match p.as_rule() {
+        Rule::auto_multiplier => {
+            // `*N` multiplier form: `"*" ws* (prefix_op ws*)? number`.
+            // Lower to a bare-number ValueExpr identical to what a plain
+            // bare decimal produces, so the elaborator's `is_bare_number_expr`
+            // check identifies it as a multiplier without any new semantic path
+            // (#254).
+            let mut inner = p.into_inner();
+            // Optional prefix_op, then number.
+            let first = inner
+                .next()
+                .expect("auto_multiplier must have at least a number");
+            let (sign, number_str) = if first.as_rule() == Rule::prefix_op {
+                let s = first.as_str();
+                let n = inner
+                    .next()
+                    .expect("auto_multiplier prefix_op must be followed by number");
+                (s, n.as_str())
+            } else {
+                ("", first.as_str())
+            };
+            let cleaned = format!("{sign}{}", number_str.replace(',', ""));
+            let value: Decimal = cleaned.parse().unwrap_or(Decimal::ZERO);
+            Ok(AmountDetails::Amount {
+                value: ValueExpr::Amount {
+                    value,
+                    commodity: None,
+                },
+                lot_annotation: None,
+                lot_pricing: None,
+                balance_assertion: None,
+            })
+        }
         Rule::value_logic => {
             let inner = p.into_inner();
 

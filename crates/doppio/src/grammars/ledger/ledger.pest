@@ -57,15 +57,13 @@ budget = ${
 // transactions; matched postings synthesise additional postings from
 // the rule body. See elaborator.rs for the application semantics (#249).
 //
-// Implicit multiplier semantics: a body posting amount that is a bare
-// commodity-less number (e.g. `0.10`) is interpreted as a multiplier of
-// the matched posting's amount in its commodity. A body posting amount with
-// an explicit commodity (e.g. `$10.00`) is taken literally. This covers the
-// canonical tithe / proportional-tax pattern without requiring the explicit
-// `*N` prefix syntax.
-//
-// Explicit `*N` multiplier prefix syntax is NOT yet supported and will
-// produce a parse error. See issue #249 for tracking.
+// Multiplier semantics: a body posting amount that is a bare commodity-less
+// number (e.g. `0.10`) is interpreted as a multiplier of the matched
+// posting's amount in its commodity. The explicit `*N` prefix form
+// (e.g. `*-1`, `* 0.5`) is also accepted and lowers to the same bare-number
+// multiplier representation — no new semantic path is required in the
+// elaborator. Body postings with an explicit commodity symbol (e.g. `$10.00`)
+// are taken as literal amounts. See `auto_multiplier` below and #254.
 auto_rule = ${
     "=" ~ ws+ ~ rule_query ~ NEWLINE ~
     (transaction_note | posting | empty_indented_line)*
@@ -147,12 +145,26 @@ posting_note = ${ indent+ ~ note ~ (NEWLINE | EOI) }
 // canonical Ledger convention: it unambiguously separates the account name
 // from the amount, since account names may contain single spaces (e.g.
 // "Equity:Opening Balances").
+//
+// `auto_multiplier` is tried first so that the `*` prefix in automated-rule
+// body postings (e.g. `*-1`, `* 0.5`) is consumed before `value_logic`'s
+// expression parser (which also handles infix `*`). Outside auto-rule bodies
+// this is harmless: regular postings don't start with `*` anyway.
 amount_logic = ${
     (ws{2,} | "\t") ~ (
-        value_logic
+        auto_multiplier
+        | value_logic
         | assertion
     )
 }
+
+// Explicit `*N` multiplier form used in automated-rule body postings.
+// Matches `*<number>` or `* <number>` with an optional leading sign on the
+// number (e.g. `*-1`, `*0.5`, `* 0.12`). The `*` is consumed here and the
+// numeric part is lowered to the same bare-number `ValueExpr::Amount` as a
+// plain bare decimal — the elaborator's `is_bare_number_expr` treats both
+// forms identically (#254).
+auto_multiplier = ${ "*" ~ ws* ~ (prefix_op ~ ws*)? ~ number }
 
 // A value expression, optionally followed by lot annotations and/or lot pricing
 // and/or a balance assertion check.

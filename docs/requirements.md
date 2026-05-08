@@ -559,7 +559,7 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 **Budget / periodic directives** (`~`) — Issue #49 decision: parsed but intentionally not elaborated. doppio models accounting facts, not budget planning.
 
-**Automated transaction `*N` explicit multiplier syntax** — The `= query` rule shape and bare-decimal multiplier semantics are implemented (#249). The explicit `*N` form (e.g. `*0.10`) causes a parse error and is tracked in a follow-up issue.
+**Automated transaction `*N` explicit multiplier syntax** — Implemented in #254. Both `*N` and `* N` (with whitespace) forms are now accepted in auto-rule body postings in both the ledger-cli and hledger frontends. They lower to the same bare-number multiplier representation as a plain bare decimal.
 
 **Transaction matching / duplicate detection** — Phase 4 or later
 
