@@ -6219,8 +6219,8 @@ account Assets:Savings
 
     /// `C 1.00s = 100c`: posting 250c converts to 2.50s.
     ///
-    /// Divisor = N1 * N2 = 1 * 100 = 100.  Empirically verified against
-    /// ledger-cli: `250c / 100 = 2.50s`.
+    /// N1 = 1, N2 = 100.  Divisor = N2/N1 = 100/1 = 100.
+    /// 250c / 100 = 2.50s.  Formulas N1*N2 and N2/N1 coincide for N1=1.
     #[test]
     fn test_c_directive_c_to_s() {
         let input = "\
@@ -6241,14 +6241,20 @@ C 1.00s = 100c
         assert_eq!(
             cash.amount_in("s"),
             Some(dec!(2.50)),
-            "250c / (1 * 100) should be 2.50s"
+            "250c / 100 should be 2.50s"
         );
     }
 
-    /// `C 100c = 1.00s`: LHS commodity is c (canonical), posting 250c -> 2.50c.
+    /// `C 100c = 1.00s`: LHS commodity is c (canonical), posting 250c stays 250c.
     ///
-    /// N1 = 100, N2 = 1.  Posting in X (canonical): divisor = N1 = 100.
-    /// 250c / 100 = 2.50c.  Verified empirically against ledger-cli.
+    /// N1 = 100, N2 = 1.  Principled math: `C N1 X = N2 Y` means N1 X = N2 Y,
+    /// so 1 X = (N2/N1) Y.  A posting in the canonical X commodity is not
+    /// rescaled — the self-loop sentinel carries divisor = 1.  Therefore a
+    /// `250c` posting remains 250c in the elaborated journal.
+    ///
+    /// This differs from the legacy N1*N2 formula's "normalisation" behaviour.
+    /// Under principled math, `C 100c = 1s` means "100 cents = 1 shilling";
+    /// a posting of 250 cents is simply 250 cents (no implicit scale).
     #[test]
     fn test_c_directive_canonical_posting() {
         let input = "\
@@ -6266,10 +6272,12 @@ C 100c = 1.00s
             .iter()
             .find(|p| p.account == "Assets:Cash")
             .unwrap();
+        // Under principled math the self-loop for the canonical LHS commodity has
+        // divisor = 1, so 250c / 1 = 250c (no rescaling).
         assert_eq!(
             cash.amount_in("c"),
-            Some(dec!(2.50)),
-            "250c / 100 (= N1) should be 2.50c when c is the canonical LHS commodity"
+            Some(dec!(250)),
+            "posting in canonical commodity should not be rescaled (divisor = 1)"
         );
     }
 
@@ -6506,5 +6514,211 @@ C 1.00s = 100c
             .find(|p| p.account == "Assets:Cash")
             .unwrap();
         assert_eq!(cash.amount_in("USD"), Some(dec!(100)));
+    }
+
+    // -----------------------------------------------------------------------
+    // N1 ≠ 1 regression tests — #274 (correct divisor formula N2/N1)
+    // -----------------------------------------------------------------------
+
+    /// Regression from #274 empirical example: `C 100 SLV = 1 G`.
+    ///
+    /// N1 = 100, N2 = 1.  Divisor = N2/N1 = 1/100 = 0.01.
+    /// 1G / 0.01 = 100 SLV.  The old N1*N2=100 formula gave 1G/100=0.01 SLV.
+    ///
+    /// A balanced transaction `Assets:A 1G / Assets:B -100 SLV` must elaborate
+    /// without error: both sides reduce to the SLV chain root.
+    #[test]
+    fn test_c_directive_n1_ne_1_single_hop_g_to_slv() {
+        let input = "\
+C 100 SLV = 1 G
+
+2024-01-01 mixed
+  Assets:A    1 G
+  Assets:B   -100 SLV
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let asset_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:A")
+            .unwrap();
+        let asset_b = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:B")
+            .unwrap();
+        // 1G / (1/100) = 100 SLV (divisor = N2/N1 = 1/100 = 0.01)
+        assert_eq!(
+            asset_a.amount_in("SLV"),
+            Some(dec!(100)),
+            "1G should convert to 100 SLV with N1=100, N2=1"
+        );
+        // -100 SLV / 1 (self-loop sentinel for SLV) = -100 SLV
+        assert_eq!(
+            asset_b.amount_in("SLV"),
+            Some(dec!(-100)),
+            "SLV posting should remain -100 SLV"
+        );
+    }
+
+    /// Full repro from issue #274: `C 1 SLV = 100c` + `C 100 SLV = 1 G`.
+    ///
+    /// Both conversions target SLV (Y-shape topology, hub at SLV).
+    /// - c → SLV: divisor = N2/N1 = 100/1 = 100;  1c → 1/100 SLV
+    /// - G → SLV: divisor = N2/N1 = 1/100 = 0.01; 1G → 1/0.01 = 100 SLV
+    ///
+    /// Transaction `1G / -10000c` balances: 100 SLV + (-10000/100) SLV = 0.
+    #[test]
+    fn test_c_directive_n1_ne_1_issue_274_repro() {
+        let input = "\
+C 1 SLV = 100c
+C 100 SLV = 1 G
+
+2024-01-01 mixed
+  Assets:A    1 G
+  Assets:B  -10000c
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let asset_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:A")
+            .unwrap();
+        let asset_b = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:B")
+            .unwrap();
+        // 1G / 0.01 = 100 SLV
+        assert_eq!(
+            asset_a.amount_in("SLV"),
+            Some(dec!(100)),
+            "1G should convert to 100 SLV"
+        );
+        // -10000c / 100 = -100 SLV
+        assert_eq!(
+            asset_b.amount_in("SLV"),
+            Some(dec!(-100)),
+            "-10000c should convert to -100 SLV"
+        );
+    }
+
+    /// N1 ≠ 1 with fractional ratio: `C 5 X = 500 Y`.
+    ///
+    /// N1 = 5, N2 = 500.  Principled math: 5X = 500Y, so 1X = 100Y.
+    /// Divisor = N2/N1 = 500/5 = 100.
+    ///
+    /// A transaction `Assets:A 5X / Assets:B -500Y` balances:
+    ///   5X (canonical, self-loop divisor=1 → stays 5X)
+    ///   -500Y / 100 = -5X
+    ///   sum = 5 + (-5) = 0 ✓
+    #[test]
+    fn test_c_directive_n1_ne_1_fractional_ratio() {
+        let input = "\
+C 5 X = 500 Y
+
+2024-01-01 Test
+  Assets:A    5 X
+  Assets:B  -500 Y
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let asset_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:A")
+            .unwrap();
+        let asset_b = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:B")
+            .unwrap();
+        // 5X: self-loop divisor=1, so 5X / 1 = 5X (no rescaling).
+        assert_eq!(
+            asset_a.amount_in("X"),
+            Some(dec!(5)),
+            "5X should remain 5X (canonical, self-loop divisor=1)"
+        );
+        // -500Y / 100 = -5X (divisor = N2/N1 = 100).
+        assert_eq!(
+            asset_b.amount_in("X"),
+            Some(dec!(-5)),
+            "-500Y should convert to -5X via divisor = N2/N1 = 100"
+        );
+    }
+
+    /// Two-hop chain with N1 ≠ 1 in one hop: `C 1 X = 5 Y` + `C 2 Z = 1 X`.
+    ///
+    /// Principled math:
+    ///   C 1 X = 5 Y → 1X = 5Y → divisor Y→X = N2/N1 = 5/1 = 5
+    ///   C 2 Z = 1 X → 2Z = 1X → divisor X→Z = N2/N1 = 1/2 = 0.5
+    ///   Combined Y→Z = 5 * 0.5 = 2.5
+    ///
+    /// Verify: 1X = 5Y and 2Z = 1X = 5Y, so 1Z = 2.5Y.
+    /// Transaction `2Z / -5Y`: 2Z stays 2Z, -5Y / 2.5 = -2Z. Balances ✓.
+    #[test]
+    fn test_c_directive_two_hop_n1_ne_1() {
+        let input = "\
+C 1 X = 5 Y
+C 2 Z = 1 X
+
+2024-01-01 Test
+  Assets:A    2 Z
+  Assets:B   -5 Y
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let asset_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:A")
+            .unwrap();
+        let asset_b = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:B")
+            .unwrap();
+        // Z is root. Self-loop divisor = 1, so 2Z stays 2Z.
+        assert_eq!(
+            asset_a.amount_in("Z"),
+            Some(dec!(2)),
+            "2Z should remain 2Z (self-loop divisor=1)"
+        );
+        // -5Y via Y→Z composed divisor = 2.5: -5 / 2.5 = -2Z.
+        assert_eq!(
+            asset_b.amount_in("Z"),
+            Some(dec!(-2)),
+            "-5Y should convert to -2Z via 2-hop chain (divisor=2.5)"
+        );
+    }
+
+    /// Zero LHS amount `C 0 X = 100 Y` must produce
+    /// `ResolutionError::InvalidCommodityConversion` — division by zero.
+    #[test]
+    fn test_c_directive_zero_lhs_errors() {
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let input = "\
+C 0 X = 100 Y
+
+2024-01-01 t
+  Assets:A  1 Y
+  Equity
+";
+        let ast = parse_ledger(input).expect("parse should succeed");
+        let err =
+            HIR::try_from(ast).expect_err("zero LHS amount should produce a resolution error");
+        assert!(
+            matches!(
+                err,
+                crate::resolution::ResolutionError::InvalidCommodityConversion(_, _)
+            ),
+            "expected InvalidCommodityConversion, got: {err:?}"
+        );
     }
 }
