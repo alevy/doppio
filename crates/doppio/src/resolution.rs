@@ -167,7 +167,18 @@ pub struct GlobalContext {
 /// [`Self::tolerance_mode`] when no override is present. The config
 /// stays immutable per elaboration call; the override map is
 /// journal-derived and lives on `GlobalContext`.
+///
+/// Marked `#[non_exhaustive]`: external callers can construct via
+/// `Default::default()` or one of the per-frontend defaults
+/// (`ledger_defaults()`, `hledger_defaults()`, `beancount_defaults()`)
+/// and mutate fields, but cannot use struct-literal syntax with
+/// `..Default::default()` from outside the crate. New per-frontend
+/// semantic axes are expected (e.g. `LotValidationMode` and
+/// `default_booking_method` were both added post-1.0.0); the
+/// non-exhaustive marker keeps further additions additive rather
+/// than major-breaking.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ElaborationConfig {
     /// Default per-transaction balance-residual tolerance. Per-commodity
     /// overrides on [`GlobalContext::tolerance_overrides`] take
@@ -299,8 +310,11 @@ pub enum LotValidationMode {
 /// validation orthogonal to this).
 ///
 /// The variants mirror Beancount's `Booking` enum (in
-/// `beancount/core/data.py`) modulo casing and naming.
+/// `beancount/core/data.py`) modulo casing and naming. Marked
+/// `#[non_exhaustive]` because Beancount itself has added booking
+/// methods over its history; doppio expects to track those.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BookingMethod {
     /// Reject ambiguous `{}` matches with an error. Default in
     /// Beancount; the only resolution allowed is when exactly one
@@ -334,7 +348,12 @@ pub enum BookingMethod {
 /// tolerance) or absorbs the residual into a synthesized posting
 /// whose account is the empty string `""` -- the doppio convention
 /// for "rounding residual; not a user-named account."
+///
+/// Marked `#[non_exhaustive]`: alternate tolerance models (e.g.
+/// fixed-cents, per-commodity-explicit) are plausible additions
+/// and shouldn't trigger a major SemVer break.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum ToleranceMode {
     /// Accept residuals whose absolute value is at most
     /// `fraction * 10^(-min_scale)` per commodity, where `min_scale`
@@ -381,7 +400,16 @@ pub struct CommodityProperties {
 }
 
 /// Properties of an account declared with an `account` directive.
+///
+/// Marked `#[non_exhaustive]`: external HIR-construction code can
+/// build via `Default::default()` and mutate fields, but cannot use
+/// struct-literal-with-spread syntax. The set of properties is
+/// expected to grow as we wire more directive sub-items through
+/// (e.g. commodity restrictions on `open`, account-level booking
+/// overrides for #248-style features); the marker keeps additions
+/// additive.
 #[derive(Default, Debug)]
+#[non_exhaustive]
 pub struct AccountProperties {
     /// A free-form note describing the account.
     pub note: Option<String>,

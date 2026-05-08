@@ -129,59 +129,117 @@ surface.
 
 ## [Unreleased]
 
+---
+
+## [2.0.0] - 2026-05-08
+
+The 2.0 cut bundles every post-1.0.0 change. v1.0.0 marked stability of the `.dop` wire format and the CLI; the library API has since added a Beancount frontend, a configurable elaboration semantics layer, per-lot inventory tracking, and auto-booking for `{}` reductions. Several changes are major SemVer breaks per [Cargo's guidance](https://doc.rust-lang.org/cargo/reference/semver.html), so this is a major bump.
+
+The `.dop` wire format is unchanged (still version 3); v1.0.0-built `.dop` files load unchanged in v2.0.0.
+
+### Breaking changes -- public Rust API surface
+
+- **`elaborate()` signature** (#239): now takes an extra `&ElaborationConfig` argument. Prior signature was `pub fn elaborate(hir: HIR) -> Result<Journal, ElaborationError>`; new signature adds `config: &resolution::ElaborationConfig`. Migration: pick a per-frontend default constructor — `ledger_defaults()`, `hledger_defaults()`, or `beancount_defaults()` — and pass `&that()`.
+
+- **`Frontend` trait gained a required method** `elaboration_defaults(&self) -> ElaborationConfig` (#239). No default body. Out-of-tree `impl Frontend for ...` blocks must add it, typically delegating to the per-frontend default constructor. Returns the elaboration config that mirrors the canonical tool's own behaviour.
+
+- **`ElaborationError` enum: 4 new variants** added across #237 and #238: `PhantomLotReduction`, `AmbiguousLotMatch`, `OverReductionInBooking`, `AugmentingPostingWithMissingCost`. The enum is now `#[non_exhaustive]`, so external matches must include a `_` arm.
+
+- **`AccountProperties` struct: new field `booking_method`** (#238). Now `#[non_exhaustive]`; external callers can construct via `Default::default()` and mutate fields, but cannot use struct-literal-with-spread.
+
+- **`ElaborationConfig` struct: new fields** `lot_validation_mode` (#237) and `default_booking_method` (#238) on top of the type itself being introduced by #239. Now `#[non_exhaustive]`; same construction restriction as `AccountProperties`.
+
+- **`ElaborationError`, `EvaluationError`, `AccountProperties`, `ElaborationConfig`, `BookingMethod`, `ToleranceMode` are now `#[non_exhaustive]`.** Future additive variants / fields won't trigger another major bump.
+
+### Migration
+
+```rust
+// v1.0.0
+let journal = doppio::elaborate(hir)?;
+
+// v2.0.0
+let journal = doppio::elaborate(
+    hir,
+    &doppio::grammars::ledger::ledger_defaults(), // or hledger_defaults() / beancount_defaults()
+)?;
+```
+
+```rust
+// v2.0.0 — Frontend impls add a method
+impl Frontend for MyFrontend {
+    fn extensions(&self) -> &'static [&'static str] { ... }
+    fn elaboration_defaults(&self) -> ElaborationConfig {
+        ElaborationConfig::default() // or a custom config
+    }
+    fn parse(&self, ...) -> Result<HIR, _> { ... }
+}
+```
+
+```rust
+// v2.0.0 — match on ElaborationError needs a `_` arm now
+match err {
+    ElaborationError::TransactionDoesNotBalance(_) => ...,
+    ElaborationError::BalanceAssertionFailed { .. } => ...,
+    // ... pre-existing variants ...
+    _ => ...,  // required since the enum is #[non_exhaustive]
+}
+```
+
+```rust
+// v2.0.0 — AccountProperties / ElaborationConfig construction
+let mut props = AccountProperties::default();
+props.note = Some("Checking".into());
+// (Cannot use `AccountProperties { note: ..., ..Default::default() }` from outside the doppio crate.)
+```
+
 ### Added
 
-- **Per-lot inventory in the elaborator's running state.** Postings are
-  now tracked per `(account, commodity, lot)` rather than per
-  `(account, commodity)` aggregate. Lot keys carry cost basis,
-  acquisition date, and free-form note. Subtree aggregation, balance
-  assertions, and `==*` synthesis collapse the lot dimension and
-  behave identically for journals without lot annotations. (#237)
-- **`ElaborationConfig::lot_validation_mode`** (`Permissive` /
-  `Strict`). The Beancount frontend defaults to `Strict`, matching
-  bean-check's STRICT booking method: a reducing posting whose lot key
-  has no matching position in an account that already holds the same
-  commodity under different lot keys is rejected with
-  `ElaborationError::PhantomLotReduction`. ledger-cli + hledger
-  defaults remain `Permissive`. (#237)
-- **`BookingMethod` and auto-booking for Beancount `{}` reductions.**
-  The Beancount parser now captures the booking method on `open`
-  directives as a structured `AccountItem::Booking(BookingMethod)`
-  (previously stashed as a free-form note). At elaboration time, a
-  reducing posting whose lot annotation is `{}` (or a partial spec
-  like `{2024-01-15}`) is matched against the account's running
-  inventory per the configured method: `FIFO` consumes oldest lots
-  first, `LIFO` newest, `HIFO` highest-cost, `STRICT` errors on
-  ambiguity, `NONE` skips booking entirely. Multi-lot reductions are
-  split into one synthesised posting per matched lot. Lot dates are
-  auto-filled from the transaction date on augmenting postings (so
-  `{1500 USD}` records `[2024-01-15]` when written on a 2024-01-15
-  transaction), matching bean-check. (#238)
-- **Cost-basis-aware gain inference for `{}` reductions** (#242). The
-  booking step now runs *inline* during the per-posting elaboration
-  loop (rather than as a post-pass after transaction-balance check),
-  so each booked sub-posting's cost-basis cash flows into
-  `transaction_state` before the null posting is inferred. A null
-  `Income:Trading` posting in a `{} @ price` transaction now fills
-  with the realized gain (cash − sum of matched lot costs) rather
-  than zero, matching bean-check. New parity fixture
-  `tests/parity/beancount-fifo.beancount` exercises this end-to-end.
-- **Per-lot inventory parity comparator** (#227). The parity-test
-  harness now diffs per-`(account, commodity, cost, date, label)`
-  positions in addition to the existing aggregated-by-commodity
-  balance check. Catches lot-dimension regressions that the previous
-  comparator silently aggregated away (e.g. two augmentations at
-  different cost bases collapsed into one bucket).
-  `dop register --format=json` rows now carry an optional `lot`
-  object with `cost_amount` / `cost_commodity` / `date` / `note`
-  fields when present.
-- **Partial-spec lot resolution for reducing postings.** A reduction
-  like `-30 AAPL {185.40 USD}` (cost specified, date inherited as
-  None) now matches against the concrete dated inventory lot via the
-  same booking pass that handles `{}` — bean-check's strict booking
-  rewrites partial-spec reductions to the full lot key, and doppio
-  now mirrors that. Phantom-lot reductions (cost matches no inventory
-  lot) error with `OverReductionInBooking`. (#227)
+#### New frontend
+- **`BeancountFrontend`** (#145, #146, #147 + completeness PRs #185, #187, #188, #189, #193, #199, #205, #210, #212, #214, #220). Full Beancount frontend covering the parser, AST adapter, `pad` directive evaluator, balance assertions, escape sequences in string literals, `pushtag` / `poptag` / `pushmeta` / `popmeta` block scoping, multi-commodity pad, org-mode outline tolerance.
+
+#### Elaboration semantics
+- **`ElaborationConfig`** decouples elaboration semantics from frontend syntax (#239). Three knobs at v1.0.0-cut: `tolerance_mode`, `balance_mode`, `assertion_scope`. Two more added in this release: `lot_validation_mode` (#237), `default_booking_method` (#238). Per-frontend default constructors: `ledger_defaults()`, `hledger_defaults()`, `beancount_defaults()`.
+- **Per-lot inventory in the elaborator's running state** (#237). Postings tracked per `(account, commodity, lot)` rather than per `(account, commodity)` aggregate. Lot keys carry cost basis, acquisition date, free-form note. Subtree aggregation, balance assertions, and `==*` synthesis collapse the lot dimension and behave identically for journals without lot annotations.
+- **`LotValidationMode`** (`Permissive` / `Strict`). The Beancount frontend defaults to `Strict`: a reducing posting whose lot key has no matching position in an account that already holds the same commodity under different lots raises `ElaborationError::PhantomLotReduction`, matching bean-check's STRICT booking. ledger-cli + hledger defaults remain `Permissive`. (#237)
+- **`BookingMethod` and auto-booking for `{}` reductions** (#238). Six values mirroring Beancount's `Booking` enum: `Strict` (default; reject ambiguous matches), `StrictWithSize`, `None`, `Average`, `Fifo`, `Lifo`, `Hifo`. The Beancount parser captures it on `open` directives as a structured `AccountItem::Booking(BookingMethod)`. At elaboration time a `{}` (or partial-spec) reduction is matched against the account's inventory per the configured method; multi-lot reductions split into one synthesised posting per matched lot. Lot dates auto-fill from the transaction date on augmenting postings, required for FIFO / LIFO to distinguish cost-only annotations.
+- **Cost-basis-aware gain inference for `{}` reductions** (#242). The booking step runs inline during the per-posting elaboration loop, so each booked sub-posting's cost-basis cash flows into `transaction_state` before the null posting is inferred. A null `Income:Trading` posting in a `{} @ price` transaction now fills with the realised gain (cash − cost-basis sum) rather than zero, matching bean-check.
+- **Partial-spec lot resolution** (#227). `-30 AAPL {185.40 USD}` (cost specified, date inherited as None) now matches against the concrete dated inventory lot via the same booking pass that handles `{}`. Phantom-cost reductions error with `OverReductionInBooking`.
+- **Beancount-style balance tolerance via synthetic rounding posting** (#198). New `--tolerance` CLI flag accepts any decimal in `[0, 1)`. `option "inferred_tolerance_default"` directives populate per-commodity overrides on `GlobalContext::tolerance_overrides`.
+- **Cross-frontend total-cost lot basis** (#193). `{{total}}` syntax computes per-unit cost as `total / units` consistently across the three frontends.
+- **hledger `==*` / `=*` strict-zero balance assignment** (#200, #207). Subtree-aware: `Income ==* 0` zeroes the entire `Income:*` subtree by synthesising a corrective posting on `Income` itself.
+- **hledger account-type tag inheritance** (#217). Pinned via tests.
+- **Subtree-aware `balance` directives** for Beancount and hledger `==*` (#214).
+- **Per-frontend lot `{cost}` / `@price` balance semantics** (#210). `BalanceMode::CostBasis` (ledger-cli + Beancount): `{cost}` drives cash, `@price` informational. `BalanceMode::AtPriceWithSynthesis` (hledger): `@price` drives cash, gains synthesised on the configured account.
+
+#### Parser / frontend completeness
+- **Beancount pad fires per-commodity** (#220). Each asserted commodity on the same target consumes the pending pad once.
+- **Beancount accepts shebang and `#+` org-mode startup directives** (#199).
+- **hledger `comment ... end comment` block-comment syntax** (#205).
+- **ledger `apply tag` / `end tag` block markers** propagate onto enclosed transactions (#222).
+- **ledger automated transaction rules `= /pattern/`** parse without error (#219); elaboration deferred to a future release.
+- **ledger parser tolerates trailing whitespace** on posting lines (#247). Real-world journals (e.g. ledger-cli's own `test/input/standard.dat`) pad account names to a fixed column; the prior strict rule rejected that padding on null postings.
+- **Beancount string-literal escape sequences** (#187).
+
+#### Tooling and tests
+- **Cross-frontend parity harness** (#183) under `scripts/parity_check.py`. Five comparators -- balance equality, per-transaction tags + metadata (#226 Phase 1), explicit historical-price quotes (Phase 2), pad-synthesised transactions (Phase 3), and per-`(account, commodity, lot)` inventory positions (#227 Phase 4) -- plus a negative-control mode for fixtures that should be rejected by both tools (#226 acceptance: comparator self-tests). 17 positive + 4 negative fixtures vendored under `tests/parity/`. Beancount, hledger, ledger-cli all covered above the bar set in #197.
+- **`dop register --format=json` rows** carry an optional `lot` object (`cost_amount`, `cost_commodity`, `date`, `note`) when present (#227). Older rows without the field continue to deserialise.
+- **`dop balance --format=json`** stable across the additions.
+
+### Fixed
+
+- **#247** ledger parser rejects null posting with trailing whitespace -- regression test.
+- **#220** Beancount pad fired only once per target account; now fires per-commodity.
+- **#185** lot-annotation completeness: `{{total}}` arithmetic, parenthesised cost arithmetic, per-currency basis.
+- **#193** cross-frontend `{{total}}` lot basis was inconsistent.
+
+### Wire format
+
+`.dop` schema unchanged (still version 3). v1.0.0-built `.dop` files load unchanged. v2.0.0-built `.dop` files written from the same source may differ from v1.0.0 output in two observable ways:
+
+1. **Lot acquisition dates** auto-fill from the transaction date on augmenting postings. v1.0.0 source `Assets:Brokerage 10 AAPL {$150}` recorded `lot.date = None`; v2.0.0 records `lot.date = transaction_date`. Required for FIFO / LIFO matching.
+2. **`{}` reductions** become per-lot booked sub-postings. v2.0.0 may produce more postings per transaction than v1.0.0 from the same source.
+
+Neither requires a wire-format version bump; downstream consumers reading mixed-vintage `.dop` files should expect the per-lot dimension to be richer in v2.0.0-built files.
 
 ---
 
