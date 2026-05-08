@@ -190,12 +190,19 @@ impl Context {
 
             // Walk the chain until we hit a root (commodity not in the map)
             // or a self-loop sentinel (commodity maps to itself).
+            //
+            // Self-loop sentinels always carry divisor = 1 (since #274 changed
+            // the LHS insertion to use `Decimal::ONE`). When we hit a self-loop
+            // we stop WITHOUT multiplying its divisor into the total — multiplying
+            // by 1 is a no-op anyway, but the explicit break-before-multiply
+            // documents the intent: the self-loop is a terminus marker, not a
+            // scaling step.
             while let Some((next, divisor)) = self.commodity_conversions.get(&current).cloned() {
-                total_divisor *= divisor;
                 if next == current {
                     // Self-loop sentinel: this is the chain root; stop.
                     break;
                 }
+                total_divisor *= divisor;
                 current = next;
                 hops += 1;
                 if hops > max_hops {
@@ -844,6 +851,12 @@ pub enum ResolutionError {
     /// Chains like `c → s → G` are valid and are fully resolved to the chain
     /// root; a cycle has no root and cannot be resolved.
     CommodityConversionCycle(String),
+    /// A `C` directive has a zero LHS amount, making the divisor formula
+    /// `N2 / N1` undefined (division by zero).
+    ///
+    /// The two carried strings are the LHS and RHS commodity names from the
+    /// offending directive, e.g. `("X", "Y")` for `C 0 X = 100 Y`.
+    InvalidCommodityConversion(String, String),
 }
 
 impl std::fmt::Display for ResolutionError {
@@ -860,6 +873,13 @@ impl std::fmt::Display for ResolutionError {
                     f,
                     "Cycle detected in C commodity-conversion directives \
                      involving commodity `{commodity}`"
+                )
+            }
+            ResolutionError::InvalidCommodityConversion(lhs, rhs) => {
+                write!(
+                    f,
+                    "C directive `C 0 {lhs} = ... {rhs}` has a zero LHS amount; \
+                     divisor N2/N1 is undefined (division by zero)"
                 )
             }
         }
@@ -1196,17 +1216,22 @@ impl TryFrom<ast::Journal> for HIR {
                 ast::Entry::CommodityConversion { lhs, rhs } => {
                     // `C N1 X = N2 Y` — X (LHS commodity) is canonical, Y (RHS) is alias.
                     //
-                    // Empirically (verified against ledger-cli): the divisor that converts
-                    // a Y-amount to its X-equivalent is N1 * N2.  For example:
-                    //   C 1.00s = 100c  -> divisor = 1 * 100 = 100; 250c / 100 = 2.50s
-                    //   C 100c = 1.00s  -> divisor = 100 * 1 = 100; 250c / 100 = 2.50c
+                    // Principled-math derivation: N1 units of X = N2 units of Y, so
+                    //   1 Y = (N1/N2) X, i.e. a Y-amount divides by (N2/N1) to get X.
+                    // Therefore: divisor = N2 / N1 (#274).
+                    //
+                    // Examples:
+                    //   C 1 SLV = 100c  -> divisor = 100/1 = 100;  250c / 100 = 2.50 SLV
+                    //   C 100 SLV = 1 G -> divisor = 1/100 = 0.01; 1G / 0.01 = 100 SLV
+                    //
+                    // N1 = 0 is rejected as division by zero.
                     //
                     // We insert TWO entries per directive:
-                    //   (rhs.commodity, (lhs.commodity, N1 * N2))
+                    //   (rhs.commodity, (lhs.commodity, N2/N1))
                     //     — converts RHS-commodity postings into LHS canonical
                     //   (lhs.commodity, (lhs.commodity, N1))
                     //     — scales postings already in the canonical commodity by N1
-                    //     (empirically: C 100c = 1s, posting 250c -> 2.5c)
+                    //     (C 100c = 1s, posting 250c -> 2.5c)
                     //
                     // After inserting, we run a fixpoint pass that transitively
                     // resolves all chains to their root commodity (fix for #266).
@@ -1216,9 +1241,14 @@ impl TryFrom<ast::Journal> for HIR {
                     //
                     // Cycles (C 1X = 1Y; C 1Y = 1X) are detected and surfaced as
                     // ResolutionError::CommodityConversionCycle.
-                    let divisor = lhs.value * rhs.value;
+                    let divisor = rhs.value.checked_div(lhs.value).ok_or_else(|| {
+                        ResolutionError::InvalidCommodityConversion(
+                            lhs.commodity.clone(),
+                            rhs.commodity.clone(),
+                        )
+                    })?;
                     let mut ctx = new_context.unwrap_or_else(|| context.clone());
-                    // RHS commodity -> LHS canonical with product divisor.
+                    // RHS commodity -> LHS canonical with divisor = N2/N1.
                     //
                     // Use `insert` (overwrite) so that a later directive like
                     // `C 1G = 100s` correctly updates s's entry to point at G,
@@ -1226,10 +1256,13 @@ impl TryFrom<ast::Journal> for HIR {
                     // by an earlier directive (`C 1s = 100c` inserts s→(s,1)).
                     ctx.commodity_conversions
                         .insert(rhs.commodity.clone(), (lhs.commodity.clone(), divisor));
-                    // LHS commodity -> itself, scaled by N1 only (self-loop sentinel).
+                    // LHS commodity -> itself with divisor = 1 (self-loop sentinel).
                     //
-                    // This handles the "posting in canonical" case, e.g.
-                    // `C 100c = 1s` with `250c` posting -> `2.50c`.
+                    // The self-loop marks the LHS as the chain root so the fixpoint
+                    // walk can terminate. Divisor = 1 (identity) so that postings
+                    // already in the canonical commodity are not rescaled — principled
+                    // math: `C N1 X = N2 Y` means 1X = (N2/N1)Y; a posting of A X
+                    // remains A X with no divisor applied.
                     //
                     // Use `entry(...).or_insert_with` so a more specific
                     // canonical-resolution inserted by an earlier directive is
@@ -1240,7 +1273,7 @@ impl TryFrom<ast::Journal> for HIR {
                     // entries that already have a non-self-loop target.
                     ctx.commodity_conversions
                         .entry(lhs.commodity.clone())
-                        .or_insert_with(|| (lhs.commodity.clone(), lhs.value));
+                        .or_insert_with(|| (lhs.commodity.clone(), rust_decimal::Decimal::ONE));
                     // Run the transitive fixpoint: chain c -> s -> G becomes
                     // c -> G directly (with product divisor).  Cycles error out.
                     ctx.resolve_commodity_conversion_chains()?;

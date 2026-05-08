@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **`C`-directive divisor formula corrected to `N2/N1` for all N1** (#274):
+  PR #261's implementation of `C N1 X = N2 Y` used the divisor formula `N1 × N2`, which
+  happens to equal the principled-math value `N2/N1` only when `N1 = 1`.  For `N1 ≠ 1`
+  the formula was wrong by a factor of `N1²`, producing silently incorrect balances without
+  any error.  Example: with `C 1 SLV = 100c` and `C 100 SLV = 1 G`, a transaction
+  `Assets:A 1G / Assets:B -10000c` failed with `TransactionDoesNotBalance({"SLV": -99.99})`
+  because doppio computed `1G → 0.01 SLV` (wrong) instead of `1G → 100 SLV` (correct).
+  The fix changes the per-directive divisor to `N2/N1`, directs the LHS self-loop sentinel to
+  carry divisor `1` (no implicit canonical-commodity rescaling), and updates the fixpoint walk
+  to stop before multiplying by the self-loop divisor.  Journals whose `C` directives all have
+  `N1 = 1` (the canonical ledger-cli form) are unaffected — the two formulas coincide there.
+  `C 0 X = ...` (zero LHS amount, undefined divisor) now produces a new
+  `ResolutionError::InvalidCommodityConversion` error rather than a panic or silent wrong result.
+
 - **Parenthesised expressions in posting amounts now evaluate correctly** (#272):
   A pre-existing grammar bug (present since pre-1.0, commit `8a5661b7`) caused any
   parenthesised expression in a ledger posting amount — such as `(9G * 6)` or `(54G)` —
@@ -46,15 +60,12 @@
 ### Added
 
 - **`C N1 X = N2 Y` commodity-conversion directive** for the ledger-cli frontend (#248 stage 2).
-  Declaring `C 1.00s = 100c` makes every `c`-denominated posting convert to shillings at a
-  divisor of `N1 * N2` (empirically confirmed against ledger-cli): `250c / 100 = 2.50s`.
-  Postings in the canonical LHS commodity are similarly scaled by `N1`.  The conversion is
-  applied at elaboration time via the existing `commodity_conversions` map; aliases declared with
-  `commodity X / alias Y` continue to use `divisor = Decimal::ONE` (a 1:1 rename, unchanged).
+  Declaring `C 1.00s = 100c` makes every `c`-denominated posting convert to shillings using
+  divisor `N2/N1` (principled math: N1 X = N2 Y ⟹ 1 Y = N1/N2 X): `250c / 100 = 2.50s`.
   The directive is context-versioned: transactions that precede a `C` directive in source order
   are not retroactively affected.  Transitive chains (e.g. `c → s → G`) are resolved to the
   chain root via an eager fixpoint pass; see #266 for the correction of #261's incomplete
-  single-hop implementation.
+  single-hop implementation.  See #274 for the correction to the divisor formula for N1 ≠ 1.
   Grammar addition: `number ~ commodity` (no-space number-first form, e.g. `1428c`) is now
   accepted in posting amounts, enabling wow.dat-style postings.
 
