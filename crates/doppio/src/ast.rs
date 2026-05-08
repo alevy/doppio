@@ -57,6 +57,29 @@ pub(crate) enum Entry {
     Pad(PadDirective),
     /// A comment line starting with `;`, `#`, `*`, `%`, or `|`.
     Comment(String),
+    /// An automated posting rule (`= QUERY\n  POSTINGS…`).
+    ///
+    /// During elaboration, for each real transaction whose postings match
+    /// the `query`, the rule's `postings` are instantiated as
+    /// virtual-unbalanced (`(Account)`) postings appended to the
+    /// matched transaction. Commodity-less amounts in the rule body are
+    /// interpreted as multipliers of the matched posting's amount; amounts
+    /// with an explicit commodity are taken literally.
+    AutoRule(AutoRule),
+}
+
+/// An automated posting rule (`= QUERY\n  POSTINGS…`).
+///
+/// When a real posting's account name satisfies the rule's `query`,
+/// the rule's body postings are synthesised as virtual-unbalanced
+/// entries appended to that transaction. Commodity-less body amounts
+/// are multipliers; commodity-bearing body amounts are literal.
+#[derive(Clone, Default, Debug)]
+pub(crate) struct AutoRule {
+    /// The raw query string (regex pattern or account expression).
+    pub query: String,
+    /// The body postings to synthesise on a match.
+    pub postings: Vec<Posting>,
 }
 
 /// A Beancount `pad` directive marker.

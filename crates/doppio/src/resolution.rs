@@ -54,6 +54,12 @@ pub struct HIR {
     pub global_context: GlobalContext,
     /// Market price quotes collected from `P` directives in source order.
     pub prices: Vec<HistoricalPrice>,
+    /// Automated posting rules (`= QUERY\n POSTINGS…`) collected during
+    /// resolution, in source order. Applied by the elaborator to every
+    /// real transaction: for each posting whose account name matches a
+    /// rule's query, the rule's body postings are synthesised as
+    /// virtual-unbalanced entries appended to that transaction.
+    pub(crate) auto_rules: Vec<ResolvedAutoRule>,
 }
 
 /// A resolved `P` price directive.
@@ -80,8 +86,42 @@ impl Default for HIR {
             contexts: vec![Context::default()],
             global_context: Default::default(),
             prices: vec![],
+            auto_rules: vec![],
         }
     }
+}
+
+/// A body posting within a resolved automated posting rule.
+///
+/// `amount` is `None` when the source posting was a null posting (no amount
+/// written). `multiplier` carries a commodity-less decimal that acts as a
+/// scale factor applied to the matched posting's amount; it is `None` when
+/// the body amount carried an explicit commodity (literal).
+///
+/// The `kind` from the source is intentionally not carried: all synthesised
+/// postings are forced to `VirtualUnbalanced` regardless of what was written
+/// in the rule body (this matches ledger-cli convention for `=` rules).
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedAutoRulePosting {
+    /// The account name for the synthesised posting (not yet alias-resolved).
+    pub account: String,
+    /// The raw amount details if an amount was written.
+    pub amount: Option<ast::AmountDetails>,
+}
+
+/// A resolved automated posting rule.
+///
+/// `query` is the compiled regex against which each real transaction's
+/// posting accounts are tested; on a match, every body posting in `postings`
+/// is instantiated as a virtual-unbalanced synthesised posting appended to
+/// that transaction.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedAutoRule {
+    /// Compiled query pattern. `/pattern/` queries become the bare regex;
+    /// bare-string queries become a case-insensitive substring regex.
+    pub query: regex::Regex,
+    /// The body postings to instantiate on a match.
+    pub postings: Vec<ResolvedAutoRulePosting>,
 }
 
 /// A snapshot of alias and default-commodity state at a point in the file.
@@ -721,11 +761,15 @@ impl std::fmt::Display for Posting {
 
 /// Errors that can occur during the resolution stage.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ResolutionError {
     /// A date could not be resolved: either the year was absent and no
     /// fallback was available, or the resulting calendar date is invalid
     /// (e.g. February 30).
     InvalidDate,
+    /// An automated transaction rule's query string could not be compiled
+    /// as a regex. Carries the raw query and the underlying regex error.
+    InvalidAutoRuleQuery(String, String),
 }
 
 impl std::fmt::Display for ResolutionError {
@@ -734,11 +778,29 @@ impl std::fmt::Display for ResolutionError {
             ResolutionError::InvalidDate => {
                 write!(f, "Invalid date")
             }
+            ResolutionError::InvalidAutoRuleQuery(query, err) => {
+                write!(f, "Invalid auto-rule query `{query}`: {err}")
+            }
         }
     }
 }
 
 impl std::error::Error for ResolutionError {}
+
+/// Compile an auto-rule query string into a regex.
+///
+/// `/pattern/` queries are compiled as-is (the delimiters are stripped);
+/// any other form is treated as a case-insensitive substring match,
+/// mirroring ledger-cli's behaviour for bare-string queries.
+fn compile_auto_rule_query(query: &str) -> Result<regex::Regex, ResolutionError> {
+    let pattern = if query.starts_with('/') && query.ends_with('/') && query.len() >= 2 {
+        query[1..query.len() - 1].to_string()
+    } else {
+        format!("(?i){}", regex::escape(query))
+    };
+    regex::Regex::new(&pattern)
+        .map_err(|e| ResolutionError::InvalidAutoRuleQuery(query.to_string(), e.to_string()))
+}
 
 impl HIR {
     /// Returns an iterator over only the [`Transaction`] entries in this HIR,
@@ -1031,6 +1093,21 @@ impl TryFrom<ast::Journal> for HIR {
                         strict: a.strict,
                     });
                     result.entries.push(ResolutionEntry { context_id, data });
+                }
+                ast::Entry::AutoRule(rule) => {
+                    // Collect into `auto_rules` rather than `entries` so the
+                    // elaborator can apply them to every transaction without
+                    // them appearing in the chronological entry stream.
+                    let query = compile_auto_rule_query(&rule.query)?;
+                    let postings = rule
+                        .postings
+                        .into_iter()
+                        .map(|p| ResolvedAutoRulePosting {
+                            account: p.account,
+                            amount: p.amount,
+                        })
+                        .collect();
+                    result.auto_rules.push(ResolvedAutoRule { query, postings });
                 }
             }
 

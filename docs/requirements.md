@@ -557,7 +557,9 @@ The revenue recognition transaction construction (`Step 3`) is **already impleme
 
 ### 6.1 Features Intentionally Deferred
 
-**Budget directives** (`~`) — Issue #49 decision: out of scope (not tracking budget execution, only accounting facts)
+**Budget / periodic directives** (`~`) — Issue #49 decision: parsed but intentionally not elaborated. doppio models accounting facts, not budget planning.
+
+**Automated transaction `*N` explicit multiplier syntax** — The `= query` rule shape and bare-decimal multiplier semantics are implemented (#249). The explicit `*N` form (e.g. `*0.10`) causes a parse error and is tracked in a follow-up issue.
 
 **Transaction matching / duplicate detection** — Phase 4 or later
 

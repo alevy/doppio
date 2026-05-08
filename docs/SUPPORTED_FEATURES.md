@@ -85,8 +85,8 @@ Status legend:
 | `P <date> <commodity> <price>` (historical price) | + | Stored on `journal.prices`; consumed by `Journal::exchange_rate_at()` and `dop balance/register --exchange COMMODITY` |
 | Standalone balance-assertion directive `<date> = account amount` | + | Enforced during elaboration |
 | `D $1000.00` (default commodity) | + | Both the bare-`D` form and the `commodity ... default` form are supported; bare `D` is lowered at parse time to the same `Directive::Commodity` representation |
-| `~` budget directive | - | Parsed but intentionally not elaborated. No effect on balances or reports |
-| `= payee` automated transactions | - | Not modelled |
+| `~` budget / periodic directive | ~ | Parsed but not elaborated (intentional parse-and-discard). No effect on balances or reports |
+| `= query` automated transaction rules | + | v2.1.0 (#249). Body postings synthesized as `PostingKind::VirtualUnbalanced`. Bare decimal amounts act as multipliers of the matched posting's commodity amount; amounts with an explicit commodity symbol are literal. Query strings: `/pattern/` → regex, bare string → case-insensitive substring match |
 
 ## Expression language
 
@@ -184,11 +184,17 @@ file extensions; selected automatically by `dop` and by
 | Date format `YYYY.MM.DD` | + | hledger extension |
 | Periodic transactions `~` | + | Parsed but not elaborated (same as ledger-cli `~` budget) |
 
+### Automated transaction rules (`= query`)
+
+| Feature | Status | Notes |
+|---|---|---|
+| `= query` automated rules (account-name match, multiplier and literal amounts) | + | v2.1.0 (#249). Same semantics as the ledger-cli frontend |
+| Explicit `*N` multiplier syntax in rule bodies | - | Causes a parse error. Tracked in a follow-up issue |
+
 ### Known limitations
 
 | Feature | Status | Notes |
 |---|---|---|
-| Automated posting `*N` arithmetic bodies | - | TODO(#103). The auto-rule shape is parsed but postings with `*N` multipliers cause a parse error. |
 | `comment` / `end comment` block comments | - | Not yet supported |
 | `Y year` directive (date inference) | - | Full four-digit year required in all dates |
 | Per-transaction `= DATE` effective date | - | hledger uses a different secondary-date syntax; not supported |
@@ -263,8 +269,8 @@ end-to-end coverage.
 
 These ledger-cli features are not modelled by doppio and aren't planned:
 
-- `~` budget directives (parsed but ignored)
-- `= payee` automated transactions (automated posting rule arithmetic bodies)
+- `~` budget / periodic directives (parsed but intentionally not elaborated)
+- Explicit `*N` multiplier syntax in automated transaction bodies (causes a parse error; tracked in a follow-up issue)
 - Third-or-later effective dates in transaction headers
 - ledger-cli's Lisp-style scripting / Python integration
 - Real-time market-price-driven FX conversion in balance reports

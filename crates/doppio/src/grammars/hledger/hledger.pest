@@ -81,10 +81,14 @@ period_expr = @{ (!(NEWLINE | ";") ~ ANY)+ }
 //
 // `= QUERY\n POSTINGS…`
 //
-// TODO(#103): Automated posting amounts may use `*N` multiplier expressions
-// that reference the matched posting's amount.  Parsing these is not yet
-// implemented.  For now the rule captures the outer shape; any posting whose
-// amount body uses `*N` will produce a parse error with a clear message.
+// Implicit multiplier semantics: a body posting amount that is a bare
+// commodity-less number (e.g. `0.10`) is interpreted as a multiplier of
+// the matched posting's amount in its commodity. A body posting amount with
+// an explicit commodity (e.g. `$10.00`) is taken literally. See elaborator.rs
+// and issue #249.
+//
+// The explicit `*N` prefix syntax is NOT yet supported and will produce a
+// parse error. See issue #249 for tracking.
 auto_rule = ${
     "=" ~ ws+ ~ rule_query ~ NEWLINE ~
     (transaction_note | posting | empty_indented_line)*

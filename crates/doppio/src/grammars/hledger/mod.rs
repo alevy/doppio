@@ -12,10 +12,10 @@
 //!
 //! ## Known limitations / stubs
 //!
-//! - **Automated posting arithmetic bodies** (`*N` multiplier expressions):
-//!   the `auto_rule` grammar rule captures the shape of an automated posting
-//!   rule but postings whose amounts use `*N` will produce a parse error.
-//!   See TODO(#103).
+//! - **Explicit `*N` multiplier syntax**: the auto-rule grammar accepts bare
+//!   commodity-less numbers as implicit multipliers (e.g. `0.10` multiplies
+//!   the matched posting's amount). The explicit `*N` prefix syntax is not
+//!   yet supported and will produce a parse error. See issue #249.
 //! - Full date inference from a `Y year` directive is not implemented.
 //!
 //! ## Block comments
@@ -108,13 +108,19 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     let _ = std::mem::replace(&mut self.base_path, old_base_path);
                 }
                 Rule::periodic_transaction => {
-                    // Periodic transactions (`~ monthly ...`) share the same
-                    // shape as ledger-cli budget entries: captured but not
-                    // elaborated. The postings are intentionally dropped.
+                    // Periodic transactions (`~ PERIOD_EXPR\n POSTINGS…`) are
+                    // parsed but discarded. They only materialise under
+                    // `--forecast` / budget reports, which doppio does not
+                    // model. Keeping this arm as an explicit no-op makes the
+                    // parse-and-discard intent clear. (#249)
                 }
                 Rule::auto_rule => {
-                    // Automated posting rules (`= QUERY`) are not yet
-                    // elaborated.  TODO(#103): implement automated postings.
+                    // Automated posting rules (`= QUERY\n POSTINGS…`).
+                    // Parse the query and body postings, then emit an
+                    // Entry::AutoRule so the elaborator can apply multiplier
+                    // semantics for each matching real posting (#249).
+                    let auto_rule = parse_auto_rule(pair)?;
+                    entries.push(Entry::AutoRule(auto_rule));
                 }
                 _ => {}
             }
@@ -203,6 +209,36 @@ fn parse_transaction(pair: Pair<Rule>) -> Result<Transaction, Box<dyn std::error
         notes,
         postings,
     })
+}
+
+/// Parse an `auto_rule` pair into an [`AutoRule`].
+///
+/// The hledger pest rule is identical in shape to the ledger one:
+/// ```text
+/// auto_rule = ${ "=" ~ ws+ ~ rule_query ~ NEWLINE ~
+///     (transaction_note | posting | empty_indented_line)* }
+/// ```
+///
+/// The `rule_query` child carries the raw pattern text. All `posting`
+/// children are parsed via `parse_posting`; note lines are discarded.
+fn parse_auto_rule(pair: Pair<Rule>) -> Result<AutoRule, Box<dyn std::error::Error>> {
+    let mut query = String::new();
+    let mut postings = Vec::new();
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::rule_query => {
+                query = child.as_str().trim().to_string();
+            }
+            Rule::posting => {
+                postings.push(parse_posting(child)?);
+            }
+            // transaction_note lines are intentionally ignored in the rule body.
+            _ => {}
+        }
+    }
+
+    Ok(AutoRule { query, postings })
 }
 
 fn parse_posting(pair: Pair<Rule>) -> Result<Posting, Box<dyn std::error::Error>> {
@@ -1315,7 +1351,6 @@ P 2024-02-15 AAPL $182.50
         assert_eq!(ann.note.as_deref(), Some("BUY-2024-01"));
     }
 
-    #[test]
     #[test]
     fn block_comment_closed_and_unclosed() {
         // Closed `comment` ... `end comment` block in the middle of a journal.

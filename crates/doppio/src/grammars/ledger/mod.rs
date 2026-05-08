@@ -154,16 +154,19 @@ impl<F: Fn(&str) -> Result<String, Box<dyn std::error::Error>>> Parser<F> {
                     let _ = std::mem::replace(&mut self.base_path, old_base_path);
                 }
                 Rule::budget => {
-                    // Budget entries (`~ monthly ...`) are intentionally not
-                    // modelled in this implementation. They represent
-                    // planned/expected amounts in ledger-cli but have no effect
-                    // on balances or reports. See GitHub issue #13.
+                    // Periodic transaction directives (`~ monthly ...`) are
+                    // parsed but discarded. They only materialise under
+                    // `--budget` / `--forecast` reports, which doppio does not
+                    // model. Keeping this arm as an explicit no-op makes the
+                    // parse-and-discard intent clear. (#249)
                 }
                 Rule::auto_rule => {
-                    // Automated posting rules (`= /pattern/`) parse but
-                    // are not yet elaborated. Matches the hledger
-                    // frontend's behaviour. Tracked under #219;
-                    // elaboration is deferred behind a real consumer.
+                    // Automated posting rules (`= QUERY\n POSTINGS…`).
+                    // Parse the query and body postings, then emit an
+                    // Entry::AutoRule so the elaborator can apply multiplier
+                    // semantics for each matching real posting (#249).
+                    let auto_rule = parse_auto_rule(pair)?;
+                    entries.push(Entry::AutoRule(auto_rule));
                 }
                 Rule::apply_tag_directive => {
                     // `apply tag <key>` or `apply tag <key>: <value>`. Push
@@ -738,6 +741,37 @@ fn parse_transaction(pair: Pair<Rule>) -> Result<Transaction, Box<dyn std::error
         notes,
         postings,
     })
+}
+
+/// Parse an `auto_rule` pair into an [`AutoRule`].
+///
+/// The pest rule is:
+/// ```text
+/// auto_rule = ${ "=" ~ ws+ ~ rule_query ~ NEWLINE ~
+///     (transaction_note | posting | empty_indented_line)* }
+/// ```
+///
+/// The `rule_query` child carries the raw pattern text. All `posting`
+/// children are parsed via `parse_posting`; `transaction_note` lines are
+/// collected but not used for elaboration.
+fn parse_auto_rule(pair: Pair<Rule>) -> Result<AutoRule, Box<dyn std::error::Error>> {
+    let mut query = String::new();
+    let mut postings = Vec::new();
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::rule_query => {
+                query = child.as_str().trim().to_string();
+            }
+            Rule::posting => {
+                postings.push(parse_posting(child)?);
+            }
+            // transaction_note lines are intentionally ignored in the rule body.
+            _ => {}
+        }
+    }
+
+    Ok(AutoRule { query, postings })
 }
 
 fn parse_posting(pair: Pair<Rule>) -> Result<Posting, Box<dyn std::error::Error>> {
@@ -1628,11 +1662,11 @@ mod directed_tests {
         assert!(a.strict, "== should be strict");
     }
 
-    /// Automated posting rules (`= /pattern/`) parse without error;
-    /// the rule body is captured in the AST but the resolver drops
-    /// it. Mirrors the hledger frontend's behaviour. #219.
+    /// Automated posting rules (`= /pattern/`) parse without error and are
+    /// surfaced as `Entry::AutoRule` items. The rule body carries the query
+    /// and postings; the transaction that follows appears as `Entry::Transaction`.
     #[test]
-    fn test_auto_rule_parse_only() {
+    fn test_auto_rule_parse_and_emit() {
         // The query may be a regex (delimited by `/`) or a free-form
         // expression terminated by newline. Mixed with normal entries
         // and followed by transactions that the rule would target.
@@ -1645,14 +1679,26 @@ mod directed_tests {
     Assets:Checking                      $1000.00
 ";
         let journal = parse_ledger(input).expect("parse must accept auto-rule");
-        // The auto-rule's postings are not surfaced as Entry items;
-        // only the transaction following it should show up.
+        // The auto-rule is now surfaced as Entry::AutoRule.
+        let auto_rules: Vec<_> = journal
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::AutoRule(_)))
+            .collect();
+        assert_eq!(auto_rules.len(), 1, "exactly one auto-rule expected");
         let transactions: Vec<_> = journal
             .entries
             .iter()
             .filter(|e| matches!(e, Entry::Transaction(_)))
             .collect();
         assert_eq!(transactions.len(), 1, "exactly one transaction expected");
+        // Verify the rule body is captured.
+        if let Entry::AutoRule(rule) = auto_rules[0] {
+            assert_eq!(rule.query, "/^Income/");
+            assert_eq!(rule.postings.len(), 1);
+        } else {
+            panic!("expected Entry::AutoRule");
+        }
     }
 
     /// `apply tag X: Y` blocks: the active tag is appended to every

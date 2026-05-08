@@ -323,23 +323,31 @@ fn entry_form_hash_comment() {
 ///
 /// Note: `*N` multiplier bodies are stubbed out (TODO #103).
 #[test]
-fn auto_rule_without_arithmetic_body_is_ignored() {
+fn auto_rule_applies_multiplier_posting() {
+    // An automated posting rule with a bare number (0.10) as the body amount:
+    // this is a multiplier applied to the matched posting's amount.
+    //
+    // Rule: `= expenses:groceries`
+    //   body: `(budget:groceries)  0.10`
+    //
+    // The rule matches `expenses:groceries $10` and synthesises
+    // `(budget:groceries) $1.00` (10% of $10).
     let input = "\
 = expenses:groceries
-    (budget:groceries)           10
+    (budget:groceries)           0.10
 
 2024-01-01 * Groceries
     expenses:groceries  $10
     assets:cash
 ";
     let f = tmp_file(input, ".hledger");
-    // Auto rules are ignored; only the real transaction contributes to balance.
     let out = run(&["balance", f.path().to_str().unwrap(), "--flat"]);
+    // The real transaction postings must appear.
     assert!(out.contains("10"), "real transaction should appear: {out}");
-    // The automated posting itself must NOT appear in the balance.
+    // The automated posting MUST appear in the balance (synthesised posting).
     assert!(
-        !out.contains("budget"),
-        "automated posting must not be elaborated: {out}"
+        out.contains("budget"),
+        "automated posting must be elaborated by the = rule: {out}"
     );
 }
 

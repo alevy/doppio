@@ -55,13 +55,17 @@ budget = ${
 // Automated posting rules ("= QUERY\n  POSTINGS…"). The query is a
 // regex / value-expression that ledger-cli matches against subsequent
 // transactions; matched postings synthesise additional postings from
-// the rule body. The grammar captures the outer shape so source files
-// using auto-rules parse without error; the resolver currently drops
-// the postings (no semantic effect). Mirrors the hledger frontend's
-// auto_rule (#219; elaboration deferred).
+// the rule body. See elaborator.rs for the application semantics (#249).
 //
-// Multiplier expressions (`*N`) inside posting amounts are not yet
-// supported -- they will produce a parse error with a clear message.
+// Implicit multiplier semantics: a body posting amount that is a bare
+// commodity-less number (e.g. `0.10`) is interpreted as a multiplier of
+// the matched posting's amount in its commodity. A body posting amount with
+// an explicit commodity (e.g. `$10.00`) is taken literally. This covers the
+// canonical tithe / proportional-tax pattern without requiring the explicit
+// `*N` prefix syntax.
+//
+// Explicit `*N` multiplier prefix syntax is NOT yet supported and will
+// produce a parse error. See issue #249 for tracking.
 auto_rule = ${
     "=" ~ ws+ ~ rule_query ~ NEWLINE ~
     (transaction_note | posting | empty_indented_line)*
