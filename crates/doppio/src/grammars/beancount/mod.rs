@@ -884,6 +884,7 @@ pub fn beancount_defaults() -> crate::resolution::ElaborationConfig {
         ),
         balance_mode: crate::resolution::BalanceMode::CostBasis,
         assertion_scope: crate::resolution::AssertionScope::Subtree,
+        lot_validation_mode: crate::resolution::LotValidationMode::Strict,
     }
 }
 

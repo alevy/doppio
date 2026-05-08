@@ -182,6 +182,11 @@ pub struct ElaborationConfig {
     /// check the named account in isolation or aggregate the entire
     /// account subtree. See [`AssertionScope`].
     pub assertion_scope: AssertionScope,
+    /// Whether the elaborator validates that a posting bearing a lot
+    /// annotation matches an existing position when the posting reduces
+    /// the account's running balance for that commodity. See
+    /// [`LotValidationMode`].
+    pub lot_validation_mode: LotValidationMode,
 }
 
 /// Strategy for computing a posting's cash-equivalent during the
@@ -237,6 +242,41 @@ pub enum AssertionScope {
     Direct,
     /// Sum of the named account and every descendant.
     Subtree,
+}
+
+/// Strategy for how the elaborator interprets lot annotations on
+/// reducing postings.
+///
+/// All three reference tools track a per-(commodity, lot) inventory; the
+/// difference is whether they validate that a reducing posting names a
+/// lot that actually exists in the inventory:
+///
+/// - **ledger-cli / hledger** treat the lot annotation as a label
+///   carried alongside the posting. A reducing posting may name any lot
+///   key, even one with no prior augmentation. The lot dimension is
+///   recorded but never enforced.
+/// - **Beancount** rejects a reducing posting whose lot key has no
+///   matching prior augmentation in the same account+commodity. This is
+///   the precondition that makes lot-aware reports (per-lot capital
+///   gains, FIFO/LIFO booking) sound: every reduction can be traced to
+///   a specific augmentation.
+///
+/// Surfaced from #237.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LotValidationMode {
+    /// Lot annotations are recorded on postings and threaded into the
+    /// running inventory, but no validation is performed when a
+    /// reducing posting names a lot. Matches ledger-cli and hledger.
+    /// Default.
+    #[default]
+    Permissive,
+    /// A reducing posting (one whose quantity has the opposite sign of
+    /// the existing position in that account+commodity) bearing a lot
+    /// annotation must name a lot key already present in the
+    /// inventory. Phantom-lot reductions raise
+    /// [`crate::elaborator::ElaborationError::PhantomLotReduction`].
+    /// Matches Beancount's strict booking method.
+    Strict,
 }
 
 /// Per-transaction balance tolerance policy.

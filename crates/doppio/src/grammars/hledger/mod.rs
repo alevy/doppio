@@ -707,6 +707,7 @@ pub fn hledger_defaults() -> crate::resolution::ElaborationConfig {
             gains_account: "Income:Capital Gains".to_string(),
         },
         assertion_scope: crate::resolution::AssertionScope::Direct,
+        lot_validation_mode: crate::resolution::LotValidationMode::Permissive,
     }
 }
 
