@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Signed numbers in commodity-first amount form** (#264): both the ledger-cli
+  and hledger frontends now accept amounts where the commodity precedes a signed
+  number, e.g. `"Beaststalker's Belt" -1` or `USD -1`.  Previously, the sign
+  was not part of the commodity-first grammar alternative, causing inputs like
+  `"Item" -1 {cost} @ price` to be mis-parsed as a binary subtraction
+  expression, which the elaborator then rejected with a type error.  The fix
+  extends the `amount` production with an optional `prefix_op?` between the
+  commodity and the number; the Rust handler applies the captured sign to the
+  number value, producing `Amount { value: -1, commodity: "..." }` as expected.
+
 ### Added
 
 - **`C N1 X = N2 Y` commodity-conversion directive** for the ledger-cli frontend (#248 stage 2).

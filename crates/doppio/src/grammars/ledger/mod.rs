@@ -1103,12 +1103,24 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
                 let mut inner = pair.into_inner();
                 let first = inner.next().unwrap();
                 match first.as_rule() {
-                    // Prefix-commodity form: "$100" or `"Long Name" 5` -- commodity comes first
+                    // Prefix-commodity form: "$100", `"Long Name" 5`, or `"Long Name" -1`
+                    // Inner sequence: commodity, then optional prefix_op, then number.
                     Rule::commodity => {
                         let comm = commodity_text(first);
-                        let val_str = inner.next().unwrap().as_str();
+                        let next = inner.next().unwrap();
+                        // Check whether the next token is a sign or the number directly.
+                        let (sign, val_str) = if next.as_rule() == Rule::prefix_op {
+                            let sign = next.as_str();
+                            let num_str = inner.next().unwrap().as_str();
+                            (sign, num_str)
+                        } else {
+                            // No prefix_op — next must be the number.
+                            ("+", next.as_str())
+                        };
+                        let magnitude = clean_parse_decimal(val_str);
+                        let value = if sign == "-" { -magnitude } else { magnitude };
                         ValueExpr::Amount {
-                            value: clean_parse_decimal(val_str),
+                            value,
                             commodity: Some(comm),
                         }
                     }
@@ -1322,13 +1334,14 @@ mod tests {
         // Verify second posting (Negative with Commas)
         let p2 = &tx.postings[1];
         if let Some(details) = &p2.amount {
-            // This is interesting: depending on whether $-1234 or -$1234 is used,
-            // it might be a Unary(Amount) or an Amount with a negative number.
-            // Current grammar for `amount` + `prefix_op` makes this a Unary(Amount).
+            // `$-1,234.56` matches the commodity-first alternative with prefix_op:
+            // `(commodity ~ ws* ~ prefix_op? ~ ws* ~ number)` where `$` is the
+            // commodity, `-` is the prefix_op, and `1,234.56` is the number.
+            // Result: Amount { value: -1234.56, commodity: "$" }.
             assert!(matches!(
                 details,
                 AmountDetails::Amount {
-                    value: ValueExpr::Binary { .. },
+                    value: ValueExpr::Amount { .. },
                     ..
                 }
             ));
@@ -2227,7 +2240,152 @@ account Assets:Savings
         );
     }
 
-    /// Bare identifier commodities (regression: must still work after the
+    // ---
+    // Signed commodity-first amount tests (#264)
+    // ---
+
+    /// Quoted commodity with negative number: `"Foo" -1`.
+    #[test]
+    fn test_signed_commodity_first_negative() {
+        let input = r#""Foo" -1"#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(-1),
+                commodity: Some("Foo".into()),
+            }
+        );
+    }
+
+    /// Quoted commodity with explicit positive sign: `"Foo" +1`.
+    #[test]
+    fn test_signed_commodity_first_explicit_positive() {
+        let input = r#""Foo" +1"#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(1),
+                commodity: Some("Foo".into()),
+            }
+        );
+    }
+
+    /// Quoted commodity with negative decimal: `"Foo" -1.5`.
+    #[test]
+    fn test_signed_commodity_first_negative_decimal() {
+        let input = r#""Foo" -1.5"#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(-1.5),
+                commodity: Some("Foo".into()),
+            }
+        );
+    }
+
+    /// Bare (unquoted) commodity with negative number: `USD -1`.
+    #[test]
+    fn test_bare_commodity_first_negative() {
+        let input = "USD -1";
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(-1),
+                commodity: Some("USD".into()),
+            }
+        );
+    }
+
+    /// Regression: `"Foo" 5` (unsigned commodity-first) still parses correctly.
+    #[test]
+    fn test_signed_commodity_first_unsigned_regression() {
+        let input = r#""Foo" 5"#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(5),
+                commodity: Some("Foo".into()),
+            }
+        );
+    }
+
+    /// Regression: `-1 USD` (number-first with sign handled by Pratt) still works.
+    #[test]
+    fn test_signed_number_first_regression() {
+        let input = "-1 USD";
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        // `-1 USD` is parsed as Unary(-, Amount(1, USD)) by the Pratt parser.
+        assert_eq!(
+            expr,
+            ValueExpr::Unary {
+                op: crate::ast::Op::Sub,
+                expr: Box::new(ValueExpr::Amount {
+                    value: rust_decimal::dec!(1),
+                    commodity: Some("USD".into()),
+                }),
+            }
+        );
+    }
+
+    /// `"Foo" -1 {65G}` — quoted commodity with signed number and lot annotation
+    /// parses without error (the lot part is consumed by the posting-level grammar).
+    #[test]
+    fn test_signed_commodity_first_with_lot() {
+        // Parse the amount portion only (lot annotation is a posting-level construct).
+        let input = r#""Beaststalker's Belt" -1"#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(-1),
+                commodity: Some("Beaststalker's Belt".into()),
+            }
+        );
+    }
+
+    /// Full wow.dat posting shape: `"Beaststalker's Belt" -1 {65G} @ 1195768c`
+    /// parses as a well-formed transaction without evaluation error.
+    #[test]
+    fn test_wow_dat_posting_shape() {
+        let input = concat!(
+            "2006/03/16 Auction House\n",
+            "    Assets:Tajer                      1195768c\n",
+            "    Assets:Tajer:Items                \"Beaststalker's Belt\" -1 {65G} @ 1195768c\n",
+            "    Income:Brokering                  -545768c\n",
+        );
+        let journal = parse_ledger(input).expect("wow.dat posting shape should parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let details = tx.postings[1].amount.as_ref().expect("amount present");
+        let AmountDetails::Amount { value, .. } = details else {
+            panic!("expected Amount variant");
+        };
+        assert!(
+            matches!(
+                value,
+                ValueExpr::Amount {
+                    value: v,
+                    commodity: Some(c),
+                } if *v == rust_decimal::dec!(-1) && c == "Beaststalker's Belt"
+            ),
+            "expected Amount(-1, \"Beaststalker's Belt\"); got: {value:?}"
+        );
+    }
+
+    /// Bare (unquoted) identifier commodities (regression: must still work after the
     /// quoted-commodity alternative was added to the grammar).
     #[test]
     fn test_bare_commodity_regression() {

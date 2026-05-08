@@ -676,14 +676,28 @@ fn run_pratt(pairs: Pairs<Rule>) -> ValueExpr {
                 let mut inner = pair.into_inner();
                 let first = inner.next().unwrap();
                 match first.as_rule() {
+                    // Prefix-commodity form: "$100", `"Long Name" 5`, or `"Long Name" -1`
+                    // Inner sequence: commodity, then optional prefix_op, then number.
                     Rule::commodity => {
                         let comm = commodity_text(first);
-                        let val_str = inner.next().unwrap().as_str();
+                        let next = inner.next().unwrap();
+                        // Check whether the next token is a sign or the number directly.
+                        let (sign, val_str) = if next.as_rule() == Rule::prefix_op {
+                            let sign = next.as_str();
+                            let num_str = inner.next().unwrap().as_str();
+                            (sign, num_str)
+                        } else {
+                            // No prefix_op — next must be the number.
+                            ("+", next.as_str())
+                        };
+                        let magnitude = clean_decimal(val_str);
+                        let value = if sign == "-" { -magnitude } else { magnitude };
                         ValueExpr::Amount {
-                            value: clean_decimal(val_str),
+                            value,
                             commodity: Some(comm),
                         }
                     }
+                    // Number-first form: "100 USD", "5 \"Long Name\"", or bare "100"
                     Rule::number => {
                         let val = clean_decimal(first.as_str());
                         let comm = inner.next().map(commodity_text);
@@ -1685,6 +1699,100 @@ account Income          ; type:R
                 } if c == "Plans: Wildthorn Mail"
             ),
             "commodity should be unquoted; got: {value:?}"
+        );
+    }
+
+    // ---
+    // Signed commodity-first amount tests (#264) — hledger frontend
+    // ---
+
+    /// Quoted commodity with negative number: `"Foo" -1`.
+    #[test]
+    fn signed_commodity_first_negative() {
+        let input = r#""Foo" -1"#;
+        let mut pairs = HledgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(-1),
+                commodity: Some("Foo".into()),
+            }
+        );
+    }
+
+    /// Quoted commodity with explicit positive sign: `"Foo" +1`.
+    #[test]
+    fn signed_commodity_first_explicit_positive() {
+        let input = r#""Foo" +1"#;
+        let mut pairs = HledgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(1),
+                commodity: Some("Foo".into()),
+            }
+        );
+    }
+
+    /// Quoted commodity with negative decimal: `"Foo" -1.5`.
+    #[test]
+    fn signed_commodity_first_negative_decimal() {
+        let input = r#""Foo" -1.5"#;
+        let mut pairs = HledgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(-1.5),
+                commodity: Some("Foo".into()),
+            }
+        );
+    }
+
+    /// Bare (unquoted) commodity with negative number: `USD -1`.
+    #[test]
+    fn bare_commodity_first_negative() {
+        let input = "USD -1";
+        let mut pairs = HledgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(-1),
+                commodity: Some("USD".into()),
+            }
+        );
+    }
+
+    /// Regression: `"Foo" 5` (unsigned commodity-first) still parses correctly.
+    #[test]
+    fn signed_commodity_first_unsigned_regression() {
+        let input = r#""Foo" 5"#;
+        let mut pairs = HledgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(5),
+                commodity: Some("Foo".into()),
+            }
+        );
+    }
+
+    /// Regression: `5 USD` (number-first) still parses correctly.
+    #[test]
+    fn signed_number_first_regression() {
+        let input = "5 USD";
+        let mut pairs = HledgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(5),
+                commodity: Some("USD".into()),
+            }
         );
     }
 
