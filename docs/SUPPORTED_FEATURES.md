@@ -41,6 +41,7 @@ Status legend:
 | Lot date annotation `[date]` | + | v0.4.0 (PR #139). Acquisition date stored on `proto::Lot.date` as epoch days |
 | Lot note annotation `((note))` | + | v0.4.0 (PR #139). Free-form note stored on `proto::Lot.note` |
 | Cost-vs-price priority | + | v0.4.0 (PR #139). When `{cost}` and `@ price` both present, `@` price drives the cash balance and `{cost}` is the lot basis only |
+| Implicit cost basis (two-leg multi-commodity) | + | (#251). A two-real-posting transaction in different commodities with no `@`/`@@`/`{cost}` is accepted; the cash leg is treated as the implicit total cost of the non-cash leg. ledger-cli and hledger frontends only; Beancount requires explicit cost |
 | Null posting (auto-inferred amount) | + | Exactly one per transaction; multiple null postings is an error |
 | Posting balance assertion `= amount` | + | Enforced during elaboration |
 | Strict balance assertion `== amount` | + | Enforced during elaboration |

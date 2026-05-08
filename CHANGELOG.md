@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Implicit cost-basis inference for ledger-cli and hledger** (#251): a
+  two-real-posting multi-commodity transaction where neither posting carries an
+  explicit `@`/`@@` price or `{cost}` lot annotation is now accepted by the
+  ledger and hledger frontends. The cash leg's absolute amount is synthesised as
+  an implicit `@@` total-cost on the non-cash leg, matching ledger-cli and
+  hledger semantics. Controlled by the new
+  `ElaborationConfig::infer_implicit_total_cost` field (default `false`), which
+  is set to `true` in `ledger_defaults()` and `hledger_defaults()`.
+  **Beancount is unaffected**: Beancount requires an explicit cost on every
+  lot-bearing posting, and `beancount_defaults()` leaves `infer_implicit_total_cost`
+  `false`.
+
 ## [0.4.0-rc.1] - 2026-04-28
 
 This release-candidate cuts the toward-1.0 architectural surface for
