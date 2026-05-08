@@ -1,0 +1,18 @@
+; Vendored from ledger-cli's test corpus (test/input/parsing.dat).
+;
+; Source:    https://github.com/ledger/ledger/blob/0e47100287b51322de00f495487c8d9beafe0da3/test/input/parsing.dat
+; Commit:    0e47100287b51322de00f495487c8d9beafe0da3 (master, 2026-05-08)
+; Fetched:   2026-05-08
+; License:   BSD-3-Clause (compatible with doppio's MIT)
+; Exercises: parser correctness on a journal that does NOT end with a newline
+;            (regression for ledger-cli #516; doppio's parser must match the
+;            same behaviour on EOF mid-line). Also exercises tab-indented
+;            postings, in contrast to the space-indented postings used in
+;            most other fixtures.
+
+
+;NOTE: this file should NOT end in a new line
+;See https://github.com/ledger/ledger/issues/516
+2021/07/14 test
+	Assets  $30
+	Income  -$30

@@ -853,6 +853,8 @@ POSITIVE: list[Case] = [
     # leading comment block records source URL + commit SHA + license
     # per the convention documented in tests/parity/README.md.
     Case("ledger:transfer",       REPO / "tests/parity/ledger-transfer.ledger",  ledger_balances),
+    Case("ledger:demo",           REPO / "tests/parity/ledger-demo.ledger",      ledger_balances),
+    Case("ledger:no-trailing-newline", REPO / "tests/parity/ledger-no-trailing-newline.dat", ledger_balances),
     Case("hledger:quickstart",    REPO / "tests/parity/hledger-quickstart.journal", hledger_balances),
     Case("hledger:ascii",         REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
     Case("hledger:zerostar",      REPO / "tests/parity/hledger-zerostar.journal", hledger_balances),
