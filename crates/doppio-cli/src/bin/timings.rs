@@ -43,7 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- elaboration ---
     // Expression evaluation, transaction balancing, account registration.
     let t3 = Instant::now();
-    let journal: doppio::elaboration::Journal = doppio::elaborate(hir)?;
+    // The parser is ledger-cli; use the matching default semantics.
+    let journal: doppio::elaboration::Journal =
+        doppio::elaborate(hir, &doppio::grammars::ledger::ledger_defaults())?;
     eprintln!("elaboration: {:>8.3}s", t3.elapsed().as_secs_f64());
 
     // --- serialize ---

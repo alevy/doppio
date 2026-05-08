@@ -37,7 +37,9 @@ fn bench_elaboration(c: &mut Criterion) {
                     let hir: doppio::resolution::HIR = ast.try_into().unwrap();
                     hir
                 },
-                |hir| -> doppio::elaboration::Journal { hir.try_into().unwrap() },
+                |hir| -> doppio::elaboration::Journal {
+                    doppio::elaborate(hir, &doppio::grammars::ledger::ledger_defaults()).unwrap()
+                },
                 criterion::BatchSize::PerIteration,
             )
         });

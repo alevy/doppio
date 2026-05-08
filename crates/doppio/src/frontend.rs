@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use crate::resolution::HIR;
+use crate::resolution::{ElaborationConfig, HIR};
 
 /// The signature of an `include`-directive file opener.
 ///
@@ -42,6 +42,18 @@ pub trait Frontend {
     /// first one whose extension list contains the source file's
     /// extension.
     fn extensions(&self) -> &'static [&'static str];
+
+    /// The default elaboration semantics for files in this frontend's
+    /// syntax — i.e. the [`ElaborationConfig`] that mirrors what the
+    /// canonical tool's own elaborator would do.
+    ///
+    /// This is a *convenience pairing*, not a forced coupling. The
+    /// elaborator takes any `ElaborationConfig`; a caller can parse a
+    /// file in one frontend's syntax and elaborate it under a different
+    /// tool's rules. The associated default is what `dop`-style command
+    /// dispatchers use when the user hasn't asked for anything more
+    /// specific.
+    fn elaboration_defaults(&self) -> ElaborationConfig;
 
     /// Parse source text into an [`HIR`].
     ///

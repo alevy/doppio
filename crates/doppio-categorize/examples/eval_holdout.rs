@@ -47,7 +47,7 @@ fn load_journal(path: &Path) -> Result<Journal, Box<dyn std::error::Error>> {
         let mut input = String::new();
         File::open(path)?.read_to_string(&mut input)?;
         let hir = frontend.parse(&input, base_path, &doppio::file_opener)?;
-        Ok(hir.try_into()?)
+        Ok(doppio::elaborate(hir, &frontend.elaboration_defaults())?)
     }
 }
 

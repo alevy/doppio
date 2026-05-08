@@ -280,9 +280,32 @@ pub(crate) fn parse_ledger(input: &str) -> Result<Journal, Box<dyn std::error::E
 /// ```
 pub struct LedgerFrontend;
 
+/// Construct the default [`crate::resolution::ElaborationConfig`] for
+/// files written in ledger-cli syntax: strict per-transaction balance,
+/// cost-basis lot pricing with explicit gain/loss postings, and
+/// direct-account balance assertions. Mirrors what `ledger`'s own
+/// elaborator does.
+///
+/// Available as a free function so test code can construct the config
+/// without instantiating [`LedgerFrontend`]; the trait method
+/// [`crate::frontend::Frontend::elaboration_defaults`] delegates here.
+pub fn ledger_defaults() -> crate::resolution::ElaborationConfig {
+    crate::resolution::ElaborationConfig {
+        tolerance_mode: crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
+            rust_decimal::Decimal::ZERO,
+        ),
+        balance_mode: crate::resolution::BalanceMode::CostBasis,
+        assertion_scope: crate::resolution::AssertionScope::Direct,
+    }
+}
+
 impl crate::frontend::Frontend for LedgerFrontend {
     fn extensions(&self) -> &'static [&'static str] {
         &["ledger"]
+    }
+
+    fn elaboration_defaults(&self) -> crate::resolution::ElaborationConfig {
+        ledger_defaults()
     }
 
     fn parse(

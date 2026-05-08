@@ -354,10 +354,24 @@ impl Display for ElaborationError {
     }
 }
 
-impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
-    type Error = ElaborationError;
-
-    fn try_from(value: resolution::HIR) -> Result<Self, Self::Error> {
+/// Run the elaboration pass on a resolved [`resolution::HIR`], applying
+/// the semantic ruleset in `config`.
+///
+/// This is the single entry point to the elaborator. The
+/// [`resolution::ElaborationConfig`] passed here is the *only* place the
+/// elaborator picks up its semantic choices (tolerance rule, balance
+/// mode, assertion scope, ...) -- the parser/frontend stages do not
+/// inject any. Callers typically pass `&frontend.elaboration_defaults()` for the
+/// matching tool's behaviour, or any other `ElaborationConfig` to
+/// experiment with cross-syntax-semantics combinations. Per-commodity
+/// overrides set by source directives (Beancount's
+/// `option "inferred_tolerance_default"`) layer on top of the config at
+/// elaboration time via [`resolution::GlobalContext::tolerance_overrides`].
+pub fn elaborate(
+    value: resolution::HIR,
+    config: &resolution::ElaborationConfig,
+) -> Result<crate::elaboration::Journal, ElaborationError> {
+    {
         let mut state = RunningState::default();
 
         let mut transactions = vec![];
@@ -380,10 +394,10 @@ impl TryFrom<resolution::HIR> for crate::elaboration::Journal {
             );
         }
 
-        let tolerance_mode = value.global_context.tolerance_mode;
+        let tolerance_mode = config.tolerance_mode;
         let tolerance_overrides = value.global_context.tolerance_overrides.clone();
-        let balance_mode = value.global_context.balance_mode.clone();
-        let assertion_scope = value.global_context.assertion_scope;
+        let balance_mode = config.balance_mode.clone();
+        let assertion_scope = config.assertion_scope;
 
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
@@ -2452,8 +2466,8 @@ mod tests {
         assert_eq!(hir.prices.len(), 1, "HIR should contain one price");
 
         // Elaboration stage.
-        let journal =
-            crate::elaboration::Journal::try_from(hir).expect("elaboration should succeed");
+        let journal = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+            .expect("elaboration should succeed");
 
         assert_eq!(journal.prices.len(), 1, "Journal should contain one price");
         let price = &journal.prices[0];
@@ -2478,7 +2492,8 @@ mod tests {
         use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        crate::elaboration::Journal::try_from(hir).expect("elaboration failed")
+        crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+            .expect("elaboration failed")
     }
 
     #[test]
@@ -2586,7 +2601,8 @@ define myval = $99.00
         assert!(hir.contexts[1].defines.contains_key("myval"));
 
         // Elaboration should succeed end-to-end.
-        let journal = crate::elaboration::Journal::try_from(hir).expect("elaboration failed");
+        let journal = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+            .expect("elaboration failed");
         let after_tx = &journal.transactions[1];
         let b_posting = after_tx
             .postings
@@ -2737,7 +2753,7 @@ define myval = $99.00
         use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        crate::elaboration::Journal::try_from(hir)
+        crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
     }
 
     #[test]
@@ -2916,7 +2932,9 @@ define myval = $99.00
         use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
         let hir = HIR::try_from(ast).expect("resolution failed");
-        match crate::elaboration::Journal::try_from(hir).expect_err("expected assertion failure") {
+        match crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+            .expect_err("expected assertion failure")
+        {
             ElaborationError::AccountAssertionFailed {
                 account,
                 posting_index,
@@ -3816,7 +3834,7 @@ account Expenses:Food
 ";
         let ast = crate::grammars::ledger::parse_ledger(input).expect("parse failed");
         let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
-        let result = crate::elaboration::Journal::try_from(hir);
+        let result = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults());
         assert!(
             matches!(result, Err(ElaborationError::AccountAssertionFailed { .. })),
             "positive amount should fail isNegative assertion; got: {result:?}"
@@ -3872,7 +3890,7 @@ account Expenses:Food
 ";
         let ast = crate::grammars::ledger::parse_ledger(input).expect("parse failed");
         let hir = crate::resolution::HIR::try_from(ast).expect("resolution failed");
-        let result = crate::elaboration::Journal::try_from(hir);
+        let result = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults());
         assert!(
             matches!(result, Err(ElaborationError::AccountAssertionFailed { .. })),
             "$50 should fail between(0, 10); got: {result:?}"

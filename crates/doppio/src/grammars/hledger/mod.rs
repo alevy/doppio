@@ -687,9 +687,36 @@ pub(crate) fn parse_hledger(input: &str) -> Result<Journal, Box<dyn std::error::
 /// that are stubbed out or not yet supported.
 pub struct HledgerFrontend;
 
+/// Construct the default [`crate::resolution::ElaborationConfig`] for
+/// files written in hledger syntax: strict per-transaction balance,
+/// `@price`-driven cost-equivalent for lots with both `{cost}` and
+/// `@price` (with a synthesised posting on `Income:Capital Gains` so
+/// the elaborated form is cost-basis-balanced regardless of frontend),
+/// and direct-account balance assertions. Mirrors hledger's own
+/// elaboration. See #210 for the gains-synthesis design.
+///
+/// Available as a free function so test code can construct the config
+/// without instantiating [`HledgerFrontend`]; the trait method
+/// [`crate::frontend::Frontend::elaboration_defaults`] delegates here.
+pub fn hledger_defaults() -> crate::resolution::ElaborationConfig {
+    crate::resolution::ElaborationConfig {
+        tolerance_mode: crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
+            rust_decimal::Decimal::ZERO,
+        ),
+        balance_mode: crate::resolution::BalanceMode::AtPriceWithSynthesis {
+            gains_account: "Income:Capital Gains".to_string(),
+        },
+        assertion_scope: crate::resolution::AssertionScope::Direct,
+    }
+}
+
 impl crate::frontend::Frontend for HledgerFrontend {
     fn extensions(&self) -> &'static [&'static str] {
         &["hledger", "journal"]
+    }
+
+    fn elaboration_defaults(&self) -> crate::resolution::ElaborationConfig {
+        hledger_defaults()
     }
 
     fn parse(
@@ -703,16 +730,7 @@ impl crate::frontend::Frontend for HledgerFrontend {
             base_path: base_path.to_path_buf(),
         }
         .parse(input)?;
-        let mut hir: crate::resolution::HIR = ast_journal.try_into()?;
-        // hledger uses `@price` for transaction balance when present
-        // and does not require an explicit gain/loss posting. After
-        // the @price-driven balance check, the elaborator synthesizes
-        // a posting on the gains account so the elaborated form is
-        // cost-basis-balanced -- giving `.dop` files a uniform shape
-        // across frontends. See #210.
-        hir.global_context.balance_mode = crate::resolution::BalanceMode::AtPriceWithSynthesis {
-            gains_account: "Income:Capital Gains".to_string(),
-        };
+        let hir: crate::resolution::HIR = ast_journal.try_into()?;
         Ok(hir)
     }
 }
@@ -1396,7 +1414,8 @@ nothing after this matters
 ";
         let ast = parse_hledger(input).expect("parse");
         let hir: crate::resolution::HIR = ast.try_into().expect("resolution");
-        let journal: crate::elaboration::Journal = crate::elaborate(hir).expect("elaboration");
+        let journal: crate::elaboration::Journal =
+            crate::elaborate(hir, &hledger_defaults()).expect("elaboration");
         let retain = journal
             .transactions
             .iter()
@@ -1434,7 +1453,8 @@ account Income          ; type:R
 ";
         let ast = parse_hledger(input).expect("parse");
         let hir: crate::resolution::HIR = ast.try_into().expect("resolution");
-        let journal: crate::elaboration::Journal = crate::elaborate(hir).expect("elaboration");
+        let journal: crate::elaboration::Journal =
+            crate::elaborate(hir, &hledger_defaults()).expect("elaboration");
         let salary = journal
             .accounts
             .get("Income:Salary")
