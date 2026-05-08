@@ -583,6 +583,45 @@ pub fn elaborate(
         let assertion_scope = config.assertion_scope;
         let lot_validation_mode = config.lot_validation_mode;
 
+        // Pre-compile auto-rule queries to regex patterns so they can be
+        // applied efficiently during the per-transaction loop below.
+        // Invalid patterns propagate as ElaborationError::EvaluationError
+        // (reusing the existing InvalidRegexPattern variant).
+        //
+        // Extract auto_rules from `value` before the entry loop so we
+        // can iterate `value.entries` (consuming it) without conflicting
+        // with a borrow on `value.auto_rules`.
+        let auto_rules = value.auto_rules;
+        let compiled_auto_rules: Vec<(regex::Regex, Vec<resolution::ResolvedAutoRulePosting>)> =
+            auto_rules
+                .into_iter()
+                .map(|rule| {
+                    // Strip surrounding `/` delimiters if the query is a regex
+                    // literal `/.../`; otherwise treat the string as a literal
+                    // account-name prefix anchored at the start. This mirrors
+                    // ledger-cli's matching behaviour: bare strings match as
+                    // case-insensitive substrings; for simplicity doppio treats
+                    // them as case-insensitive substring regexes.
+                    let pattern = if rule.query.starts_with('/')
+                        && rule.query.ends_with('/')
+                        && rule.query.len() >= 2
+                    {
+                        rule.query[1..rule.query.len() - 1].to_string()
+                    } else {
+                        // Bare string: match as case-insensitive substring.
+                        format!("(?i){}", regex::escape(&rule.query))
+                    };
+                    regex::Regex::new(&pattern)
+                        .map(|re| (re, rule.postings))
+                        .map_err(|e| {
+                            ElaborationError::EvaluationError(EvaluationError::InvalidRegexPattern(
+                                pattern,
+                                e.to_string(),
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
             match entry.data {
@@ -1694,6 +1733,152 @@ pub fn elaborate(
                         }
                     }
 
+                    // Apply automated posting rules.
+                    //
+                    // For each real posting in the already-resolved transaction,
+                    // check every active `=` rule. When the rule's query matches
+                    // the posting's account name, instantiate the rule's body
+                    // postings as virtual-unbalanced entries and append them to
+                    // `resolved_postings`. Virtual-unbalanced postings are
+                    // excluded from the transaction balance check (already
+                    // complete above), so appending them here is safe.
+                    //
+                    // Multiplier semantics: a body posting whose amount is a
+                    // commodity-less bare number is scaled by the matched
+                    // posting's amount in its commodity. A body posting with an
+                    // explicit commodity is taken literally.
+                    //
+                    // `resolved_postings` is grown in-place; we only match
+                    // against the postings that existed BEFORE rule application
+                    // (snapshot the length first).
+                    let base_posting_count = resolved_postings.len();
+                    for (regex, rule_postings) in &compiled_auto_rules {
+                        // Walk postings that existed before any rule application
+                        // (indices 0..base_posting_count). Collect the account
+                        // name and amounts eagerly so we don't hold a borrow on
+                        // `resolved_postings` while pushing to it below.
+                        let matches: Vec<(String, Vec<(String, Decimal)>)> = (0
+                            ..base_posting_count)
+                            .filter_map(|pi| {
+                                let p = &resolved_postings[pi];
+                                if !regex.is_match(&p.account) {
+                                    return None;
+                                }
+                                let amounts: Vec<(String, Decimal)> =
+                                    p.amounts().map(|(c, v)| (c.to_string(), v)).collect();
+                                Some((p.account.clone(), amounts))
+                            })
+                            .collect();
+
+                        for (_matched_account, matched_amounts) in matches {
+                            for rule_posting in rule_postings.iter() {
+                                let synth_account = entry_context
+                                    .account_aliases
+                                    .get(&rule_posting.account)
+                                    .cloned()
+                                    .unwrap_or_else(|| rule_posting.account.clone());
+
+                                // Determine the synthesised amount (or None for
+                                // a null body posting).
+                                let synth_amount: Option<crate::elaboration::Amount> =
+                                    match &rule_posting.amount {
+                                        None => {
+                                            // No amount written: synthesise with
+                                            // no amount (mirrors ledger-cli's
+                                            // "elide amount" semantic).
+                                            None
+                                        }
+                                        Some(amount_details) => {
+                                            // Extract the value expression from
+                                            // the body posting's AmountDetails.
+                                            // Rule body postings are always
+                                            // plain amounts (no balance
+                                            // assignment syntax).
+                                            let body_value_expr = match amount_details.clone() {
+                                                AmountDetails::Amount { value, .. } => value,
+                                                // Other variants are not valid
+                                                // in rule bodies; skip synthesis.
+                                                _ => continue,
+                                            };
+                                            // Determine whether the body amount is a
+                                            // bare number (multiplier) or carries an
+                                            // explicit commodity (literal) by inspecting
+                                            // the *parsed* expression before evaluation.
+                                            //
+                                            // A body posting is a multiplier when the
+                                            // expression is a commodity-less Amount or a
+                                            // Unary { op: Neg, expr: commodity-less Amount }.
+                                            // All other forms (explicit commodity, arithmetic
+                                            // combining commodity-bearing sub-exprs, etc.)
+                                            // are treated as literals.
+                                            let is_bare_number =
+                                                is_bare_number_expr(&body_value_expr);
+
+                                            if is_bare_number {
+                                                // Multiplier: evaluate the scalar and scale
+                                                // each matched posting amount by it.
+                                                let scalar = evaluator::eval_amount_value(
+                                                    body_value_expr,
+                                                    entry_context,
+                                                    &state,
+                                                )?;
+                                                let by_commodity: BTreeMap<_, _> = matched_amounts
+                                                    .iter()
+                                                    .map(|(c, v)| {
+                                                        (
+                                                            c.clone(),
+                                                            crate::decimal_to_proto(scalar * v),
+                                                        )
+                                                    })
+                                                    .collect();
+                                                if by_commodity.is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(crate::elaboration::Amount {
+                                                        by_commodity,
+                                                    })
+                                                }
+                                            } else {
+                                                // Literal: evaluate and use the body amount directly.
+                                                let (body_val, body_commodity) =
+                                                    evaluator::eval_and_normalize_amount(
+                                                        body_value_expr,
+                                                        entry_context,
+                                                        &state,
+                                                    )?;
+                                                let by_commodity = BTreeMap::from([(
+                                                    body_commodity,
+                                                    crate::decimal_to_proto(body_val),
+                                                )]);
+                                                Some(crate::elaboration::Amount { by_commodity })
+                                            }
+                                        }
+                                    };
+
+                                if !accounts.contains_key(&synth_account) {
+                                    accounts.insert(synth_account.clone(), Default::default());
+                                }
+
+                                // Synthesised postings are always virtual-unbalanced,
+                                // regardless of the kind written in the rule body.
+                                // (ledger-cli enforces this convention for `=` rule
+                                // body postings -- see issue #249.)
+                                resolved_postings.push(crate::elaboration::Posting {
+                                    account: synth_account,
+                                    payee: payee.clone(),
+                                    amount: synth_amount,
+                                    state: crate::state_to_proto(&TransactionState::Uncleared),
+                                    tags: vec![],
+                                    metadata: BTreeMap::new(),
+                                    kind: crate::posting_kind_to_proto(
+                                        ast::PostingKind::VirtualUnbalanced,
+                                    ),
+                                    lot: None,
+                                });
+                            }
+                        }
+                    }
+
                     // Update running account balances and register new accounts.
                     // Virtual unbalanced postings DO update the running per-account
                     // balance (matching ledger-cli) so subsequent balance assertions
@@ -1809,6 +1994,29 @@ pub fn elaborate(
             commodities,
             prices,
         })
+    }
+}
+
+/// Returns `true` if `expr` is a bare number (no commodity annotation).
+///
+/// Used during automated-rule (`=`) body posting evaluation to decide
+/// whether the amount acts as a **multiplier** (scale the matched posting's
+/// amount) or a **literal** (use the value as-is with its own commodity).
+///
+/// The check is syntactic: we inspect the parsed `ValueExpr` tree without
+/// evaluating it. A bare number is:
+/// - `ValueExpr::Amount { commodity: None, .. }` — the canonical form for
+///   `0.12` or `100` parsed without a commodity symbol.
+/// - `ValueExpr::Unary { op: Op::Sub | Op::Add, expr }` where `expr` is
+///   itself a bare-number expression — handles `-0.10` in rule bodies.
+///
+/// Everything else (explicit commodity, arithmetic, function call, etc.)
+/// is a literal and will be evaluated and used directly.
+fn is_bare_number_expr(expr: &ast::ValueExpr) -> bool {
+    match expr {
+        ast::ValueExpr::Amount { commodity, .. } => commodity.is_none(),
+        ast::ValueExpr::Unary { expr, .. } => is_bare_number_expr(expr),
+        _ => false,
     }
 }
 
@@ -5564,6 +5772,273 @@ account Assets:Savings
         assert!(
             virtual_posting.lot.is_none(),
             "virtual posting should not receive an inferred lot"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Automated posting rule (`=`) tests (#249)
+    // -------------------------------------------------------------------------
+
+    /// A rule with an explicit commodity-bearing amount applies a literal amount
+    /// to every matched posting.
+    #[test]
+    fn auto_rule_literal_amount_synthesises_posting() {
+        let input = "\
+= /^Income/
+    (Liabilities:Tithe)  $12.00
+
+2024-01-01 * Salary
+    Income:Salary  $-100.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        // There is exactly one transaction in the output.
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        // The rule synthesises one virtual-unbalanced posting.
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Liabilities:Tithe")
+            .collect();
+        assert_eq!(synth.len(), 1, "one synthesised posting expected");
+        let amount = synth[0]
+            .amount
+            .as_ref()
+            .expect("synthesised posting has amount");
+        let decimal = amount.by_commodity.get("$").expect("$ commodity");
+        assert_eq!(
+            decimal.to_decimal(),
+            rust_decimal::Decimal::from(12),
+            "literal $12.00 expected"
+        );
+    }
+
+    /// A rule with a commodity-less bare decimal uses multiplier semantics:
+    /// the synthesised posting's amount is `matched_amount * scalar`.
+    #[test]
+    fn auto_rule_multiplier_scales_matched_posting() {
+        let input = "\
+= /^Income/
+    (Liabilities:Tithe)  0.10
+
+2024-01-01 * Salary
+    Income:Salary  $-100.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Liabilities:Tithe")
+            .collect();
+        assert_eq!(synth.len(), 1, "one synthesised posting expected");
+        let amount = synth[0]
+            .amount
+            .as_ref()
+            .expect("synthesised posting has amount");
+        let decimal = amount.by_commodity.get("$").expect("$ commodity");
+        // 0.10 * $-100.00 = $-10.00
+        assert_eq!(
+            decimal.to_decimal(),
+            rust_decimal::Decimal::from(-10),
+            "10% of $-100 = $-10 expected"
+        );
+    }
+
+    /// A rule that does not match any posting produces no synthesised postings.
+    #[test]
+    fn auto_rule_no_match_produces_no_postings() {
+        let input = "\
+= /^Expenses/
+    (Liabilities:Tithe)  0.10
+
+2024-01-01 * Salary
+    Income:Salary  $-100.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Liabilities:Tithe")
+            .collect();
+        assert_eq!(synth.len(), 0, "no match, no synthesised posting expected");
+    }
+
+    /// A rule matches across multiple transactions and synthesises postings
+    /// for each one independently.
+    #[test]
+    fn auto_rule_applies_to_multiple_transactions() {
+        let input = "\
+= /^Income/
+    (Liabilities:Tithe)  0.10
+
+2024-01-01 * January salary
+    Income:Salary  $-100.00
+    Assets:Checking
+
+2024-02-01 * February salary
+    Income:Salary  $-200.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+        for tx in &journal.transactions {
+            let synth: Vec<_> = tx
+                .postings
+                .iter()
+                .filter(|p| p.account == "Liabilities:Tithe")
+                .collect();
+            assert_eq!(
+                synth.len(),
+                1,
+                "each transaction gets its own synthesised posting"
+            );
+        }
+    }
+
+    /// A rule pattern that matches two postings in the same transaction
+    /// synthesises two body postings (one per match).
+    #[test]
+    fn auto_rule_matches_multiple_postings_in_same_transaction() {
+        let input = "\
+= /^Income/
+    (Liabilities:Tithe)  0.10
+
+2024-01-01 * Multi-income
+    Income:Salary    $-100.00
+    Income:Bonus      $-50.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Liabilities:Tithe")
+            .collect();
+        // Income:Salary and Income:Bonus both match; two synthesised postings expected.
+        assert_eq!(synth.len(), 2, "two matches => two synthesised postings");
+    }
+
+    /// A rule body posting with no amount synthesises a posting with no amount
+    /// (matches ledger-cli's "elide amount" semantic).
+    #[test]
+    fn auto_rule_body_posting_no_amount_synthesises_amountless_posting() {
+        let input = "\
+= /^Income/
+    (Liabilities:Tithe)
+
+2024-01-01 * Salary
+    Income:Salary  $-100.00
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Liabilities:Tithe")
+            .collect();
+        assert_eq!(synth.len(), 1, "one synthesised posting expected");
+        assert!(
+            synth[0].amount.is_none(),
+            "body posting with no amount should produce amountless synthesised posting"
+        );
+    }
+
+    /// A periodic (`~`) directive is parsed but does not produce any transactions.
+    #[test]
+    fn periodic_directive_parse_and_discard() {
+        let input = "\
+~ monthly
+    Expenses:Rent  $1000
+    Assets:Checking
+
+2024-01-01 * Real transaction
+    Expenses:Food  $50
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        // Only the real transaction appears; the `~` directive is discarded.
+        assert_eq!(journal.transactions.len(), 1);
+        assert_eq!(journal.transactions[0].description, "Real transaction");
+    }
+
+    /// Auto-rule application is confined to ledger/hledger frontends.
+    /// The Beancount frontend does not produce auto-rules; its elaboration
+    /// under ledger defaults produces no synthesised postings either.
+    #[test]
+    fn beancount_frontend_unaffected_by_auto_rules() {
+        use crate::{grammars::beancount::parse_beancount, resolution::HIR};
+        // A minimal valid Beancount journal with no `=` directives.
+        let input = "\
+2024-01-01 open Assets:Checking USD
+2024-01-01 open Income:Salary USD
+
+2024-01-01 * \"Salary\"
+    Income:Salary    -100 USD
+    Assets:Checking   100 USD
+";
+        let ast = parse_beancount(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        assert!(
+            hir.auto_rules.is_empty(),
+            "Beancount frontend should produce no auto-rules"
+        );
+        let journal = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+            .expect("elaboration failed");
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        // No synthesised postings beyond the two real ones.
+        assert_eq!(
+            tx.postings.len(),
+            2,
+            "no synthesised postings expected from Beancount journal"
+        );
+    }
+
+    /// hledger auto-rule with multiplier semantics matches ledger behaviour.
+    #[test]
+    fn hledger_auto_rule_parity_with_ledger() {
+        use crate::{grammars::hledger::parse_hledger, resolution::HIR};
+        let input = "\
+= expenses:groceries
+    (budget:groceries)  0.10
+
+2024-01-01 * Shopping
+    expenses:groceries  $50
+    assets:cash
+";
+        let ast = parse_hledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let journal = crate::elaborate(hir, &crate::grammars::hledger::hledger_defaults())
+            .expect("elaboration failed");
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let synth: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "budget:groceries")
+            .collect();
+        assert_eq!(synth.len(), 1, "one synthesised posting expected");
+        let amount = synth[0]
+            .amount
+            .as_ref()
+            .expect("synthesised posting has amount");
+        let decimal = amount.by_commodity.get("$").expect("$ commodity");
+        // 0.10 * $50 = $5.00
+        assert_eq!(
+            decimal.to_decimal(),
+            rust_decimal::Decimal::from(5),
+            "10% of $50 = $5 expected"
         );
     }
 }

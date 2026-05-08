@@ -54,6 +54,12 @@ pub struct HIR {
     pub global_context: GlobalContext,
     /// Market price quotes collected from `P` directives in source order.
     pub prices: Vec<HistoricalPrice>,
+    /// Automated posting rules (`= QUERY\n POSTINGS…`) collected during
+    /// resolution, in source order. Applied by the elaborator to every
+    /// real transaction: for each posting whose account name matches a
+    /// rule's query, the rule's body postings are synthesised as
+    /// virtual-unbalanced entries appended to that transaction.
+    pub(crate) auto_rules: Vec<ResolvedAutoRule>,
 }
 
 /// A resolved `P` price directive.
@@ -80,8 +86,41 @@ impl Default for HIR {
             contexts: vec![Context::default()],
             global_context: Default::default(),
             prices: vec![],
+            auto_rules: vec![],
         }
     }
+}
+
+/// A body posting within a resolved automated posting rule.
+///
+/// `amount` is `None` when the source posting was a null posting (no amount
+/// written). `multiplier` carries a commodity-less decimal that acts as a
+/// scale factor applied to the matched posting's amount; it is `None` when
+/// the body amount carried an explicit commodity (literal).
+///
+/// The `kind` from the source is intentionally not carried: all synthesised
+/// postings are forced to `VirtualUnbalanced` regardless of what was written
+/// in the rule body (this matches ledger-cli convention for `=` rules).
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedAutoRulePosting {
+    /// The account name for the synthesised posting (not yet alias-resolved).
+    pub account: String,
+    /// The raw amount details if an amount was written.
+    pub amount: Option<ast::AmountDetails>,
+}
+
+/// A resolved automated posting rule.
+///
+/// The `query` string is compiled to a regex by the elaborator. For each
+/// real transaction's posting whose account name matches the regex, each
+/// body posting in `postings` is instantiated as a virtual-unbalanced
+/// synthesised posting appended to that transaction.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedAutoRule {
+    /// The raw query string (regex pattern or account expression prefix).
+    pub query: String,
+    /// The body postings to instantiate on a match.
+    pub postings: Vec<ResolvedAutoRulePosting>,
 }
 
 /// A snapshot of alias and default-commodity state at a point in the file.
@@ -1031,6 +1070,23 @@ impl TryFrom<ast::Journal> for HIR {
                         strict: a.strict,
                     });
                     result.entries.push(ResolutionEntry { context_id, data });
+                }
+                ast::Entry::AutoRule(rule) => {
+                    // Collect into `auto_rules` rather than `entries` so the
+                    // elaborator can apply them to every transaction without
+                    // them appearing in the chronological entry stream.
+                    let postings = rule
+                        .postings
+                        .into_iter()
+                        .map(|p| ResolvedAutoRulePosting {
+                            account: p.account,
+                            amount: p.amount,
+                        })
+                        .collect();
+                    result.auto_rules.push(ResolvedAutoRule {
+                        query: rule.query,
+                        postings,
+                    });
                 }
             }
 

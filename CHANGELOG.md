@@ -15,6 +15,20 @@
   **Beancount is unaffected**: Beancount requires an explicit cost on every
   lot-bearing posting, and `beancount_defaults()` leaves `infer_implicit_total_cost`
   `false`.
+- **Automated transaction rules (`= QUERY`)** for both the ledger-cli and hledger frontends (#249).
+  Rules are applied during elaboration: for every real posting whose account name matches the rule
+  query, each body posting is synthesized as a `PostingKind::VirtualUnbalanced` entry (excluded from
+  balance checks, but included in running account-balance state). Multiplier semantics: a body
+  posting with a commodity-less bare decimal amount (e.g. `0.10`) scales the matched posting's
+  amount in the matched posting's own commodity; body postings that carry an explicit commodity
+  symbol (e.g. `50 USD`) are taken as literal amounts. Rule queries wrapped in `/pattern/` are
+  compiled as regexes; bare string queries become case-insensitive substring regexes.
+
+### Notes
+
+- **`~` periodic transaction directives** are accepted by both frontends but are not elaborated.
+  No postings are synthesized and no balance state is affected. This is a deliberate parse-and-
+  discard choice: doppio models accounting facts, not budget planning.
 
 ## [0.4.0-rc.1] - 2026-04-28
 
