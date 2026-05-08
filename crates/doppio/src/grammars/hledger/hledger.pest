@@ -306,8 +306,16 @@ number = @{
     | "." ~ ASCII_DIGIT+
 }
 
+// A commodity is either one or more currency symbols ($, €, £, ¥), a
+// double-quoted opaque name (e.g. "Plans: Wildthorn Mail"), or an
+// identifier-style name (USD, BTC, AAPL, …).  The quoted alternative is
+// listed second so that a leading `"` is always consumed by it rather than
+// by the symbol alternative; the identifier alternative is last so that bare
+// names still work.  Escape sequences are not supported inside quoted names
+// (hledger does not support them either); embedded quotes are disallowed.
 commodity = @{
     symbol+
+    | "\"" ~ (!"\"" ~ ANY)+ ~ "\""
     | (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "." | ":" | "#")*
 }
 symbol = _{ "$" | "€" | "£" | "¥" }

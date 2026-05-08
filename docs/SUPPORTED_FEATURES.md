@@ -31,6 +31,7 @@ Status legend:
 | Postings (indented) | + | |
 | Number-first amounts `100 USD` | + | |
 | Symbol-first amounts `$100` | + | |
+| Quoted commodity names `"Long Name"` | + | (#262). Both `"Name" 5` (commodity-first) and `5 "Name"` (number-first) forms. Surrounding quotes are stripped; the stored commodity name is the bare string |
 | Bare amounts `100` | + | Default commodity applied if declared |
 | Negative amounts | + | Both `-$100` and `$-100` |
 | Lot pricing `@ unit` | + | |

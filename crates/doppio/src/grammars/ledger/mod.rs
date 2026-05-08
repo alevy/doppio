@@ -347,6 +347,18 @@ fn parse_assertion_directive(pair: Pair<Rule>) -> AssertionDirective {
     }
 }
 
+/// Strip surrounding double-quotes from a `commodity` pair's text when the
+/// quoted-string alternative matched.  For bare identifiers and symbol-based
+/// commodities the text is returned unchanged.
+fn commodity_text(pair: Pair<'_, Rule>) -> String {
+    let s = pair.as_str();
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 fn parse_historical_price(pair: Pair<Rule>) -> HistoricalPrice {
     let mut inner = pair.into_inner();
     let date = parse_date(&mut inner.next().unwrap().into_inner());
@@ -357,7 +369,7 @@ fn parse_historical_price(pair: Pair<Rule>) -> HistoricalPrice {
     for p in inner {
         match p.as_rule() {
             Rule::time => time = Some(p.as_str().to_string()),
-            Rule::commodity => commodity = p.as_str().to_string(),
+            Rule::commodity => commodity = commodity_text(p),
             Rule::value_expr => price_pair = Some(p),
             _ => {}
         }
@@ -1024,11 +1036,11 @@ pub(crate) fn parse_expr(pair: Pair<Rule>) -> ValueExpr {
     let expr_pair = inner.next().expect("Empty value_expr");
     let mut ast = run_pratt(expr_pair.into_inner());
 
-    // Check for trailing commodity (e.g., '(1+2) USD')
+    // Check for trailing commodity (e.g., '(1+2) USD' or '(1+2) "Long Name"')
     if let Some(comm_pair) = inner.next() {
         ast = ValueExpr::Typed {
             expr: Box::new(ast),
-            commodity: comm_pair.as_str().to_string(),
+            commodity: commodity_text(comm_pair),
         };
     }
     ast
@@ -1067,19 +1079,19 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
                 let mut inner = pair.into_inner();
                 let first = inner.next().unwrap();
                 match first.as_rule() {
-                    // Prefix-commodity form: "$100" -- commodity comes first
+                    // Prefix-commodity form: "$100" or `"Long Name" 5` -- commodity comes first
                     Rule::commodity => {
-                        let comm = first.as_str().to_string();
+                        let comm = commodity_text(first);
                         let val_str = inner.next().unwrap().as_str();
                         ValueExpr::Amount {
                             value: clean_parse_decimal(val_str),
                             commodity: Some(comm),
                         }
                     }
-                    // Number-first form: "100 USD" or bare "100"
+                    // Number-first form: "100 USD", "5 \"Long Name\"", or bare "100"
                     Rule::number => {
                         let val = clean_parse_decimal(first.as_str());
-                        let comm = inner.next().map(|c| c.as_str().to_string());
+                        let comm = inner.next().map(commodity_text);
                         ValueExpr::Amount {
                             value: val,
                             commodity: comm,
@@ -1088,7 +1100,7 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
                     _ => unreachable!(),
                 }
             }
-            Rule::commodity => ValueExpr::Commodity(pair.as_str().to_string()),
+            Rule::commodity => ValueExpr::Commodity(commodity_text(pair)),
             Rule::function_call => {
                 let mut inner = pair.into_inner();
                 let name = inner.next().unwrap().as_str().to_string();
@@ -2038,5 +2050,172 @@ account Assets:Savings
             "    Equity:Opening         $-100.00\n",
         );
         parse_ledger(input).expect("trailing whitespace on amount posting should parse");
+    }
+
+    // ---
+    // Quoted-commodity tests (#262)
+    // ---
+
+    /// Number-first form: `5 "Long Name"` — commodity is stripped of quotes.
+    #[test]
+    fn test_quoted_commodity_number_first() {
+        let input = r#"5 "Long Name""#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(5),
+                commodity: Some("Long Name".into()),
+            }
+        );
+    }
+
+    /// Commodity-first form: `"Long Name" 5` — commodity is stripped of quotes.
+    #[test]
+    fn test_quoted_commodity_commodity_first() {
+        let input = r#""Long Name" 5"#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(5),
+                commodity: Some("Long Name".into()),
+            }
+        );
+    }
+
+    /// Quoted commodity with colon inside (the motivating example from #262).
+    #[test]
+    fn test_quoted_commodity_with_colon() {
+        let input = r#"1 "Plans: Wildthorn Mail""#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(1),
+                commodity: Some("Plans: Wildthorn Mail".into()),
+            }
+        );
+    }
+
+    /// Quoted commodity with an apostrophe inside.
+    #[test]
+    fn test_quoted_commodity_with_apostrophe() {
+        let input = r#"1 "It's""#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(1),
+                commodity: Some("It's".into()),
+            }
+        );
+    }
+
+    /// Quoted commodity with a leading dollar sign (verifies the symbol
+    /// alternative doesn't shadow the quoted form).
+    #[test]
+    fn test_quoted_commodity_leading_dollar() {
+        let input = r#"1 "$pecial""#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(1),
+                commodity: Some("$pecial".into()),
+            }
+        );
+    }
+
+    /// Quoted commodity with a slash inside.
+    #[test]
+    fn test_quoted_commodity_with_slash() {
+        let input = r#"1 "a/b""#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(1),
+                commodity: Some("a/b".into()),
+            }
+        );
+    }
+
+    /// Empty double quotes cannot produce an empty commodity name.
+    ///
+    /// The grammar requires at least one non-quote character inside a quoted
+    /// commodity, so `""` is never parsed as a commodity.  Instead it is
+    /// parsed as a string literal (`ValueExpr::Str`), which means an amount
+    /// with an empty commodity name is structurally impossible.
+    #[test]
+    fn test_quoted_commodity_empty_not_treated_as_commodity() {
+        // `"" 5` — the empty-quoted form fails to match the `commodity` rule
+        // (which requires `(!"\"" ~ ANY)+`).  The parser therefore treats `""`
+        // as a string literal and ` 5` as unconsumed input.  The result is
+        // NOT an Amount with an empty commodity name.
+        let input = r#""" 5"#;
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert!(
+            !matches!(
+                &expr,
+                ValueExpr::Amount {
+                    commodity: Some(c),
+                    ..
+                } if c.is_empty()
+            ),
+            "empty commodity name must never appear in an Amount; got: {expr:?}"
+        );
+    }
+
+    /// Full transaction with a quoted commodity parses correctly, and the
+    /// commodity name is accessible without surrounding quotes.
+    #[test]
+    fn test_quoted_commodity_in_full_transaction() {
+        let input = concat!(
+            "2024-01-01 * Test\n",
+            "    Assets:Items   1 \"Plans: Wildthorn Mail\" @ $125\n",
+            "    Equity\n",
+        );
+        let journal = parse_ledger(input).expect("quoted commodity transaction should parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        let AmountDetails::Amount { value, .. } = details else {
+            panic!("expected Amount variant");
+        };
+        assert!(
+            matches!(
+                value,
+                ValueExpr::Amount {
+                    commodity: Some(c),
+                    ..
+                } if c == "Plans: Wildthorn Mail"
+            ),
+            "commodity should be unquoted; got: {value:?}"
+        );
+    }
+
+    /// Bare identifier commodities (regression: must still work after the
+    /// quoted-commodity alternative was added to the grammar).
+    #[test]
+    fn test_bare_commodity_regression() {
+        let input = "100 USD";
+        let mut pairs = LedgerParser::parse(Rule::value_expr, input).unwrap();
+        let expr = parse_expr(pairs.next().unwrap());
+        assert_eq!(
+            expr,
+            ValueExpr::Amount {
+                value: rust_decimal::dec!(100),
+                commodity: Some("USD".into()),
+            }
+        );
     }
 }
