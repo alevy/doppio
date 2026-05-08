@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **Parenthesised expressions in posting amounts now evaluate correctly** (#272):
+  A pre-existing grammar bug (present since pre-1.0, commit `8a5661b7`) caused any
+  parenthesised expression in a ledger posting amount — such as `(9G * 6)` or `(54G)` —
+  to silently evaluate to `1` (for any non-zero value) or `0`, instead of the actual value.
+  The root cause was that `base_primary` in `ledger.pest` tried the `(bool_expr)` alternative
+  *before* `(expr)`.  Because `bool_expr` accepts a bare `value_expr` (the comparison is
+  optional), `(54G)` matched `(bool_expr)` first, producing a `Group(BoolExpr)` AST node
+  that the evaluator correctly reduces to `1` (true) or `0` (false) — but wrong for
+  arithmetic.  The fix swaps the order so `(expr)` is tried first; real boolean expressions
+  like `(amt > 0)` contain `>` which is not an `infix_op`, so pest backtracks to
+  `(bool_expr)` and existing assert/filter usage is unaffected.  Any journal using
+  parenthesised arithmetic in posting amounts (`($a + $b)`, `(price * qty)`, `(total / N)`)
+  was silently computing wrong balances; the fix restores correct numeric output.
+
 - **`C`-directive transitive chain (fixpoint) applied during balance verification** (#266):
   PR #261 (#248 stage 2) implemented `C` commodity-conversion directives but omitted the
   transitive-chain pass.  When `C 1.00s = 100c` and `C 1.00G = 100s` are both in scope,

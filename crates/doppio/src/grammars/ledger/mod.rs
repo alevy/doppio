@@ -1152,8 +1152,9 @@ fn run_pratt(pairs: pest::iterators::Pairs<Rule>) -> ValueExpr {
                 ValueExpr::Str(s[1..s.len() - 1].to_string())
             }
             // A parenthesised bool_expr in a value-expression context.
-            // base_primary tries bool_expr before expr, so comparisons/chains
-            // inside parens land here rather than as mis-parsed arithmetic.
+            // base_primary tries expr first, then bool_expr as a fallback.
+            // Comparisons/chains inside parens that fail expr (e.g. `amt > 0`)
+            // backtrack here and produce a Group node.
             Rule::bool_expr => ValueExpr::Group(Box::new(parse_bool_expr(pair))),
             _ => unreachable!("{:?}", pair.as_rule()),
         })
@@ -2003,6 +2004,8 @@ account Assets:Savings
             panic!("expected transaction");
         };
         // The amount should be a Typed (or Binary) expr, not a Group.
+        // (expr) is tried first in base_primary, so `(100 + 200)` lands in expr
+        // before bool_expr ever sees it.
         let details = tx.postings[0].amount.as_ref().unwrap();
         assert!(
             matches!(
@@ -2014,6 +2017,201 @@ account Assets:Savings
             ),
             "expected Typed or Binary, got {details:?}"
         );
+    }
+
+    // ---
+    // Regression tests for issue #272: parenthesised arithmetic in posting amounts
+    // ---
+
+    /// `(54G)` — bare parenthesised amount must produce `54G`, not `1G`.
+    /// Before the fix, `(54G)` matched `(bool_expr)` first, and the evaluator
+    /// converted the non-zero result to `Amount { value: 1, .. }`.
+    #[test]
+    fn test_paren_amount_no_arithmetic() {
+        let input = "2024-01-01 Test\n    Expenses:Items  (54G)\n    Assets:Bar\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        // After the fix, `(54G)` resolves through `(expr)`, so the inner node
+        // is Amount, not Group.
+        assert!(
+            !matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Group(_),
+                    ..
+                }
+            ),
+            "expected non-Group amount, got {details:?}"
+        );
+        assert!(
+            matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Amount { .. },
+                    ..
+                }
+            ),
+            "expected Amount variant, got {details:?}"
+        );
+    }
+
+    /// `(9G * 6)` — parenthesised multiplication must produce a Binary node,
+    /// not a Group (which the evaluator would coerce to `0` or `1`).
+    #[test]
+    fn test_paren_amount_multiply() {
+        let input = "2024-01-01 Test\n    Expenses:Items  (9G * 6)\n    Assets:Bar\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        assert!(
+            !matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Group(_),
+                    ..
+                }
+            ),
+            "expected non-Group amount, got {details:?}"
+        );
+        assert!(
+            matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Binary { .. },
+                    ..
+                }
+            ),
+            "expected Binary expr, got {details:?}"
+        );
+    }
+
+    /// `(27G + 27G)` — parenthesised addition must produce a Binary node.
+    #[test]
+    fn test_paren_amount_add() {
+        let input = "2024-01-01 Test\n    Expenses:Items  (27G + 27G)\n    Assets:Bar\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        assert!(
+            matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Binary { op: Op::Add, .. },
+                    ..
+                }
+            ),
+            "expected Binary(Add), got {details:?}"
+        );
+    }
+
+    /// `(108G / 2)` — parenthesised division must produce a Binary node.
+    #[test]
+    fn test_paren_amount_divide() {
+        let input = "2024-01-01 Test\n    Expenses:Items  (108G / 2)\n    Assets:Bar\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        assert!(
+            matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Binary { op: Op::Div, .. },
+                    ..
+                }
+            ),
+            "expected Binary(Div), got {details:?}"
+        );
+    }
+
+    /// `(0)` — parenthesised zero must remain a zero Amount, not coerce to
+    /// a bool Group that evaluates to `0` via the "false" path.
+    #[test]
+    fn test_paren_zero_stays_zero() {
+        let input = "2024-01-01 Test\n    Expenses:Items  (0)\n    Assets:Bar\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!("expected transaction");
+        };
+        let details = tx.postings[0].amount.as_ref().expect("amount present");
+        assert!(
+            !matches!(
+                details,
+                AmountDetails::Amount {
+                    value: ValueExpr::Group(_),
+                    ..
+                }
+            ),
+            "expected non-Group for (0), got {details:?}"
+        );
+    }
+
+    /// Bool regression: `(amt > 0)` in an assert must still produce a `Group`
+    /// wrapping a real `BoolExpr` with a comparison.  The `(expr)` alternative
+    /// fails on `>` (not in `infix_op`) and pest backtracks to `(bool_expr)`.
+    #[test]
+    fn test_paren_bool_expr_in_assert_still_works() {
+        let input = "account Assets:Savings\n    assert (amount > 0)\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Directive(Directive::Account { items, .. }) = &journal.entries[0] else {
+            panic!("expected Account directive");
+        };
+        let AccountItem::Assert(expr) = items
+            .iter()
+            .find(|i| matches!(i, AccountItem::Assert(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            matches!(expr.lhs, ValueExpr::Group(_)),
+            "expected Group for (amount > 0), got {:?}",
+            expr.lhs
+        );
+        // The Group must wrap a real comparison, not a trivial value_expr.
+        if let ValueExpr::Group(inner) = &expr.lhs {
+            assert!(
+                inner.cmp.is_some(),
+                "expected cmp in inner BoolExpr, got None"
+            );
+        }
+    }
+
+    /// Bool regression with `and`: `(amt > 0 and amt2 < 10)` in an assert
+    /// must survive as a Group wrapping a chained BoolExpr.
+    #[test]
+    fn test_paren_bool_expr_and_in_assert_still_works() {
+        let input = "account Assets:Savings\n    assert (amount > 0 and amount < 10)\n";
+        let journal = parse_ledger(input).expect("should parse");
+        let Entry::Directive(Directive::Account { items, .. }) = &journal.entries[0] else {
+            panic!("expected Account directive");
+        };
+        let AccountItem::Assert(expr) = items
+            .iter()
+            .find(|i| matches!(i, AccountItem::Assert(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            matches!(expr.lhs, ValueExpr::Group(_)),
+            "expected Group for (amount > 0 and amount < 10), got {:?}",
+            expr.lhs
+        );
+        if let ValueExpr::Group(inner) = &expr.lhs {
+            assert!(
+                inner.chain.is_some(),
+                "expected bool chain in Group, got None"
+            );
+        }
     }
 
     #[test]
