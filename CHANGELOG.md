@@ -156,9 +156,16 @@ surface.
   split into one synthesised posting per matched lot. Lot dates are
   auto-filled from the transaction date on augmenting postings (so
   `{1500 USD}` records `[2024-01-15]` when written on a 2024-01-15
-  transaction), matching bean-check. (#238) Known gap: cost-basis-aware
-  gain inference for null `Income:Trading` postings is incorrect when
-  `{}` reductions balance via `@price` — tracked separately as #242.
+  transaction), matching bean-check. (#238)
+- **Cost-basis-aware gain inference for `{}` reductions** (#242). The
+  booking step now runs *inline* during the per-posting elaboration
+  loop (rather than as a post-pass after transaction-balance check),
+  so each booked sub-posting's cost-basis cash flows into
+  `transaction_state` before the null posting is inferred. A null
+  `Income:Trading` posting in a `{} @ price` transaction now fills
+  with the realized gain (cash − sum of matched lot costs) rather
+  than zero, matching bean-check. New parity fixture
+  `tests/parity/beancount-fifo.beancount` exercises this end-to-end.
 
 ---
 

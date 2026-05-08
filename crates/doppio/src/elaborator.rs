@@ -786,6 +786,19 @@ pub fn elaborate(
                     // of the total.
                     let mut null_postings = vec![];
                     let mut resolved_postings = vec![];
+                    // Per-transaction lots already consumed by inline
+                    // booking, so a second MISSING-cost reduction in
+                    // the same transaction doesn't re-draw against the
+                    // same inventory units. Keyed by
+                    // `(account, commodity, lot_key)`.
+                    let mut booked_consumed: BTreeMap<(String, String, LotKey), Decimal> =
+                        BTreeMap::new();
+                    // Capture the account-properties map by reference
+                    // before the per-posting loop: inside the
+                    // `AmountDetails::Amount` arm, the local `value`
+                    // (a `Decimal`) shadows the outer `value: HIR`,
+                    // so `value.global_context` is unreachable there.
+                    let account_properties = &value.global_context.account_properties;
 
                     for mut posting in transaction.postings {
                         let posting_kind = posting.kind;
@@ -1138,6 +1151,67 @@ pub fn elaborate(
                                     (value, commodity, None, None, None)
                                 }
                             };
+                            // Inline booking (#242): when the lot
+                            // annotation carried a MISSING cost (`{}`
+                            // or partial like `{2024-01-15}`) and the
+                            // account has a non-NONE booking method,
+                            // walk the running inventory NOW (before
+                            // contributing to transaction_state) and
+                            // synthesise per-matched-lot postings.
+                            // Each booked sub-posting carries its
+                            // explicit cost basis on the proto Lot,
+                            // and the cost-basis cash (NOT @price)
+                            // flows into transaction_state -- so the
+                            // null posting fills against the post-
+                            // booking residual and gain inference is
+                            // correct.
+                            let needs_booking =
+                                proto_lot.as_ref().is_some_and(|l| l.cost.is_none());
+                            if needs_booking {
+                                let booking_method = value_global_account_property(
+                                    &account_name,
+                                    account_properties,
+                                    config.default_booking_method,
+                                );
+                                if !matches!(booking_method, resolution::BookingMethod::None) {
+                                    let payee_for_booking =
+                                        posting.metadata.remove("payee").unwrap_or(payee.clone());
+                                    let booked = book_missing_cost_inline(
+                                        &account_name,
+                                        &payee_for_booking,
+                                        posting_kind,
+                                        &posting.state.into(),
+                                        &posting.tags,
+                                        &posting.metadata,
+                                        &commodity,
+                                        value,
+                                        proto_lot.as_ref().expect("checked"),
+                                        booking_method,
+                                        state.account_inventories.get(&account_name),
+                                        &mut booked_consumed,
+                                    )?;
+                                    if !accounts.contains_key(&account_name) {
+                                        accounts.insert(account_name.clone(), Default::default());
+                                    }
+                                    if posting_kind != ast::PostingKind::VirtualUnbalanced {
+                                        for (_, cash) in &booked {
+                                            let (cb_total, cb_commodity) = cash;
+                                            *transaction_state
+                                                .0
+                                                .entry(cb_commodity.clone())
+                                                .or_default() += *cb_total;
+                                            *cost_basis_state
+                                                .0
+                                                .entry(cb_commodity.clone())
+                                                .or_default() += *cb_total;
+                                        }
+                                    }
+                                    for (booked_posting, _) in booked {
+                                        resolved_postings.push(booked_posting);
+                                    }
+                                    continue;
+                                }
+                            }
                             let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
 
                             // Virtual-unbalanced postings are excluded from the transaction's
@@ -1462,21 +1536,6 @@ pub fn elaborate(
                         )?;
                     }
 
-                    // Booking pass (#238): for any posting carrying a
-                    // MISSING-cost lot annotation (`{}` or partial),
-                    // look up the account's booking method and
-                    // synthesise explicit-cost replacement postings
-                    // matched against the running inventory. Must run
-                    // BEFORE the phantom-lot check so the latter sees
-                    // booked (concrete-cost) postings that match the
-                    // inventory by construction.
-                    let resolved_postings = apply_booking(
-                        resolved_postings,
-                        &state.account_inventories,
-                        &value.global_context.account_properties,
-                        config.default_booking_method,
-                    )?;
-
                     // Strict lot-validation: project this transaction's
                     // lot-bearing postings onto the running inventory and
                     // reject any reducing posting whose lot key picks
@@ -1765,230 +1824,202 @@ fn lot_matches_pattern(pattern: &LotKey, inventory: &LotKey) -> bool {
     true
 }
 
-/// Apply per-account booking methods to any posting whose lot
-/// annotation carries a MISSING cost (`{}` or a partial spec like
-/// `{2024-01-15}`). The MISSING-cost marker is the user's request:
-/// "look at the inventory and tell me which lot(s) this reduction
-/// drew from." Each such posting is replaced by one or more booked
-/// postings, each carrying an explicit cost on its lot annotation.
-///
-/// Inputs:
-/// - `postings` — the elaborated postings produced by the main
-///   transaction loop. Already balance-checked.
-/// - `inventories` — the running per-account inventory at the moment
-///   the transaction is being elaborated (from before this
-///   transaction's contributions are folded in).
-/// - `account_properties` — looked up per posting account to find
-///   the configured [`BookingMethod`].
-///
-/// Postings without a lot annotation, or with an explicit cost, are
-/// passed through unchanged. Postings on accounts whose booking
-/// method is [`BookingMethod::None`] are also passed through (NONE
-/// short-circuits booking entirely; the cost stays MISSING).
-///
-/// Augmenting postings with MISSING cost are rejected with
-/// [`ElaborationError::AugmentingPostingWithMissingCost`] — first
-/// cut handles reductions only.
-///
-/// AVERAGE booking is not yet implemented; an account configured
-/// with AVERAGE falls through to FIFO behaviour for now (tracked as
-/// follow-up to #238).
-fn apply_booking(
-    postings: Vec<crate::elaboration::Posting>,
-    inventories: &BTreeMap<String, AccountInventory>,
+/// Resolve the booking method for `account`, with fallback to the
+/// frontend's `default_booking_method`. Used by the per-posting loop
+/// to decide whether a MISSING-cost reduction should be booked
+/// inline.
+fn value_global_account_property(
+    account: &str,
     account_properties: &BTreeMap<String, resolution::AccountProperties>,
-    default_booking_method: resolution::BookingMethod,
-) -> Result<Vec<crate::elaboration::Posting>, ElaborationError> {
-    let mut out: Vec<crate::elaboration::Posting> = Vec::with_capacity(postings.len());
-    // Track the per-account, per-commodity reductions we've already
-    // booked from earlier postings in the same transaction so that a
-    // subsequent MISSING-cost posting on the same account doesn't
-    // re-consume an already-booked lot.
-    let mut consumed: BTreeMap<(String, String, LotKey), Decimal> = BTreeMap::new();
-
-    for posting in postings {
-        let Some(lot) = posting.lot.as_ref() else {
-            out.push(posting);
-            continue;
-        };
-        if lot.cost.is_some() {
-            // Explicit cost: not a booking trigger.
-            out.push(posting);
-            continue;
-        }
-        // MISSING-cost lot annotation. Look up the booking method,
-        // falling back to the frontend default (Beancount: STRICT;
-        // ledger / hledger: NONE — i.e. the booking pass is a no-op).
-        let method = account_properties
-            .get(&posting.account)
-            .and_then(|p| p.booking_method)
-            .unwrap_or(default_booking_method);
-        if matches!(method, resolution::BookingMethod::None) {
-            // NONE: skip booking entirely. Posting is recorded as cost=None.
-            out.push(posting);
-            continue;
-        }
-        // We need the units to know how much to consume. Booking only
-        // applies when the posting carries a single commodity; the
-        // amounts() iterator yields one entry per commodity (postings
-        // synthesised by `==*` are multi-commodity but never carry a
-        // lot annotation, so this is unreachable in practice).
-        let amount_pairs: Vec<(String, Decimal)> =
-            posting.amounts().map(|(c, v)| (c.to_string(), v)).collect();
-        if amount_pairs.len() != 1 {
-            // Zero or multi-commodity posting with a lot annotation:
-            // not supported by booking. Pass through.
-            out.push(posting);
-            continue;
-        }
-        let (commodity, units) = amount_pairs.into_iter().next().expect("len == 1");
-        if !units.is_sign_negative() {
-            return Err(ElaborationError::AugmentingPostingWithMissingCost {
-                account: posting.account.clone(),
-                commodity,
-            });
-        }
-        // Partial cost spec hints (date, note) filter eligible lots.
-        let date_hint = lot.date.and_then(|epoch_days| {
-            chrono::NaiveDate::from_ymd_opt(1970, 1, 1).and_then(|epoch| {
-                epoch.checked_add_signed(chrono::Duration::days(epoch_days as i64))
-            })
-        });
-        let note_hint = lot.note.clone();
-
-        let inventory = inventories.get(&posting.account);
-        let mut eligible_lots: Vec<(LotKey, Decimal)> = inventory
-            .map(|inv| {
-                inv.positions
-                    .iter()
-                    .filter_map(|((c, lot_key_opt), bal)| {
-                        if c != &commodity {
-                            return None;
-                        }
-                        let lot_key = lot_key_opt.clone()?;
-                        if !bal.is_sign_positive() || bal.is_zero() {
-                            return None;
-                        }
-                        if let Some(d) = date_hint
-                            && lot_key.date != Some(d)
-                        {
-                            return None;
-                        }
-                        if let Some(n) = note_hint.as_deref()
-                            && lot_key.note.as_deref() != Some(n)
-                        {
-                            return None;
-                        }
-                        // Subtract any already-consumed units in this
-                        // transaction.
-                        let already = consumed
-                            .get(&(posting.account.clone(), commodity.clone(), lot_key.clone()))
-                            .copied()
-                            .unwrap_or_default();
-                        let remaining = *bal - already;
-                        if remaining.is_zero() || !remaining.is_sign_positive() {
-                            return None;
-                        }
-                        Some((lot_key, remaining))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Sort eligible lots per the booking method.
-        match method {
-            resolution::BookingMethod::Fifo
-            | resolution::BookingMethod::Strict
-            | resolution::BookingMethod::StrictWithSize
-            | resolution::BookingMethod::Average => {
-                // FIFO + STRICT both walk in ascending acquisition-date
-                // order; STRICT errors on >1 match below. AVERAGE is
-                // not yet a separate path -- documented as follow-up.
-                eligible_lots.sort_by_key(|(k, _)| k.date);
-            }
-            resolution::BookingMethod::Lifo => {
-                eligible_lots.sort_by_key(|b| std::cmp::Reverse(b.0.date));
-            }
-            resolution::BookingMethod::Hifo => {
-                eligible_lots.sort_by_key(|b| std::cmp::Reverse(b.0.cost));
-            }
-            resolution::BookingMethod::None => unreachable!("handled above"),
-        }
-
-        if matches!(method, resolution::BookingMethod::Strict) && eligible_lots.len() > 1 {
-            return Err(ElaborationError::AmbiguousLotMatch {
-                account: posting.account.clone(),
-                commodity,
-                match_count: eligible_lots.len(),
-            });
-        }
-
-        // Walk eligible lots in order and synthesise booked postings.
-        let mut to_consume = -units; // positive
-        let total_available: Decimal = eligible_lots.iter().map(|(_, b)| *b).sum();
-        if to_consume > total_available {
-            return Err(ElaborationError::OverReductionInBooking {
-                account: posting.account.clone(),
-                commodity,
-                requested: to_consume,
-                available: total_available,
-            });
-        }
-        for (lot_key, balance) in eligible_lots {
-            if to_consume.is_zero() {
-                break;
-            }
-            let take = to_consume.min(balance);
-            // Synthesise a booked posting: same account/payee/state/etc.
-            // but with the explicit lot key and reduced units.
-            let booked = synthesise_booked_posting(&posting, &commodity, -take, &lot_key);
-            *consumed
-                .entry((posting.account.clone(), commodity.clone(), lot_key.clone()))
-                .or_default() += take;
-            out.push(booked);
-            to_consume -= take;
-        }
-    }
-    Ok(out)
+    default: resolution::BookingMethod,
+) -> resolution::BookingMethod {
+    account_properties
+        .get(account)
+        .and_then(|p| p.booking_method)
+        .unwrap_or(default)
 }
 
-/// Build a single booked posting cloned from `original`, with
-/// `units` (negative) of `commodity` and an explicit cost from `lot_key`.
-/// Used by [`apply_booking`] when a MISSING-cost reduction has been
-/// matched against a specific inventory lot.
-fn synthesise_booked_posting(
-    original: &crate::elaboration::Posting,
+/// Inline booking helper invoked from the per-posting loop when a
+/// MISSING-cost lot annotation triggers it (#238 + #242).
+///
+/// The caller has already evaluated the posting's units and built the
+/// partial proto Lot (with `cost = None`). This helper:
+///
+///   1. Walks the running inventory in the order dictated by `method`.
+///   2. Filters lots by any partial spec on `partial_lot` (date hint,
+///      note hint).
+///   3. For each matched lot, synthesises a booked
+///      [`crate::elaboration::Posting`] carrying the matched lot's
+///      explicit cost and the take-units of `commodity`.
+///   4. Updates `in_tx_consumed` so a later MISSING-cost posting in
+///      the same transaction can't double-consume from the same lot.
+///   5. Returns each booked posting paired with its cost-basis cash
+///      contribution `(decimal, cost_commodity)`. The caller folds
+///      this into `transaction_state` and `cost_basis_state`.
+///
+/// Errors:
+/// - [`ElaborationError::AugmentingPostingWithMissingCost`] for
+///   positive `units` (booking is reduction-only in the first cut).
+/// - [`ElaborationError::AmbiguousLotMatch`] when STRICT booking has
+///   more than one eligible lot.
+/// - [`ElaborationError::OverReductionInBooking`] when the posting
+///   asks for more units than the matching lots hold.
+///
+/// AVERAGE booking falls through to FIFO behaviour (the AVERAGE-
+/// specific lot collapse is documented as follow-up to #238).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn book_missing_cost_inline(
+    account: &str,
+    payee: &str,
+    posting_kind: ast::PostingKind,
+    posting_state: &TransactionState,
+    posting_tags: &[String],
+    posting_metadata: &BTreeMap<String, String>,
     commodity: &str,
     units: Decimal,
-    lot_key: &LotKey,
-) -> crate::elaboration::Posting {
-    let proto_amount = crate::elaboration::Amount {
-        by_commodity: BTreeMap::from([(commodity.to_string(), crate::decimal_to_proto(units))]),
-    };
-    let lot_cost = lot_key
-        .cost
-        .zip(lot_key.cost_commodity.clone())
-        .map(|(cv, cc)| crate::elaboration::Amount {
-            by_commodity: BTreeMap::from([(cc, crate::decimal_to_proto(cv))]),
+    partial_lot: &crate::elaboration::Lot,
+    method: resolution::BookingMethod,
+    inventory: Option<&AccountInventory>,
+    in_tx_consumed: &mut BTreeMap<(String, String, LotKey), Decimal>,
+) -> Result<Vec<(crate::elaboration::Posting, (Decimal, String))>, ElaborationError> {
+    if !units.is_sign_negative() {
+        return Err(ElaborationError::AugmentingPostingWithMissingCost {
+            account: account.to_string(),
+            commodity: commodity.to_string(),
         });
-    let proto_date = lot_key.date.and_then(|d| {
-        chrono::NaiveDate::from_ymd_opt(1970, 1, 1).map(|epoch| (d - epoch).num_days() as i32)
-    });
-    let lot = crate::elaboration::Lot {
-        cost: lot_cost,
-        date: proto_date,
-        note: lot_key.note.clone(),
-    };
-    crate::elaboration::Posting {
-        account: original.account.clone(),
-        payee: original.payee.clone(),
-        amount: Some(proto_amount),
-        state: original.state,
-        tags: original.tags.clone(),
-        metadata: original.metadata.clone(),
-        kind: original.kind,
-        lot: Some(lot),
     }
+
+    // Partial cost-spec hints: a posting like `{2024-01-15}` carries
+    // a date with no cost; the booking pass uses the date to narrow
+    // which inventory lots are eligible before applying the method's
+    // ordering rule.
+    let date_hint = partial_lot.date.and_then(|epoch_days| {
+        chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+            .and_then(|epoch| epoch.checked_add_signed(chrono::Duration::days(epoch_days as i64)))
+    });
+    let note_hint = partial_lot.note.clone();
+
+    let mut eligible_lots: Vec<(LotKey, Decimal)> = inventory
+        .map(|inv| {
+            inv.positions
+                .iter()
+                .filter_map(|((c, lot_key_opt), bal)| {
+                    if c != commodity {
+                        return None;
+                    }
+                    let lot_key = lot_key_opt.clone()?;
+                    if !bal.is_sign_positive() || bal.is_zero() {
+                        return None;
+                    }
+                    if let Some(d) = date_hint
+                        && lot_key.date != Some(d)
+                    {
+                        return None;
+                    }
+                    if let Some(n) = note_hint.as_deref()
+                        && lot_key.note.as_deref() != Some(n)
+                    {
+                        return None;
+                    }
+                    let already = in_tx_consumed
+                        .get(&(account.to_string(), commodity.to_string(), lot_key.clone()))
+                        .copied()
+                        .unwrap_or_default();
+                    let remaining = *bal - already;
+                    if remaining.is_zero() || !remaining.is_sign_positive() {
+                        return None;
+                    }
+                    Some((lot_key, remaining))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    match method {
+        resolution::BookingMethod::Fifo
+        | resolution::BookingMethod::Strict
+        | resolution::BookingMethod::StrictWithSize
+        | resolution::BookingMethod::Average => {
+            eligible_lots.sort_by_key(|(k, _)| k.date);
+        }
+        resolution::BookingMethod::Lifo => {
+            eligible_lots.sort_by_key(|b| std::cmp::Reverse(b.0.date));
+        }
+        resolution::BookingMethod::Hifo => {
+            eligible_lots.sort_by_key(|b| std::cmp::Reverse(b.0.cost));
+        }
+        resolution::BookingMethod::None => unreachable!("caller filters NONE"),
+    }
+
+    if matches!(method, resolution::BookingMethod::Strict) && eligible_lots.len() > 1 {
+        return Err(ElaborationError::AmbiguousLotMatch {
+            account: account.to_string(),
+            commodity: commodity.to_string(),
+            match_count: eligible_lots.len(),
+        });
+    }
+
+    let mut to_consume = -units; // positive
+    let total_available: Decimal = eligible_lots.iter().map(|(_, b)| *b).sum();
+    if to_consume > total_available {
+        return Err(ElaborationError::OverReductionInBooking {
+            account: account.to_string(),
+            commodity: commodity.to_string(),
+            requested: to_consume,
+            available: total_available,
+        });
+    }
+
+    let mut out = Vec::new();
+    for (lot_key, balance) in eligible_lots {
+        if to_consume.is_zero() {
+            break;
+        }
+        let take = to_consume.min(balance);
+        let take_units = -take; // back to negative
+        let cost = lot_key.cost.expect(
+            "eligible_lots filters retained only lots with explicit cost; \
+             None-cost positions are skipped",
+        );
+        let cost_commodity = lot_key
+            .cost_commodity
+            .clone()
+            .expect("eligible lots have cost_commodity when cost is Some");
+        let cost_basis_cash = (take_units * cost, cost_commodity.clone());
+
+        let proto_amount = crate::elaboration::Amount {
+            by_commodity: BTreeMap::from([(
+                commodity.to_string(),
+                crate::decimal_to_proto(take_units),
+            )]),
+        };
+        let proto_cost = crate::elaboration::Amount {
+            by_commodity: BTreeMap::from([(cost_commodity.clone(), crate::decimal_to_proto(cost))]),
+        };
+        let proto_date = lot_key.date.and_then(|d| {
+            chrono::NaiveDate::from_ymd_opt(1970, 1, 1).map(|epoch| (d - epoch).num_days() as i32)
+        });
+        let booked = crate::elaboration::Posting {
+            account: account.to_string(),
+            payee: payee.to_string(),
+            amount: Some(proto_amount),
+            state: crate::state_to_proto(posting_state),
+            tags: posting_tags.to_vec(),
+            metadata: posting_metadata.clone(),
+            kind: crate::posting_kind_to_proto(posting_kind),
+            lot: Some(crate::elaboration::Lot {
+                cost: Some(proto_cost),
+                date: proto_date,
+                note: lot_key.note.clone(),
+            }),
+        };
+        *in_tx_consumed
+            .entry((account.to_string(), commodity.to_string(), lot_key.clone()))
+            .or_default() += take;
+        out.push((booked, cost_basis_cash));
+        to_consume -= take;
+    }
+    Ok(out)
 }
 
 /// Render a [`LotKey`] for human-readable diagnostic output (error

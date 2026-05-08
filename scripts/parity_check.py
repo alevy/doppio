@@ -696,6 +696,7 @@ POSITIVE: list[Case] = [
     Case("beancount:subtree-pad",     REPO / "tests/parity/beancount-subtree-pad.beancount",     beancount_balances),
     Case("beancount:starter",         REPO / "tests/parity/beancount-starter.beancount",         beancount_balances),
     Case("beancount:basic",           REPO / "tests/parity/beancount-basic.beancount",           beancount_balances),
+    Case("beancount:fifo",            REPO / "tests/parity/beancount-fifo.beancount",            beancount_balances),
 ]
 
 NEGATIVE: list[Case] = [
