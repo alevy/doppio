@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-05-08
+
+This release lands `C` commodity-conversion directive support (#248) with a
+correct transitive-chain fixpoint (#266) and principled divisor formula
+(#274), automated transaction rules with multiplier semantics (#249) and the
+explicit `*N` form (#254), implicit cost-basis inference for two-leg
+multi-commodity transactions (#251), double-quoted commodity names (#262),
+signed commodity-first amounts (#264), and a fix for a pre-1.0 latent
+parens-in-amount silent-miscomputation bug (#272). Plus parity-corpus
+expansion (drewr3.dat, wow.dat) and harness extensions.
+
+The library API is additive: `ResolutionError` gains
+`InvalidAutoRuleQuery`, `InvalidCommodityConversion`, and
+`CommodityConversionCycle` variants (the enum was already
+`#[non_exhaustive]` post-2.0); `ElaborationConfig` gains
+`infer_implicit_total_cost`. `Context::commodity_aliases` is renamed to
+`commodity_conversions` with a new tuple-valued type (refactor; same
+observable behaviour for journals using only `alias` directives). The
+`.dop` wire format is unchanged.
+
+Two known wow.dat parity divergences with ledger-cli are deferred: the
+display-time chain-canonicalisation question (#270) and the auto-balance
+posting's per-lot identity preservation (#276). Neither affects the
+elaborated balance values for journals that don't use the specific
+constructs (multi-hop chains across commodity boundaries, or multi-commodity
+inter-account inventory transfers via auto-balanced postings); both are
+tracked for 2.2.
+
 ### Fixed
 
 - **`C`-directive divisor formula corrected to `N2/N1` for all N1** (#274):
@@ -102,13 +130,28 @@
 
 - **Vendor `tests/parity/ledger-drewr3.dat`** (refs #257, refs #197): the
   ledger-cli upstream `test/input/drewr3.dat` fixture is vendored with a
-  provenance comment block (source URL, commit SHA, license, exercises). It is
-  NOT yet wired into the positive parity harness: `drewr3.dat` exposed a
-  gap in how `dop balance --flat` reports the balance of intermediate accounts
-  that carry both direct postings and child-account postings (ledger-cli
-  aggregates the subtree; doppio reports only the direct balance). The fixture
-  is tracked in the repo so the gap is reproducible; the harness entry will be
-  added once the gap is resolved.
+  provenance comment block (source URL, commit SHA, license, exercises). It
+  was wired into the positive parity harness in PR #259 alongside a fix to
+  `scripts/parity_check.py` to compare per-account direct balances rather
+  than ledger-cli's subtree-aggregated `display_total` (the gap that
+  surfaced the choice).
+
+- **Vendor `tests/parity/ledger-wow.dat`** (refs #197): the ledger-cli
+  upstream `test/input/wow.dat` fixture is vendored as the primary
+  regression target for `C` directive semantics (#248). Commodity letters
+  are renamed from upstream `c`/`s`/`G` to `COPPER`/`SILVER`/`GOLD` because
+  ledger-cli treats `s`/`m`/`h` as built-in time units (60s = 1m, etc.)
+  which collides with the `C`-directive when used as commodity names. The
+  fixture is NOT yet wired into the positive parity harness — three
+  divergence categories remain (display-rounding, single-hop chain
+  canonicalisation in ledger-cli's `bal` display, and an auto-balance
+  posting bug tracked in #276); see #270 for the full inventory.
+
+- **Harness regex extension for quoted-name-first amounts** (refs #197):
+  `_parse_ledger_amount` in `scripts/parity_check.py` now handles
+  ledger-cli's commodity-first quoted output (`"Long Name" N`) for
+  lot-annotated items. The surrounding quotes are stripped so the
+  commodity matches doppio's JSON output convention.
 
 - **Implicit cost-basis inference for ledger-cli and hledger** (#251): a
   two-real-posting multi-commodity transaction where neither posting carries an
