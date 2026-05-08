@@ -149,7 +149,18 @@ def ledger_balances(fixture: Path) -> set[Tuple3]:
 
     Multi-commodity accounts emit a `Account|amount` line followed by one
     or more continuation lines holding only an amount (no `|`); the
-    continuation lines belong to the previous account."""
+    continuation lines belong to the previous account.
+
+    The format uses `scrub(amount)` (per-account direct balance) rather
+    than `scrub(display_total)` (subtree-aggregated balance). doppio's
+    `dop balance --flat --format=json` reports each account's direct
+    balance independently; ledger-cli's `display_total` rolls child
+    balances into intermediate accounts. They diverge only when an
+    intermediate account carries BOTH direct postings AND child postings
+    (e.g. drewr3.dat's `Assets:Checking` with a child
+    `Assets:Checking:Business`). `amount` gives the apples-to-apples
+    comparison without taking a position on doppio's `--flat` UX
+    (direct-only vs subtree-aggregated), which is a separate question."""
     raw = subprocess.run(
         [
             "ledger",
@@ -159,7 +170,7 @@ def ledger_balances(fixture: Path) -> set[Tuple3]:
             "--no-pager",
             "--no-color",
             "--no-total",
-            "--format=%(account)|%(scrub(display_total))\n",
+            "--format=%(account)|%(scrub(amount))\n",
         ],
         capture_output=True,
         text=True,
@@ -855,6 +866,7 @@ POSITIVE: list[Case] = [
     Case("ledger:transfer",       REPO / "tests/parity/ledger-transfer.ledger",  ledger_balances),
     Case("ledger:demo",           REPO / "tests/parity/ledger-demo.ledger",      ledger_balances),
     Case("ledger:no-trailing-newline", REPO / "tests/parity/ledger-no-trailing-newline.dat", ledger_balances),
+    Case("ledger:drewr3",         REPO / "tests/parity/ledger-drewr3.dat",     ledger_balances),
     Case("hledger:quickstart",    REPO / "tests/parity/hledger-quickstart.journal", hledger_balances),
     Case("hledger:ascii",         REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
     Case("hledger:zerostar",      REPO / "tests/parity/hledger-zerostar.journal", hledger_balances),
