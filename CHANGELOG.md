@@ -75,6 +75,18 @@
 
 ### Test infrastructure
 
+- **Parity harness canonicalisation via `-X` flag** (refs #269, refs #197):
+  `scripts/parity_check.py` gains a `canonical_commodity` field on `Case` and
+  passes `-X <commodity>` to ledger-cli when that field is set.  This makes
+  ledger-cli report balances in the chain-root commodity so the comparison is
+  semantic (same value, same unit) rather than display-level (same commodity
+  string).  The design follows option A from #269: canonicalise on the
+  harness/ledger-cli side rather than adding a CLI display flag to doppio.
+  `ledger:wow` could not be wired into POSITIVE in this PR because a residual
+  semantic gap between doppio's elaboration and ledger-cli's balance reporting
+  remains after commodity canonicalisation (lot-bearing accounts and cross-rate
+  amounts diverge); the gap is tracked as a follow-up.
+
 - **Vendor `tests/parity/ledger-drewr3.dat`** (refs #257, refs #197): the
   ledger-cli upstream `test/input/drewr3.dat` fixture is vendored with a
   provenance comment block (source URL, commit SHA, license, exercises). It is

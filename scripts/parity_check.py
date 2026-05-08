@@ -144,7 +144,7 @@ def _parse_ledger_amount(s: str) -> tuple[str, Decimal]:
     raise ValueError(f"no commodity in {s!r}")
 
 
-def ledger_balances(fixture: Path) -> set[Tuple3]:
+def ledger_balances(fixture: Path, canonical: str | None = None) -> set[Tuple3]:
     """Parse ledger-cli's flat balance output via a `--format` template.
 
     Multi-commodity accounts emit a `Account|amount` line followed by one
@@ -160,18 +160,27 @@ def ledger_balances(fixture: Path) -> set[Tuple3]:
     (e.g. drewr3.dat's `Assets:Checking` with a child
     `Assets:Checking:Business`). `amount` gives the apples-to-apples
     comparison without taking a position on doppio's `--flat` UX
-    (direct-only vs subtree-aggregated), which is a separate question."""
+    (direct-only vs subtree-aggregated), which is a separate question.
+
+    When `canonical` is set to a chain-root commodity symbol (e.g. ``"G"``),
+    ``-X <canonical>`` is passed to ledger-cli so that it converts all
+    balances to that commodity using the active ``C``-directive chain.  This
+    makes ledger-cli's output comparable to doppio's library-level
+    canonicalisation, which always resolves to the chain root (#269)."""
+    cmd = [
+        "ledger",
+        "-f", str(fixture),
+        "balance",
+        "--flat",
+        "--no-pager",
+        "--no-color",
+        "--no-total",
+        "--format=%(account)|%(scrub(amount))\n",
+    ]
+    if canonical is not None:
+        cmd.extend(["-X", canonical])
     raw = subprocess.run(
-        [
-            "ledger",
-            "-f", str(fixture),
-            "balance",
-            "--flat",
-            "--no-pager",
-            "--no-color",
-            "--no-total",
-            "--format=%(account)|%(scrub(amount))\n",
-        ],
+        cmd,
         capture_output=True,
         text=True,
         check=True,
@@ -851,6 +860,7 @@ class Case:
     fixture: Path
     canonical: CanonicalFn
     canonical_args: dict | None = None  # for canonicals that need extra args
+    canonical_commodity: str | None = None  # chain-root commodity for -X canonicalisation
 
 
 POSITIVE: list[Case] = [
@@ -927,9 +937,12 @@ def diff_sets(canonical: set[Tuple3], doppio: set[Tuple3]) -> str | None:
 def run_positive(case: Case, dop_bin: Path) -> bool:
     print(f"  [{case.label}] {case.fixture.name}", end=" ... ", flush=True)
     # Phase 0: balance equality (the original parity check, #196).
-    canonical = case.canonical(case.fixture)
+    if case.canonical_commodity is not None:
+        canonical_bal = case.canonical(case.fixture, canonical=case.canonical_commodity)
+    else:
+        canonical_bal = case.canonical(case.fixture)
     doppio = doppio_balances(case.fixture, dop_bin)
-    bal_diff = diff_sets(canonical, doppio)
+    bal_diff = diff_sets(canonical_bal, doppio)
 
     # Phase 1: per-transaction tags + metadata (#226). Skipped for ledger-cli
     # since its native output doesn't expose tags structurally.
