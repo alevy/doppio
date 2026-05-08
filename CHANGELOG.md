@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- **`C`-directive transitive chain (fixpoint) applied during balance verification** (#266):
+  PR #261 (#248 stage 2) implemented `C` commodity-conversion directives but omitted the
+  transitive-chain pass.  When `C 1.00s = 100c` and `C 1.00G = 100s` are both in scope,
+  a posting in `c` now elaborates all the way to `G` (divisor 10000), enabling
+  mixed-commodity transactions like `1G / -10000c` to balance correctly.  The fix adds an
+  eager fixpoint pass (`Context::resolve_commodity_conversion_chains`) that runs once per
+  `CommodityConversion` directive after it is inserted into the context: every entry is
+  rewritten to point directly at its chain root with the accumulated product divisor.
+  Cycles (`C 1X = 1Y; C 1Y = 1X`) are detected and surfaced as a new
+  `ResolutionError::CommodityConversionCycle` variant.  The #261 test that asserted
+  "no chaining" has been replaced with tests that assert correct chaining (2-hop, 3-hop)
+  and cycle detection.  `tests/parity/ledger-wow.dat` now elaborates without the
+  previous `TransactionDoesNotBalance({"G": -65, "s": 6500.00})` error; display-time
+  parity with ledger-cli's `bal` command is tracked separately.
+
 - **Signed numbers in commodity-first amount form** (#264): both the ledger-cli
   and hledger frontends now accept amounts where the commodity precedes a signed
   number, e.g. `"Beaststalker's Belt" -1` or `USD -1`.  Previously, the sign
@@ -23,8 +38,9 @@
   applied at elaboration time via the existing `commodity_conversions` map; aliases declared with
   `commodity X / alias Y` continue to use `divisor = Decimal::ONE` (a 1:1 rename, unchanged).
   The directive is context-versioned: transactions that precede a `C` directive in source order
-  are not retroactively affected.  **No chaining**: `C 1G = 100s` + `C 1s = 100c` converts
-  `c`-postings to `s` only (one hop), matching ledger-cli's observed behaviour.
+  are not retroactively affected.  Transitive chains (e.g. `c → s → G`) are resolved to the
+  chain root via an eager fixpoint pass; see #266 for the correction of #261's incomplete
+  single-hop implementation.
   Grammar addition: `number ~ commodity` (no-space number-first form, e.g. `1428c`) is now
   accepted in posting amounts, enabling wow.dat-style postings.
 

@@ -153,6 +153,66 @@ pub struct Context {
     pub(crate) defines: BTreeMap<String, Define>,
 }
 
+impl Context {
+    /// Run a fixpoint pass over `commodity_conversions`, transitively resolving
+    /// every entry to its chain root.
+    ///
+    /// After this pass each entry `(Y, (root, total_divisor))` satisfies:
+    /// `root` either is not itself a key in `commodity_conversions` (true chain
+    /// root), or is a self-loop sentinel `root == root` (canonical commodity
+    /// that is already expressed in itself, with a divisor for unit normalisation).
+    /// The divisor accumulates multiplicatively along the chain so that
+    /// `amount_in_Y / total_divisor == amount_in_root`.
+    ///
+    /// Cycles (`C 1X = 1Y; C 1Y = 1X`) are detected via a hop-count limit equal
+    /// to the map's length: if we take more hops than there are entries, we must
+    /// be in a cycle. The commodity that triggered the cycle is returned as an
+    /// error.
+    ///
+    /// This is called once per `CommodityConversion` directive (eager/resolution-time
+    /// fixpoint, as required by #266 design constraint A).
+    pub(crate) fn resolve_commodity_conversion_chains(&mut self) -> Result<(), ResolutionError> {
+        let max_hops = self.commodity_conversions.len();
+        // Collect all commodity keys first to avoid borrow conflicts.
+        let keys: Vec<String> = self.commodity_conversions.keys().cloned().collect();
+        for start in keys {
+            // Walk the chain from `start` until we reach a root.
+            //
+            // A root is either:
+            //   (a) a commodity that is NOT a key in the map (truly external root), or
+            //   (b) a self-loop sentinel: (X, (X, d)) — canonical commodity X maps to
+            //       itself with normalisation divisor d.
+            //
+            // In either case we stop and accumulate the final divisor.
+            let mut hops = 0usize;
+            let mut current = start.clone();
+            let mut total_divisor = rust_decimal::Decimal::ONE;
+
+            // Walk the chain until we hit a root (commodity not in the map)
+            // or a self-loop sentinel (commodity maps to itself).
+            while let Some((next, divisor)) = self.commodity_conversions.get(&current).cloned() {
+                total_divisor *= divisor;
+                if next == current {
+                    // Self-loop sentinel: this is the chain root; stop.
+                    break;
+                }
+                current = next;
+                hops += 1;
+                if hops > max_hops {
+                    return Err(ResolutionError::CommodityConversionCycle(start));
+                }
+            }
+
+            // Rewrite the entry for `start` to point directly at the chain root
+            // with the accumulated total divisor.
+            if let Some(entry) = self.commodity_conversions.get_mut(&start) {
+                *entry = (current, total_divisor);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A resolved `define` entry, carrying parameter names and the macro body.
 #[derive(Debug, Clone)]
 pub(crate) struct Define {
@@ -777,6 +837,13 @@ pub enum ResolutionError {
     /// An automated transaction rule's query string could not be compiled
     /// as a regex. Carries the raw query and the underlying regex error.
     InvalidAutoRuleQuery(String, String),
+    /// A cycle was detected among `C` commodity-conversion directives.
+    ///
+    /// The carried string names one commodity that participates in the cycle
+    /// (e.g. `"X"` when `C 1X = 1Y` and `C 1Y = 1X` are both in scope).
+    /// Chains like `c → s → G` are valid and are fully resolved to the chain
+    /// root; a cycle has no root and cannot be resolved.
+    CommodityConversionCycle(String),
 }
 
 impl std::fmt::Display for ResolutionError {
@@ -787,6 +854,13 @@ impl std::fmt::Display for ResolutionError {
             }
             ResolutionError::InvalidAutoRuleQuery(query, err) => {
                 write!(f, "Invalid auto-rule query `{query}`: {err}")
+            }
+            ResolutionError::CommodityConversionCycle(commodity) => {
+                write!(
+                    f,
+                    "Cycle detected in C commodity-conversion directives \
+                     involving commodity `{commodity}`"
+                )
             }
         }
     }
@@ -1134,23 +1208,43 @@ impl TryFrom<ast::Journal> for HIR {
                     //     — scales postings already in the canonical commodity by N1
                     //     (empirically: C 100c = 1s, posting 250c -> 2.5c)
                     //
-                    // ledger-cli does NOT chain C directives (c -> s -> G does NOT
-                    // produce a c -> G entry); each entry is a direct single-hop mapping.
+                    // After inserting, we run a fixpoint pass that transitively
+                    // resolves all chains to their root commodity (fix for #266).
+                    // For example, with `C 1s = 100c` and `C 1G = 100s` in scope,
+                    // the `c` entry resolves all the way to G (divisor = 10000),
+                    // so a posting in `c` will elaborate directly to G.
+                    //
+                    // Cycles (C 1X = 1Y; C 1Y = 1X) are detected and surfaced as
+                    // ResolutionError::CommodityConversionCycle.
                     let divisor = lhs.value * rhs.value;
-                    new_context =
-                        Some(new_context.unwrap_or_else(|| context.clone())).map(|mut ctx| {
-                            // RHS commodity -> LHS canonical with product divisor.
-                            ctx.commodity_conversions
-                                .entry(rhs.commodity.clone())
-                                .or_insert_with(|| (lhs.commodity.clone(), divisor));
-                            // LHS commodity -> itself, scaled by N1 only.
-                            // This handles the "posting in canonical" case, e.g.
-                            // `C 100c = 1s` with `250c` posting -> `2.50c`.
-                            ctx.commodity_conversions
-                                .entry(lhs.commodity.clone())
-                                .or_insert_with(|| (lhs.commodity.clone(), lhs.value));
-                            ctx
-                        });
+                    let mut ctx = new_context.unwrap_or_else(|| context.clone());
+                    // RHS commodity -> LHS canonical with product divisor.
+                    //
+                    // Use `insert` (overwrite) so that a later directive like
+                    // `C 1G = 100s` correctly updates s's entry to point at G,
+                    // even if s was previously inserted as a self-loop sentinel
+                    // by an earlier directive (`C 1s = 100c` inserts s→(s,1)).
+                    ctx.commodity_conversions
+                        .insert(rhs.commodity.clone(), (lhs.commodity.clone(), divisor));
+                    // LHS commodity -> itself, scaled by N1 only (self-loop sentinel).
+                    //
+                    // This handles the "posting in canonical" case, e.g.
+                    // `C 100c = 1s` with `250c` posting -> `2.50c`.
+                    //
+                    // Use `entry(...).or_insert_with` so a more specific
+                    // canonical-resolution inserted by an earlier directive is
+                    // not overwritten: if `s` is already resolved (e.g. because
+                    // `C 1s = 100c` ran first and s→(s,1) is set, then
+                    // `C 1G = 100s` runs and updates s→(G,100) via the rhs insert
+                    // above), the lhs self-loop insert here is a no-op for
+                    // entries that already have a non-self-loop target.
+                    ctx.commodity_conversions
+                        .entry(lhs.commodity.clone())
+                        .or_insert_with(|| (lhs.commodity.clone(), lhs.value));
+                    // Run the transitive fixpoint: chain c -> s -> G becomes
+                    // c -> G directly (with product divisor).  Cycles error out.
+                    ctx.resolve_commodity_conversion_chains()?;
+                    new_context = Some(ctx);
                 }
             }
 
