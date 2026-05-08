@@ -5,7 +5,7 @@ resolver = "3"
 # Shared metadata that applies to every member crate by default. Crates
 # can override individual fields locally.
 [workspace.package]
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 rust-version = "1.95.0"
 repository = "https://github.com/alevy/doppio"
