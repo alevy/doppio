@@ -573,7 +573,7 @@ fn parse_open_directive(pair: Pair<Rule>) -> Directive {
     let name = inner.next().unwrap().as_str().to_string();
 
     let mut notes = Vec::new();
-    let items = Vec::new();
+    let mut items = Vec::new();
 
     for p in inner {
         match p.as_rule() {
@@ -585,7 +585,13 @@ fn parse_open_directive(pair: Pair<Rule>) -> Directive {
             }
             Rule::booking_method => {
                 let inner_pair = p.into_inner().next().unwrap();
-                notes.push(format!("booking: {}", inner_pair.as_str()));
+                let raw = inner_pair.as_str();
+                if let Some(method) = parse_booking_method(raw) {
+                    items.push(crate::ast::AccountItem::Booking(method));
+                } else {
+                    // Unknown spelling -- preserve as a free-form note for diagnostics.
+                    notes.push(format!("booking: {raw}"));
+                }
             }
             Rule::note => notes.push(p.into_inner().as_str().trim().to_string()),
             Rule::metadata_line => notes.push(metadata_line_to_note(p)),
@@ -594,6 +600,24 @@ fn parse_open_directive(pair: Pair<Rule>) -> Directive {
     }
 
     Directive::Account { name, notes, items }
+}
+
+/// Map Beancount's `Booking` spelling on the `open` directive to the
+/// structured [`crate::resolution::BookingMethod`]. Unknown values
+/// return `None`; callers fall through to a free-form note so the
+/// raw text is still observable.
+fn parse_booking_method(raw: &str) -> Option<crate::resolution::BookingMethod> {
+    use crate::resolution::BookingMethod::*;
+    Some(match raw {
+        "STRICT" => Strict,
+        "STRICT_WITH_SIZE" => StrictWithSize,
+        "NONE" => None,
+        "AVERAGE" => Average,
+        "FIFO" => Fifo,
+        "LIFO" => Lifo,
+        "HIFO" => Hifo,
+        _ => return Option::None,
+    })
 }
 
 fn parse_commodity_directive(pair: Pair<Rule>) -> Directive {
@@ -885,6 +909,7 @@ pub fn beancount_defaults() -> crate::resolution::ElaborationConfig {
         balance_mode: crate::resolution::BalanceMode::CostBasis,
         assertion_scope: crate::resolution::AssertionScope::Subtree,
         lot_validation_mode: crate::resolution::LotValidationMode::Strict,
+        default_booking_method: crate::resolution::BookingMethod::Strict,
     }
 }
 
@@ -1237,12 +1262,36 @@ mod tests {
     fn open_with_booking_method() {
         let input = "2024-01-01 open Assets:Brokerage AAPL,USD \"FIFO\"\n";
         let journal = parse_beancount(input).expect("parse");
-        let Entry::Directive(Directive::Account { name, notes, .. }) = &journal.entries[0] else {
+        let Entry::Directive(Directive::Account {
+            name, notes, items, ..
+        }) = &journal.entries[0]
+        else {
             panic!();
         };
         assert_eq!(name, "Assets:Brokerage");
-        assert!(notes.iter().any(|n| n == "booking: FIFO"));
+        let booking = items.iter().find_map(|i| match i {
+            crate::ast::AccountItem::Booking(b) => Some(*b),
+            _ => Option::None,
+        });
+        assert_eq!(booking, Some(crate::resolution::BookingMethod::Fifo));
         assert!(notes.iter().any(|n| n.contains("AAPL,USD")));
+    }
+
+    #[test]
+    fn open_with_unknown_booking_method_falls_back_to_note() {
+        // Unknown spellings should not panic the parser; preserve as a
+        // free-form note so the raw text is still observable.
+        let input = "2024-01-01 open Assets:Brokerage AAPL \"WACKY_METHOD\"\n";
+        let journal = parse_beancount(input).expect("parse");
+        let Entry::Directive(Directive::Account { notes, items, .. }) = &journal.entries[0] else {
+            panic!();
+        };
+        assert!(
+            !items
+                .iter()
+                .any(|i| matches!(i, crate::ast::AccountItem::Booking(_)))
+        );
+        assert!(notes.iter().any(|n| n == "booking: WACKY_METHOD"));
     }
 
     #[test]
@@ -1329,6 +1378,60 @@ mod tests {
         for e in &journal.entries {
             assert!(matches!(e, Entry::Comment(_)));
         }
+    }
+
+    #[test]
+    fn empty_lot_annotation_parses_as_missing_cost() {
+        // `{}` is Beancount's "MISSING cost" spec: a request to the
+        // elaborator to apply the account's booking method against
+        // the running inventory rather than spelling out a specific
+        // lot key. The parser captures this as
+        // `lot_annotation = Some(ann)` with `ann.cost = None` -- the
+        // top-level `Some` distinguishes "annotation present" from
+        // "no annotation at all", and the inner `cost: None`
+        // distinguishes "MISSING cost" from "explicit cost".
+        let input = "\
+2024-03-15 * \"Sell with empty cost spec\"
+  Assets:Brokerage   -5 AAPL {}
+  Assets:Cash       1000 USD
+";
+        let journal = parse_beancount(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!();
+        };
+        let Some(AmountDetails::Amount { lot_annotation, .. }) = &tx.postings[0].amount else {
+            panic!("expected Amount details");
+        };
+        let ann = lot_annotation.as_ref().expect("lot annotation present");
+        assert!(ann.cost.is_none(), "empty {{}} should leave cost MISSING");
+        assert!(ann.date.is_none());
+        assert!(ann.note.is_none());
+    }
+
+    #[test]
+    fn partial_lot_annotation_date_only_parses_as_missing_cost() {
+        // `{2024-01-15}` is a partial cost spec: cost is MISSING, but
+        // the booking method gets a date hint to narrow which lots
+        // are eligible. Same shape as empty `{}` from the cost-MISSING
+        // standpoint.
+        let input = "\
+2024-03-15 * \"Sell with date-only lot spec\"
+  Assets:Brokerage   -5 AAPL {2024-01-15}
+  Assets:Cash       1000 USD
+";
+        let journal = parse_beancount(input).expect("parse");
+        let Entry::Transaction(tx) = &journal.entries[0] else {
+            panic!();
+        };
+        let Some(AmountDetails::Amount { lot_annotation, .. }) = &tx.postings[0].amount else {
+            panic!("expected Amount details");
+        };
+        let ann = lot_annotation.as_ref().expect("lot annotation present");
+        assert!(
+            ann.cost.is_none(),
+            "date-only spec should leave cost MISSING"
+        );
+        assert_eq!(ann.date, chrono::NaiveDate::from_ymd_opt(2024, 1, 15));
     }
 
     #[test]
@@ -2444,5 +2547,337 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
 2024-12-31 balance Income:Salary -100.00 USD
 ";
         elaborate(input).expect("leaf-account assertion must still pass");
+    }
+
+    // ----------------------------------------------------------------------
+    // Auto-booking tests (#238)
+    // ----------------------------------------------------------------------
+
+    /// FIFO booking: a `{}` reduction matches against the oldest lot
+    /// in the inventory. The single MISSING-cost posting is replaced
+    /// by one explicit-cost booked posting carrying the matched lot's
+    /// cost basis.
+    #[test]
+    fn fifo_books_against_oldest_lot() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"FIFO\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-02-15 * \"Buy more\"
+  Assets:Brokerage   10 GOLD {1600.00 USD}
+  Assets:Cash       -16000.00 USD
+
+2024-03-15 * \"Sell with empty cost spec\"
+  Assets:Brokerage   -5 GOLD {} @ 1700.00 USD
+  Assets:Cash       8500.00 USD
+  Income:Trading
+";
+        let elab = elaborate(input).expect("FIFO booking should succeed");
+        let sell_tx = elab
+            .transactions
+            .iter()
+            .find(|t| t.description == "Sell with empty cost spec")
+            .unwrap();
+        let booked = sell_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Brokerage")
+            .expect("brokerage posting present");
+        assert_eq!(booked.amount_in("GOLD"), Some(dec!(-5)));
+        assert_eq!(
+            booked.lot_cost_in("USD"),
+            Some(dec!(1500.00)),
+            "FIFO should match the oldest (1500 USD) lot"
+        );
+    }
+
+    /// FIFO booking with a multi-lot reduction: `-15 GOLD {}` against
+    /// 10 + 10 should split into one -10 GOLD {1500} posting and one
+    /// -5 GOLD {1600} posting on the brokerage account.
+    #[test]
+    fn fifo_splits_multi_lot_reduction() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"FIFO\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-02-15 * \"Buy more\"
+  Assets:Brokerage   10 GOLD {1600.00 USD}
+  Assets:Cash       -16000.00 USD
+
+2024-03-15 * \"Sell across two lots\"
+  Assets:Brokerage   -15 GOLD {} @ 1700.00 USD
+  Assets:Cash       25500.00 USD
+  Income:Trading
+";
+        let elab = elaborate(input).expect("FIFO multi-lot booking should succeed");
+        let sell_tx = elab
+            .transactions
+            .iter()
+            .find(|t| t.description == "Sell across two lots")
+            .unwrap();
+        let brokerage_postings: Vec<_> = sell_tx
+            .postings
+            .iter()
+            .filter(|p| p.account == "Assets:Brokerage")
+            .collect();
+        assert_eq!(
+            brokerage_postings.len(),
+            2,
+            "expected two booked postings, one per matched lot"
+        );
+        // Order: oldest lot first.
+        assert_eq!(brokerage_postings[0].amount_in("GOLD"), Some(dec!(-10)));
+        assert_eq!(
+            brokerage_postings[0].lot_cost_in("USD"),
+            Some(dec!(1500.00))
+        );
+        assert_eq!(brokerage_postings[1].amount_in("GOLD"), Some(dec!(-5)));
+        assert_eq!(
+            brokerage_postings[1].lot_cost_in("USD"),
+            Some(dec!(1600.00))
+        );
+    }
+
+    /// LIFO booking: same fixture as FIFO but matches the most-recent
+    /// lot first.
+    #[test]
+    fn lifo_books_against_newest_lot() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"LIFO\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-02-15 * \"Buy more\"
+  Assets:Brokerage   10 GOLD {1600.00 USD}
+  Assets:Cash       -16000.00 USD
+
+2024-03-15 * \"Sell\"
+  Assets:Brokerage   -5 GOLD {} @ 1700.00 USD
+  Assets:Cash       8500.00 USD
+  Income:Trading
+";
+        let elab = elaborate(input).expect("LIFO booking should succeed");
+        let sell_tx = elab
+            .transactions
+            .iter()
+            .find(|t| t.description == "Sell")
+            .unwrap();
+        let booked = sell_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Brokerage")
+            .expect("brokerage posting present");
+        assert_eq!(
+            booked.lot_cost_in("USD"),
+            Some(dec!(1600.00)),
+            "LIFO should match the newest (1600 USD) lot"
+        );
+    }
+
+    /// HIFO booking: matches the highest-cost lot first.
+    #[test]
+    fn hifo_books_against_highest_cost_lot() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"HIFO\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-02-15 * \"Buy expensive\"
+  Assets:Brokerage   10 GOLD {1700.00 USD}
+  Assets:Cash       -17000.00 USD
+
+2024-02-20 * \"Buy cheaper\"
+  Assets:Brokerage   10 GOLD {1600.00 USD}
+  Assets:Cash       -16000.00 USD
+
+2024-03-15 * \"Sell\"
+  Assets:Brokerage   -5 GOLD {} @ 1750.00 USD
+  Assets:Cash       8750.00 USD
+  Income:Trading
+";
+        let elab = elaborate(input).expect("HIFO booking should succeed");
+        let sell_tx = elab
+            .transactions
+            .iter()
+            .find(|t| t.description == "Sell")
+            .unwrap();
+        let booked = sell_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Brokerage")
+            .expect("brokerage posting present");
+        assert_eq!(
+            booked.lot_cost_in("USD"),
+            Some(dec!(1700.00)),
+            "HIFO should match the most-expensive (1700 USD) lot"
+        );
+    }
+
+    /// STRICT + `{}` against multiple eligible lots is an
+    /// AmbiguousLotMatch error.
+    #[test]
+    fn strict_rejects_ambiguous_empty_lot_spec() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"STRICT\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-02-15 * \"Buy more\"
+  Assets:Brokerage   10 GOLD {1600.00 USD}
+  Assets:Cash       -16000.00 USD
+
+2024-03-15 * \"Ambiguous sell\"
+  Assets:Brokerage   -5 GOLD {} @ 1700.00 USD
+  Assets:Cash       8500.00 USD
+  Income:Trading
+";
+        let err = elaborate(input).expect_err("STRICT should reject ambiguous {} reduction");
+        assert!(
+            format!("{err:?}").contains("AmbiguousLotMatch"),
+            "expected AmbiguousLotMatch, got {err:?}"
+        );
+    }
+
+    /// STRICT + `{2024-01-15}` (date hint narrowing to a single lot)
+    /// resolves unambiguously and books that lot.
+    #[test]
+    fn strict_accepts_partial_spec_that_uniquely_resolves() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"STRICT\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-02-15 * \"Buy more\"
+  Assets:Brokerage   10 GOLD {1600.00 USD}
+  Assets:Cash       -16000.00 USD
+
+2024-03-15 * \"Sell from January lot\"
+  Assets:Brokerage   -5 GOLD {2024-01-15} @ 1700.00 USD
+  Assets:Cash       8500.00 USD
+  Income:Trading
+";
+        let elab = elaborate(input).expect("STRICT + date hint should resolve");
+        let sell_tx = elab
+            .transactions
+            .iter()
+            .find(|t| t.description == "Sell from January lot")
+            .unwrap();
+        let booked = sell_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Brokerage")
+            .expect("brokerage posting present");
+        assert_eq!(booked.lot_cost_in("USD"), Some(dec!(1500.00)));
+    }
+
+    /// NONE booking bypasses the booking pass entirely; the posting
+    /// is recorded with cost=None even when other lots exist.
+    #[test]
+    fn none_booking_passes_through_unchanged() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"NONE\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-03-15 * \"Sell with no booking\"
+  Assets:Brokerage   -5 GOLD {} @ 1700.00 USD
+  Assets:Cash       8500.00 USD
+  Income:Trading
+";
+        let elab = elaborate(input).expect("NONE booking accepts the posting");
+        let sell_tx = elab
+            .transactions
+            .iter()
+            .find(|t| t.description == "Sell with no booking")
+            .unwrap();
+        let booked = sell_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Brokerage")
+            .expect("brokerage posting present");
+        // Under NONE booking, the user's `{}` is preserved as a
+        // cost-MISSING lot annotation rather than rewritten by the
+        // booking pass. The end result is functionally equivalent to
+        // a bare reduction.
+        assert_eq!(booked.amount_in("GOLD"), Some(dec!(-5)));
+        assert_eq!(
+            booked.lot_cost_in("USD"),
+            None,
+            "NONE should leave cost MISSING"
+        );
+    }
+
+    /// Over-reduction: a `{}` reduction asking for more units than
+    /// the inventory holds.
+    #[test]
+    fn over_reduction_in_booking_errors() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"FIFO\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-03-15 * \"Sell more than we have\"
+  Assets:Brokerage   -25 GOLD {} @ 1700.00 USD
+  Assets:Cash       42500.00 USD
+  Income:Trading
+";
+        let err = elaborate(input).expect_err("over-reduction should error");
+        assert!(
+            format!("{err:?}").contains("OverReductionInBooking"),
+            "expected OverReductionInBooking, got {err:?}"
+        );
+    }
+
+    /// Augmenting posting with `{}` (positive units, MISSING cost)
+    /// is not supported in the first cut.
+    #[test]
+    fn augmenting_posting_with_missing_cost_errors() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"FIFO\"
+2024-01-01 open Assets:Cash USD
+
+2024-03-15 * \"Buy with empty cost spec\"
+  Assets:Brokerage    5 GOLD {} @ 1700.00 USD
+  Assets:Cash       -8500.00 USD
+";
+        let err = elaborate(input).expect_err("augmenting + MISSING should error");
+        assert!(
+            format!("{err:?}").contains("AugmentingPostingWithMissingCost"),
+            "expected AugmentingPostingWithMissingCost, got {err:?}"
+        );
     }
 }

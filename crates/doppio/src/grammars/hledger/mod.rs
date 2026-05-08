@@ -708,6 +708,7 @@ pub fn hledger_defaults() -> crate::resolution::ElaborationConfig {
         },
         assertion_scope: crate::resolution::AssertionScope::Direct,
         lot_validation_mode: crate::resolution::LotValidationMode::Permissive,
+        default_booking_method: crate::resolution::BookingMethod::None,
     }
 }
 

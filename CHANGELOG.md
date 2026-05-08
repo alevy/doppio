@@ -144,6 +144,21 @@ surface.
   commodity under different lot keys is rejected with
   `ElaborationError::PhantomLotReduction`. ledger-cli + hledger
   defaults remain `Permissive`. (#237)
+- **`BookingMethod` and auto-booking for Beancount `{}` reductions.**
+  The Beancount parser now captures the booking method on `open`
+  directives as a structured `AccountItem::Booking(BookingMethod)`
+  (previously stashed as a free-form note). At elaboration time, a
+  reducing posting whose lot annotation is `{}` (or a partial spec
+  like `{2024-01-15}`) is matched against the account's running
+  inventory per the configured method: `FIFO` consumes oldest lots
+  first, `LIFO` newest, `HIFO` highest-cost, `STRICT` errors on
+  ambiguity, `NONE` skips booking entirely. Multi-lot reductions are
+  split into one synthesised posting per matched lot. Lot dates are
+  auto-filled from the transaction date on augmenting postings (so
+  `{1500 USD}` records `[2024-01-15]` when written on a 2024-01-15
+  transaction), matching bean-check. (#238) Known gap: cost-basis-aware
+  gain inference for null `Income:Trading` postings is incorrect when
+  `{}` reductions balance via `@price` — tracked separately as #242.
 
 ---
 
