@@ -252,6 +252,44 @@ pub enum ElaborationError {
         /// The named lot key that was not found in the inventory.
         lot: String,
     },
+    /// A posting carries a MISSING-cost lot spec (`{}` or partial like
+    /// `{2024-01-15}`) under [`crate::resolution::BookingMethod::Strict`],
+    /// but the partial spec matches more than one lot in the account's
+    /// inventory. Beancount's STRICT booking rejects these as
+    /// ambiguous; FIFO/LIFO/HIFO/AVERAGE would resolve them. See #238.
+    AmbiguousLotMatch {
+        /// The account.
+        account: String,
+        /// The commodity being reduced.
+        commodity: String,
+        /// Number of inventory lots that matched the partial spec.
+        match_count: usize,
+    },
+    /// A booking pass tried to consume more units than the account's
+    /// inventory holds in the named commodity (or matching lot subset
+    /// when a partial spec was given). The reduction is over-sized
+    /// for what the inventory can supply.
+    OverReductionInBooking {
+        /// The account being reduced.
+        account: String,
+        /// The commodity being reduced.
+        commodity: String,
+        /// Units the posting tried to consume (positive).
+        requested: Decimal,
+        /// Units actually available across all matching lots.
+        available: Decimal,
+    },
+    /// A posting with a MISSING-cost lot spec (`{}`) carries POSITIVE
+    /// units (i.e. augmentation) under a non-NONE booking method.
+    /// Augmenting with `{}` requires the cost to come from somewhere
+    /// (an `@price` annotation, typically); supporting that is
+    /// out of scope for the initial #238 cut.
+    AugmentingPostingWithMissingCost {
+        /// The account.
+        account: String,
+        /// The commodity.
+        commodity: String,
+    },
 }
 
 /// Error produced when evaluating a value expression (e.g., an amount or
@@ -446,6 +484,39 @@ impl Display for ElaborationError {
                     f,
                     "phantom-lot reduction: account `{account}` has no prior augmentation \
                      of `{commodity}` matching lot `{lot}`"
+                )
+            }
+            ElaborationError::AmbiguousLotMatch {
+                account,
+                commodity,
+                match_count,
+            } => {
+                write!(
+                    f,
+                    "ambiguous booking: account `{account}` has {match_count} \
+                     matching lots of `{commodity}`; STRICT booking requires \
+                     exactly one (use FIFO/LIFO/HIFO/AVERAGE on `open` to disambiguate)"
+                )
+            }
+            ElaborationError::OverReductionInBooking {
+                account,
+                commodity,
+                requested,
+                available,
+            } => {
+                write!(
+                    f,
+                    "over-reduction during booking: account `{account}` has \
+                     {available} {commodity} available across matching lots, \
+                     but the posting tried to reduce {requested}"
+                )
+            }
+            ElaborationError::AugmentingPostingWithMissingCost { account, commodity } => {
+                write!(
+                    f,
+                    "MISSING-cost lot annotation (`{{}}`) on an augmenting posting \
+                     of `{commodity}` to `{account}`: doppio's booking implementation \
+                     handles reductions only; spell out `{{cost}}` explicitly for augmentations"
                 )
             }
         }
@@ -760,8 +831,33 @@ pub fn elaborate(
                                         if let Some(ann) = lot_annotation {
                                             let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
                                                 .expect("epoch is valid");
+                                            // Auto-fill the lot date from the
+                                            // transaction date for AUGMENTING
+                                            // postings (positive units, explicit
+                                            // cost): matches bean-check, which
+                                            // writes the transaction date as
+                                            // the lot's acquisition date when
+                                            // `{}` carries no `[date]`.
+                                            // Reducing postings (negative
+                                            // units) and MISSING-cost specs are
+                                            // left as the user wrote them: the
+                                            // booking pass walks inventory and
+                                            // re-emits explicit-cost postings
+                                            // with the matched lot's date.
+                                            // Required for FIFO / LIFO to
+                                            // distinguish lots whose only other
+                                            // annotation is cost.
+                                            let is_augmenting =
+                                                !value.is_sign_negative() && !value.is_zero();
+                                            let lot_date = ann.date.or(
+                                                if is_augmenting && ann.cost.is_some() {
+                                                    Some(transaction.date)
+                                                } else {
+                                                    Option::None
+                                                },
+                                            );
                                             let proto_date =
-                                                ann.date.map(|d| (d - epoch).num_days() as i32);
+                                                lot_date.map(|d| (d - epoch).num_days() as i32);
                                             let cost_is_total = ann.cost_is_total;
                                             let (proto_cost, cost_pair) =
                                                 if let Some(cost_expr) = ann.cost {
@@ -1366,6 +1462,21 @@ pub fn elaborate(
                         )?;
                     }
 
+                    // Booking pass (#238): for any posting carrying a
+                    // MISSING-cost lot annotation (`{}` or partial),
+                    // look up the account's booking method and
+                    // synthesise explicit-cost replacement postings
+                    // matched against the running inventory. Must run
+                    // BEFORE the phantom-lot check so the latter sees
+                    // booked (concrete-cost) postings that match the
+                    // inventory by construction.
+                    let resolved_postings = apply_booking(
+                        resolved_postings,
+                        &state.account_inventories,
+                        &value.global_context.account_properties,
+                        config.default_booking_method,
+                    )?;
+
                     // Strict lot-validation: project this transaction's
                     // lot-bearing postings onto the running inventory and
                     // reject any reducing posting whose lot key picks
@@ -1405,15 +1516,43 @@ pub fn elaborate(
                             if !delta.is_sign_negative() {
                                 continue;
                             }
-                            let prior_specific = state
+                            // Per-account opt-out: an EXPLICIT
+                            // `BookingMethod::None` on the `open`
+                            // directive means "this account allows
+                            // mixed inventories; don't validate".
+                            // Doesn't apply to accounts that merely
+                            // *fall back* to the frontend default --
+                            // those still participate in
+                            // `LotValidationMode::Strict` checking.
+                            let booking_method = value
+                                .global_context
+                                .account_properties
+                                .get(account)
+                                .and_then(|p| p.booking_method);
+                            if matches!(booking_method, Some(resolution::BookingMethod::None)) {
+                                continue;
+                            }
+                            // The reducer's LotKey acts as a *partial
+                            // spec*: None fields match any value in the
+                            // inventory. A reducer like `{$150}` (cost
+                            // specified, date inherited as None) matches
+                            // any inventory lot at $150 regardless of
+                            // its (auto-filled) acquisition date. See
+                            // #238 for the rationale.
+                            let any_match = state
                                 .account_inventories
                                 .get(account)
-                                .and_then(|inv| {
-                                    inv.positions.get(&(commodity.clone(), Some(lot.clone())))
+                                .map(|inv| {
+                                    inv.positions.iter().any(|((c, k), v)| {
+                                        c == commodity
+                                            && !v.is_zero()
+                                            && k.as_ref().is_some_and(|inv_lot| {
+                                                lot_matches_pattern(lot, inv_lot)
+                                            })
+                                    })
                                 })
-                                .copied()
-                                .unwrap_or_default();
-                            if !prior_specific.is_zero() {
+                                .unwrap_or(false);
+                            if any_match {
                                 continue;
                             }
                             let any_prior_same_commodity = state
@@ -1597,6 +1736,261 @@ fn for_each_descendant<T>(map: &BTreeMap<String, T>, account: &str, mut f: impl 
 /// commodity), so we read the first entry. If the cost map is empty
 /// (a lot with `[date]` only, for example), `cost` and `cost_commodity`
 /// are `None`.
+/// Does `inventory` satisfy the constraints in `pattern`? Each field
+/// of `pattern` that is `Some(_)` must equal the corresponding
+/// inventory field; `None` fields in `pattern` match any value. Used
+/// by both the phantom-lot validator and the booking pass when a
+/// reducer's lot annotation only partially specifies the lot key.
+fn lot_matches_pattern(pattern: &LotKey, inventory: &LotKey) -> bool {
+    if let Some(c) = &pattern.cost
+        && Some(c) != inventory.cost.as_ref()
+    {
+        return false;
+    }
+    if let Some(c) = &pattern.cost_commodity
+        && Some(c) != inventory.cost_commodity.as_ref()
+    {
+        return false;
+    }
+    if let Some(d) = &pattern.date
+        && Some(d) != inventory.date.as_ref()
+    {
+        return false;
+    }
+    if let Some(n) = &pattern.note
+        && Some(n) != inventory.note.as_ref()
+    {
+        return false;
+    }
+    true
+}
+
+/// Apply per-account booking methods to any posting whose lot
+/// annotation carries a MISSING cost (`{}` or a partial spec like
+/// `{2024-01-15}`). The MISSING-cost marker is the user's request:
+/// "look at the inventory and tell me which lot(s) this reduction
+/// drew from." Each such posting is replaced by one or more booked
+/// postings, each carrying an explicit cost on its lot annotation.
+///
+/// Inputs:
+/// - `postings` — the elaborated postings produced by the main
+///   transaction loop. Already balance-checked.
+/// - `inventories` — the running per-account inventory at the moment
+///   the transaction is being elaborated (from before this
+///   transaction's contributions are folded in).
+/// - `account_properties` — looked up per posting account to find
+///   the configured [`BookingMethod`].
+///
+/// Postings without a lot annotation, or with an explicit cost, are
+/// passed through unchanged. Postings on accounts whose booking
+/// method is [`BookingMethod::None`] are also passed through (NONE
+/// short-circuits booking entirely; the cost stays MISSING).
+///
+/// Augmenting postings with MISSING cost are rejected with
+/// [`ElaborationError::AugmentingPostingWithMissingCost`] — first
+/// cut handles reductions only.
+///
+/// AVERAGE booking is not yet implemented; an account configured
+/// with AVERAGE falls through to FIFO behaviour for now (tracked as
+/// follow-up to #238).
+fn apply_booking(
+    postings: Vec<crate::elaboration::Posting>,
+    inventories: &BTreeMap<String, AccountInventory>,
+    account_properties: &BTreeMap<String, resolution::AccountProperties>,
+    default_booking_method: resolution::BookingMethod,
+) -> Result<Vec<crate::elaboration::Posting>, ElaborationError> {
+    let mut out: Vec<crate::elaboration::Posting> = Vec::with_capacity(postings.len());
+    // Track the per-account, per-commodity reductions we've already
+    // booked from earlier postings in the same transaction so that a
+    // subsequent MISSING-cost posting on the same account doesn't
+    // re-consume an already-booked lot.
+    let mut consumed: BTreeMap<(String, String, LotKey), Decimal> = BTreeMap::new();
+
+    for posting in postings {
+        let Some(lot) = posting.lot.as_ref() else {
+            out.push(posting);
+            continue;
+        };
+        if lot.cost.is_some() {
+            // Explicit cost: not a booking trigger.
+            out.push(posting);
+            continue;
+        }
+        // MISSING-cost lot annotation. Look up the booking method,
+        // falling back to the frontend default (Beancount: STRICT;
+        // ledger / hledger: NONE — i.e. the booking pass is a no-op).
+        let method = account_properties
+            .get(&posting.account)
+            .and_then(|p| p.booking_method)
+            .unwrap_or(default_booking_method);
+        if matches!(method, resolution::BookingMethod::None) {
+            // NONE: skip booking entirely. Posting is recorded as cost=None.
+            out.push(posting);
+            continue;
+        }
+        // We need the units to know how much to consume. Booking only
+        // applies when the posting carries a single commodity; the
+        // amounts() iterator yields one entry per commodity (postings
+        // synthesised by `==*` are multi-commodity but never carry a
+        // lot annotation, so this is unreachable in practice).
+        let amount_pairs: Vec<(String, Decimal)> =
+            posting.amounts().map(|(c, v)| (c.to_string(), v)).collect();
+        if amount_pairs.len() != 1 {
+            // Zero or multi-commodity posting with a lot annotation:
+            // not supported by booking. Pass through.
+            out.push(posting);
+            continue;
+        }
+        let (commodity, units) = amount_pairs.into_iter().next().expect("len == 1");
+        if !units.is_sign_negative() {
+            return Err(ElaborationError::AugmentingPostingWithMissingCost {
+                account: posting.account.clone(),
+                commodity,
+            });
+        }
+        // Partial cost spec hints (date, note) filter eligible lots.
+        let date_hint = lot.date.and_then(|epoch_days| {
+            chrono::NaiveDate::from_ymd_opt(1970, 1, 1).and_then(|epoch| {
+                epoch.checked_add_signed(chrono::Duration::days(epoch_days as i64))
+            })
+        });
+        let note_hint = lot.note.clone();
+
+        let inventory = inventories.get(&posting.account);
+        let mut eligible_lots: Vec<(LotKey, Decimal)> = inventory
+            .map(|inv| {
+                inv.positions
+                    .iter()
+                    .filter_map(|((c, lot_key_opt), bal)| {
+                        if c != &commodity {
+                            return None;
+                        }
+                        let lot_key = lot_key_opt.clone()?;
+                        if !bal.is_sign_positive() || bal.is_zero() {
+                            return None;
+                        }
+                        if let Some(d) = date_hint
+                            && lot_key.date != Some(d)
+                        {
+                            return None;
+                        }
+                        if let Some(n) = note_hint.as_deref()
+                            && lot_key.note.as_deref() != Some(n)
+                        {
+                            return None;
+                        }
+                        // Subtract any already-consumed units in this
+                        // transaction.
+                        let already = consumed
+                            .get(&(posting.account.clone(), commodity.clone(), lot_key.clone()))
+                            .copied()
+                            .unwrap_or_default();
+                        let remaining = *bal - already;
+                        if remaining.is_zero() || !remaining.is_sign_positive() {
+                            return None;
+                        }
+                        Some((lot_key, remaining))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Sort eligible lots per the booking method.
+        match method {
+            resolution::BookingMethod::Fifo
+            | resolution::BookingMethod::Strict
+            | resolution::BookingMethod::StrictWithSize
+            | resolution::BookingMethod::Average => {
+                // FIFO + STRICT both walk in ascending acquisition-date
+                // order; STRICT errors on >1 match below. AVERAGE is
+                // not yet a separate path -- documented as follow-up.
+                eligible_lots.sort_by_key(|(k, _)| k.date);
+            }
+            resolution::BookingMethod::Lifo => {
+                eligible_lots.sort_by_key(|b| std::cmp::Reverse(b.0.date));
+            }
+            resolution::BookingMethod::Hifo => {
+                eligible_lots.sort_by_key(|b| std::cmp::Reverse(b.0.cost));
+            }
+            resolution::BookingMethod::None => unreachable!("handled above"),
+        }
+
+        if matches!(method, resolution::BookingMethod::Strict) && eligible_lots.len() > 1 {
+            return Err(ElaborationError::AmbiguousLotMatch {
+                account: posting.account.clone(),
+                commodity,
+                match_count: eligible_lots.len(),
+            });
+        }
+
+        // Walk eligible lots in order and synthesise booked postings.
+        let mut to_consume = -units; // positive
+        let total_available: Decimal = eligible_lots.iter().map(|(_, b)| *b).sum();
+        if to_consume > total_available {
+            return Err(ElaborationError::OverReductionInBooking {
+                account: posting.account.clone(),
+                commodity,
+                requested: to_consume,
+                available: total_available,
+            });
+        }
+        for (lot_key, balance) in eligible_lots {
+            if to_consume.is_zero() {
+                break;
+            }
+            let take = to_consume.min(balance);
+            // Synthesise a booked posting: same account/payee/state/etc.
+            // but with the explicit lot key and reduced units.
+            let booked = synthesise_booked_posting(&posting, &commodity, -take, &lot_key);
+            *consumed
+                .entry((posting.account.clone(), commodity.clone(), lot_key.clone()))
+                .or_default() += take;
+            out.push(booked);
+            to_consume -= take;
+        }
+    }
+    Ok(out)
+}
+
+/// Build a single booked posting cloned from `original`, with
+/// `units` (negative) of `commodity` and an explicit cost from `lot_key`.
+/// Used by [`apply_booking`] when a MISSING-cost reduction has been
+/// matched against a specific inventory lot.
+fn synthesise_booked_posting(
+    original: &crate::elaboration::Posting,
+    commodity: &str,
+    units: Decimal,
+    lot_key: &LotKey,
+) -> crate::elaboration::Posting {
+    let proto_amount = crate::elaboration::Amount {
+        by_commodity: BTreeMap::from([(commodity.to_string(), crate::decimal_to_proto(units))]),
+    };
+    let lot_cost = lot_key
+        .cost
+        .zip(lot_key.cost_commodity.clone())
+        .map(|(cv, cc)| crate::elaboration::Amount {
+            by_commodity: BTreeMap::from([(cc, crate::decimal_to_proto(cv))]),
+        });
+    let proto_date = lot_key.date.and_then(|d| {
+        chrono::NaiveDate::from_ymd_opt(1970, 1, 1).map(|epoch| (d - epoch).num_days() as i32)
+    });
+    let lot = crate::elaboration::Lot {
+        cost: lot_cost,
+        date: proto_date,
+        note: lot_key.note.clone(),
+    };
+    crate::elaboration::Posting {
+        account: original.account.clone(),
+        payee: original.payee.clone(),
+        amount: Some(proto_amount),
+        state: original.state,
+        tags: original.tags.clone(),
+        metadata: original.metadata.clone(),
+        kind: original.kind,
+        lot: Some(lot),
+    }
+}
+
 /// Render a [`LotKey`] for human-readable diagnostic output (error
 /// messages, primarily). Mirrors the source-syntax order
 /// `{cost} [date] ((note))`, omitting fields that are `None`. Empty

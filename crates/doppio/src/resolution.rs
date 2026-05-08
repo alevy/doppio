@@ -187,6 +187,14 @@ pub struct ElaborationConfig {
     /// the account's running balance for that commodity. See
     /// [`LotValidationMode`].
     pub lot_validation_mode: LotValidationMode,
+    /// Frontend-default booking method, used when an account has no
+    /// explicit `booking_method` of its own. Beancount applies STRICT
+    /// here (matching `option "booking_method" "STRICT"` and the
+    /// implicit default on `open` directives); ledger-cli / hledger
+    /// have no booking concept and use NONE (the booking pass is a
+    /// no-op for those frontends, even when a posting carries a
+    /// cost-MISSING lot annotation like `[date]` only).
+    pub default_booking_method: BookingMethod,
 }
 
 /// Strategy for computing a posting's cash-equivalent during the
@@ -279,6 +287,46 @@ pub enum LotValidationMode {
     Strict,
 }
 
+/// Booking method declared on a Beancount `open` directive — governs
+/// how an ambiguous `{}` (empty cost spec) reduction is resolved
+/// against the account's running inventory.
+///
+/// Booking only fires when the user writes `{}` (or a partial spec
+/// like `{2024-01-15}` that leaves the cost MISSING). A bare
+/// reduction with no `{}` at all is not booked: it is recorded as a
+/// `cost=None` position and the booking method is not consulted
+/// (matching Beancount 3.x — see [`LotValidationMode`] for the
+/// validation orthogonal to this).
+///
+/// The variants mirror Beancount's `Booking` enum (in
+/// `beancount/core/data.py`) modulo casing and naming.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BookingMethod {
+    /// Reject ambiguous `{}` matches with an error. Default in
+    /// Beancount; the only resolution allowed is when exactly one
+    /// existing lot satisfies the partial spec, or when the reduction
+    /// would empty the account in that commodity.
+    #[default]
+    Strict,
+    /// Like [`Self::Strict`], but if a single lot matches the
+    /// reduction's *size* exactly, that lot wins as if it were
+    /// unambiguous.
+    StrictWithSize,
+    /// No matching at all: the reduction is appended to the inventory
+    /// as a cost=None position even if it would result in a mixed
+    /// inventory.
+    None,
+    /// Collapse all lots in the same commodity into a single
+    /// weighted-average-cost lot before matching.
+    Average,
+    /// First-in first-out: consume oldest lots first.
+    Fifo,
+    /// Last-in first-out: consume most-recent lots first.
+    Lifo,
+    /// Highest-in first-out: consume the most-expensive lot first.
+    Hifo,
+}
+
 /// Per-transaction balance tolerance policy.
 ///
 /// When a transaction's postings sum to a non-zero residual, the
@@ -348,6 +396,11 @@ pub struct AccountProperties {
     /// notes on the directive header and `key: value` sub-items inside
     /// the block. Elaboration denormalises by walking ancestors.
     pub metadata: BTreeMap<String, String>,
+    /// Booking method declared on a Beancount `open` directive
+    /// (e.g. `open Assets:Brokerage AAPL "FIFO"`). `None` when no
+    /// method was specified — the elaborator falls back to the
+    /// active [`ElaborationConfig`]'s default. See [`BookingMethod`].
+    pub booking_method: Option<BookingMethod>,
 }
 
 /// A single entry in the resolved journal, paired with its active context.
@@ -831,6 +884,9 @@ impl TryFrom<ast::Journal> for HIR {
                             }
                             ast::AccountItem::Check(expr) => {
                                 global_context.checks.push(expr);
+                            }
+                            ast::AccountItem::Booking(method) => {
+                                global_context.booking_method = Some(method);
                             }
                             ast::AccountItem::Unknown(key, value) => {
                                 // Sub-items without a value (e.g. a bare

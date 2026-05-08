@@ -208,6 +208,11 @@ pub(crate) enum AccountItem {
     /// If the expression evaluates to `false`, a warning is printed to stderr
     /// but elaboration continues.
     Check(BoolExpr),
+    /// The booking method declared on a Beancount `open` directive (e.g.
+    /// `open Assets:Brokerage AAPL "FIFO"`). Governs how an ambiguous
+    /// `{}` reduction is resolved against the account's running
+    /// inventory. See [`crate::resolution::BookingMethod`].
+    Booking(crate::resolution::BookingMethod),
     /// An unrecognised sub-directive with an optional value.
     Unknown(String, Option<String>),
 }
