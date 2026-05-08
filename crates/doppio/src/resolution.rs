@@ -135,8 +135,15 @@ pub(crate) struct ResolvedAutoRule {
 pub struct Context {
     /// Maps short account names to their canonical equivalents.
     pub account_aliases: BTreeMap<String, String>,
-    /// Maps alternative commodity symbols to their canonical names.
-    pub commodity_aliases: BTreeMap<String, String>,
+    /// Maps alternative commodity symbols to their canonical names and conversion divisors.
+    ///
+    /// The key is the alias (source) commodity symbol. The value is
+    /// `(canonical_symbol, divisor)` where `divisor` is the amount to divide by
+    /// when converting to the canonical commodity. Aliases populated from
+    /// `commodity X\n  alias Y` directives use `divisor = Decimal::ONE` (a 1:1
+    /// rename). Full `C` conversion directives (stage 2, #248) will populate
+    /// entries with arbitrary divisors.
+    pub commodity_conversions: BTreeMap<String, (String, rust_decimal::Decimal)>,
     /// The commodity assumed when a posting amount has no explicit commodity.
     pub default_commodity: Option<String>,
     /// Named aliases defined with `define name[(params)] = body`.
@@ -920,7 +927,10 @@ impl TryFrom<ast::Journal> for HIR {
                                 // original view of aliases.
                                 new_context = Some(new_context.unwrap_or_else(|| context.clone()))
                                     .map(|mut ctx| {
-                                        ctx.commodity_aliases.insert(alias, name.clone());
+                                        ctx.commodity_conversions.insert(
+                                            alias,
+                                            (name.clone(), rust_decimal::Decimal::ONE),
+                                        );
                                         ctx
                                     });
                             }
@@ -1218,11 +1228,15 @@ mod resolution_tests {
 
         // Verify context 1 has the alias
         assert_eq!(
-            hir.contexts[1].commodity_aliases.get("Bitcoin").unwrap(),
+            hir.contexts[1]
+                .commodity_conversions
+                .get("Bitcoin")
+                .unwrap()
+                .0,
             "BTC"
         );
         // Verify context 0 does not
-        assert!(hir.contexts[0].commodity_aliases.is_empty());
+        assert!(hir.contexts[0].commodity_conversions.is_empty());
     }
 
     #[test]
