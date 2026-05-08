@@ -1165,8 +1165,42 @@ pub fn elaborate(
                             // null posting fills against the post-
                             // booking residual and gain inference is
                             // correct.
-                            let needs_booking =
-                                proto_lot.as_ref().is_some_and(|l| l.cost.is_none());
+                            //
+                            // Booking also fires for *partial-spec*
+                            // reductions like `-30 AAPL {185.40 USD}`
+                            // (cost specified, date / label missing):
+                            // bean-check's strict booking matches such
+                            // a partial spec against the concrete
+                            // dated inventory lot and rewrites the
+                            // reduction's lot key to the matched lot's
+                            // full key. doppio mirrors this so per-lot
+                            // running state (#237) tracks the
+                            // reduction against the same bucket as the
+                            // augmentation (#227 parity comparator).
+                            // Cost-MISSING reductions trigger
+                            // unconditionally; partial-spec reductions
+                            // only when the inventory has positions in
+                            // the same `(account, commodity)` to draw
+                            // against -- otherwise the
+                            // "create-labeled-short-position" path
+                            // (matching bean-check's no-prior
+                            // behaviour) takes over.
+                            let needs_booking = proto_lot.as_ref().is_some_and(|l| {
+                                if l.cost.is_none() {
+                                    return true;
+                                }
+                                if !value.is_sign_negative() {
+                                    return false;
+                                }
+                                state
+                                    .account_inventories
+                                    .get(&account_name)
+                                    .is_some_and(|inv| {
+                                        inv.positions
+                                            .iter()
+                                            .any(|((c, _), v)| c == &commodity && !v.is_zero())
+                                    })
+                            });
                             if needs_booking {
                                 let booking_method = value_global_account_property(
                                     &account_name,
@@ -1889,10 +1923,20 @@ fn book_missing_cost_inline(
         });
     }
 
-    // Partial cost-spec hints: a posting like `{2024-01-15}` carries
-    // a date with no cost; the booking pass uses the date to narrow
-    // which inventory lots are eligible before applying the method's
+    // Partial cost-spec hints: every Some field on the partial spec
+    // is a constraint; eligible inventory lots must match it. The
+    // remaining None fields are wildcards. `{1700 USD}` filters by
+    // cost only; `{2024-01-15}` filters by date only;
+    // `{1700 USD, 2024-01-15}` requires both. Lots that pass all
+    // constraints become candidates for the booking method's
     // ordering rule.
+    let cost_hint = partial_lot.cost.as_ref().and_then(|amount| {
+        amount
+            .by_commodity
+            .iter()
+            .next()
+            .map(|(c, v)| (v.to_decimal(), c.clone()))
+    });
     let date_hint = partial_lot.date.and_then(|epoch_days| {
         chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
             .and_then(|epoch| epoch.checked_add_signed(chrono::Duration::days(epoch_days as i64)))
@@ -1909,6 +1953,12 @@ fn book_missing_cost_inline(
                     }
                     let lot_key = lot_key_opt.clone()?;
                     if !bal.is_sign_positive() || bal.is_zero() {
+                        return None;
+                    }
+                    if let Some((cv, cc)) = cost_hint.as_ref()
+                        && (lot_key.cost.as_ref() != Some(cv)
+                            || lot_key.cost_commodity.as_ref() != Some(cc))
+                    {
                         return None;
                     }
                     if let Some(d) = date_hint

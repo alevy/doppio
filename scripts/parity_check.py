@@ -661,10 +661,177 @@ _register_pad_extractors()
 
 
 # ---------------------------------------------------------------------------
+# Per-lot inventory extractors (#227).
+#
+# `LotPosition` is a 6-tuple keyed at full lot granularity:
+# `(account, commodity, cost_amount, cost_commodity, lot_date, lot_label)`.
+# `cost_amount`/`cost_commodity`/`lot_date`/`lot_label` are `None` when
+# the corresponding annotation was absent. The map's value is the
+# Decimal unit count.
+#
+# This complements `beancount_balances`: where that aggregates per
+# (account, commodity), this preserves the lot dimension. A regression
+# that drops the lot date on every posting (or collapses two lots at
+# different costs into one) is invisible to the aggregated comparator
+# but caught here.
+# ---------------------------------------------------------------------------
+
+LotKey = tuple[str, str, "Decimal | None", "str | None", "str | None", "str | None"]
+LotPositions = dict[LotKey, Decimal]
+
+
+def beancount_lot_positions(fixture: Path) -> LotPositions:
+    """Per-lot inventory positions via the Beancount Python API.
+
+    Unlike `beancount_balances` (which aggregates by `(account,
+    commodity)`), this preserves the cost / date / label dimensions
+    so we can validate that doppio's per-lot accounting (#237 + #238)
+    matches bean-check's at full granularity."""
+    from beancount.loader import load_file
+    from beancount.core.realization import realize, iter_children
+
+    entries, errors, _ = load_file(str(fixture))
+    if errors:
+        raise RuntimeError(f"beancount errors loading {fixture}: {errors}")
+    real_root = realize(entries)
+    out: LotPositions = {}
+    for ra in iter_children(real_root):
+        for pos in ra.balance.get_positions():
+            cost = pos.cost
+            cost_amount = (
+                Decimal(str(cost.number))
+                if cost is not None and cost.number is not None
+                else None
+            )
+            cost_commodity = cost.currency if cost is not None else None
+            lot_date = (
+                cost.date.isoformat()
+                if cost is not None and cost.date is not None
+                else None
+            )
+            lot_label = cost.label if cost is not None else None
+            key: LotKey = (
+                ra.account,
+                pos.units.currency,
+                cost_amount,
+                cost_commodity,
+                lot_date,
+                lot_label,
+            )
+            out[key] = out.get(key, Decimal(0)) + Decimal(str(pos.units.number))
+    return {k: v for k, v in out.items() if v != 0}
+
+
+def doppio_lot_positions(fixture: Path, dop_bin: Path) -> LotPositions:
+    """Reconstruct per-lot positions from `dop register --format=json`.
+
+    Each row carries an optional `lot` object with `cost_amount`,
+    `cost_commodity`, `date`, and `note` fields (all optional within
+    the object). Accumulate by full lot key; postings without a lot
+    annotation key into the all-None bucket.
+
+    Skips postings on doppio's synthesised empty-string `""` account
+    -- the rounding-residual bucket has no canonical analogue
+    (bean-check's `realize` doesn't surface a comparable position)."""
+    raw = subprocess.run(
+        [str(dop_bin), "register", "--format=json", str(fixture)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    payload = json.loads(raw)
+    out: LotPositions = {}
+    for row in payload:
+        if row["account"] == "":
+            continue
+        lot = row.get("lot")
+        cost_amount = (
+            Decimal(lot["cost_amount"])
+            if lot is not None and "cost_amount" in lot
+            else None
+        )
+        cost_commodity = (
+            lot.get("cost_commodity") if lot is not None else None
+        )
+        lot_date = lot.get("date") if lot is not None else None
+        lot_label = lot.get("note") if lot is not None else None
+        key: LotKey = (
+            row["account"],
+            row["commodity"],
+            cost_amount,
+            cost_commodity,
+            lot_date,
+            lot_label,
+        )
+        amount = Decimal(row["amount"])
+        out[key] = out.get(key, Decimal(0)) + amount
+    return {k: v for k, v in out.items() if v != 0}
+
+
+def diff_lot_positions(
+    canonical: LotPositions,
+    doppio: LotPositions,
+) -> str | None:
+    """Return None if equal; otherwise a multi-line human-readable diff
+    listing per-lot mismatches, missing keys, and extra keys."""
+    if canonical == doppio:
+        return None
+    canon_keys = set(canonical.keys())
+    dop_keys = set(doppio.keys())
+    only_canon = canon_keys - dop_keys
+    only_dop = dop_keys - canon_keys
+    common = canon_keys & dop_keys
+    mismatched = [(k, canonical[k], doppio[k]) for k in common if canonical[k] != doppio[k]]
+
+    def render_key(k: LotKey) -> str:
+        acct, comm, cost_amt, cost_curr, date, label = k
+        parts = [acct, comm]
+        if cost_amt is not None:
+            parts.append(f"cost={cost_amt} {cost_curr}")
+        if date is not None:
+            parts.append(f"date={date}")
+        if label is not None:
+            parts.append(f'label="{label}"')
+        return " | ".join(parts)
+
+    lines: list[str] = []
+    if mismatched:
+        lines.append("  per-lot unit-count mismatches:")
+        for k, cv, dv in sorted(mismatched, key=lambda x: render_key(x[0])):
+            lines.append(f"    {render_key(k)}: canonical={cv}  doppio={dv}")
+    if only_canon:
+        lines.append("  only in canonical:")
+        for k in sorted(only_canon, key=render_key):
+            lines.append(f"    {render_key(k)} = {canonical[k]}")
+    if only_dop:
+        lines.append("  only in doppio:")
+        for k in sorted(only_dop, key=render_key):
+            lines.append(f"    {render_key(k)} = {doppio[k]}")
+    return "\n".join(lines)
+
+
+# Map balance-extractor -> per-lot extractor. ledger-cli and hledger
+# don't expose lot-bearing inventory in a structured JSON output that
+# matches doppio's lot keys (lot annotations on those frontends are
+# carried as posting metadata only); only Beancount has a
+# canonical-API surface for per-lot positions.
+LOT_EXTRACTOR: dict[CanonicalFn, Callable[[Path], LotPositions] | None] = {}
+
+
+def _register_lot_extractors() -> None:
+    LOT_EXTRACTOR[beancount_balances] = beancount_lot_positions
+    LOT_EXTRACTOR[hledger_balances] = None
+    LOT_EXTRACTOR[ledger_balances] = None
+
+
+# Registered after CanonicalFn is defined.
+
+
+# ---------------------------------------------------------------------------
 # Test catalog
 # ---------------------------------------------------------------------------
 
 CanonicalFn = Callable[[Path], set[Tuple3]]
+
+_register_lot_extractors()
 
 
 @dataclass
@@ -777,11 +944,25 @@ def run_positive(case: Case, dop_bin: Path) -> bool:
         doppio_pads = doppio_pad_fingerprints(case.fixture, dop_bin)
         pad_diff = diff_pad_fingerprints(canonical_pads, doppio_pads)
 
+    # Phase 4: per-lot inventory positions (#227). Catches drift the
+    # commodity-aggregate balance comparator misses: lot-key mismatches
+    # (cost / date / label), augmentation drift (two lots collapsed into
+    # one), and lot-dimension regressions in general. Only Beancount has
+    # a canonical-API surface that preserves the lot dimension after
+    # realization.
+    lot_diff: str | None = None
+    lot_extractor = LOT_EXTRACTOR.get(case.canonical)
+    if lot_extractor is not None:
+        canonical_lots = lot_extractor(case.fixture)
+        doppio_lots = doppio_lot_positions(case.fixture, dop_bin)
+        lot_diff = diff_lot_positions(canonical_lots, doppio_lots)
+
     if (
         bal_diff is None
         and tags_meta_diff is None
         and prices_diff is None
         and pad_diff is None
+        and lot_diff is None
     ):
         print("OK")
         return True
@@ -798,6 +979,9 @@ def run_positive(case: Case, dop_bin: Path) -> bool:
     if pad_diff is not None:
         print("  pad synthesis:", file=sys.stderr)
         print(pad_diff, file=sys.stderr)
+    if lot_diff is not None:
+        print("  per-lot positions:", file=sys.stderr)
+        print(lot_diff, file=sys.stderr)
     return False
 
 
