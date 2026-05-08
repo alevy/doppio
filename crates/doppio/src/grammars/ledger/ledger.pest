@@ -101,8 +101,14 @@ empty_indented_line = _{ indent+ ~ NEWLINE }
 //
 // The !NEWLINE lookahead prevents a truly empty indented line from being
 // matched as a posting with an empty account name.
+//
+// `ws*` immediately before `(NEWLINE | EOI)` tolerates trailing whitespace
+// after the last meaningful token on the line. Real-world journals
+// (e.g. ledger-cli's own `test/input/standard.dat`) pad account names to
+// a fixed column with trailing spaces, including on null postings; the
+// whitespace before EOL is parser-meaningless. See #247.
 posting = ${
-    indent+ ~ !NEWLINE ~ (state ~ ws+)? ~ posting_account ~ (amount_logic)? ~ (ws* ~ note)? ~ (NEWLINE | EOI) ~
+    indent+ ~ !NEWLINE ~ (state ~ ws+)? ~ posting_account ~ (amount_logic)? ~ (ws* ~ note)? ~ ws* ~ (NEWLINE | EOI) ~
     posting_note*
 }
 
