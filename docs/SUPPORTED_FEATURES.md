@@ -89,7 +89,7 @@ Status legend:
 | `~` budget / periodic directive | ~ | Parsed but not elaborated (intentional parse-and-discard). No effect on balances or reports |
 | `= query` automated transaction rules | + | v2.1.0 (#249). Body postings synthesized as `PostingKind::VirtualUnbalanced`. Bare decimal amounts act as multipliers of the matched posting's commodity amount; amounts with an explicit commodity symbol are literal. Query strings: `/pattern/` → regex, bare string → case-insensitive substring match |
 | Explicit `*N` multiplier syntax in rule bodies | + | (#254). `*N`, `*-1`, `* 0.5` etc. in auto-rule body posting amounts are accepted and lower to the same bare-number multiplier as a plain bare decimal |
-| `C N1 X = N2 Y` commodity-conversion directive | + | (#248 stage 2). X (LHS) is the canonical commodity; Y (RHS) postings divide by `N1 * N2` to yield X-equivalent amounts. Divisor is empirically confirmed against ledger-cli. No chaining: `C 1G = 100s` + `C 1s = 100c` converts `c` to `s` (one hop), not all the way to `G`. |
+| `C N1 X = N2 Y` commodity-conversion directive | + | (#248 stage 2, #266). X (LHS) is the canonical commodity; Y (RHS) postings divide by `N1 * N2` to yield X-equivalent amounts. Divisor is empirically confirmed against ledger-cli. Transitive chains are resolved to the chain root via an eager fixpoint pass: `C 1s = 100c` + `C 1G = 100s` converts `c`-postings all the way to `G` (divisor 10000). Cycles (`C 1X = 1Y; C 1Y = 1X`) surface as `ResolutionError::CommodityConversionCycle` at resolution time. |
 
 ## Expression language
 

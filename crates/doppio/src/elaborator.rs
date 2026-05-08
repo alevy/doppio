@@ -6345,15 +6345,125 @@ C 1.00s = 100c
         );
     }
 
-    /// Two-step chain: `C 1G = 100s` + `C 1s = 100c`.
+    /// 2-hop balance verification: `C 1G = 100s` + `C 1s = 100c`.
     ///
-    /// ledger-cli does NOT chain C directives transitively: 250c converts to
-    /// 2.50s (one hop) but NOT all the way to 0.025G.
-    /// Verified empirically.
+    /// A mixed-commodity transaction with one posting in G and one in c must
+    /// balance after the full transitive chain is applied.  Both postings in the
+    /// elaborated Journal are expressed in the chain root G.
+    ///
+    /// Chain: c → s → G (total divisor = 10000).
+    /// 10000c / 10000 = 1G.  The G posting is already at root.
     #[test]
-    fn test_c_directive_no_chaining() {
+    fn test_c_directive_chain_applied_for_balance_verification() {
         let input = "\
+C 1.00s = 100c
 C 1.00G = 100s
+
+2024-01-01 mixed
+  Assets:A   1G
+  Assets:B  -10000c
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let asset_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:A")
+            .unwrap();
+        let asset_b = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:B")
+            .unwrap();
+        // Assets:A is 1G (already at chain root).
+        assert_eq!(
+            asset_a.amount_in("G"),
+            Some(dec!(1)),
+            "Assets:A should be 1G"
+        );
+        // Assets:B: -10000c → -10000 / 10000 = -1G via the c→s→G chain.
+        assert_eq!(
+            asset_b.amount_in("G"),
+            Some(dec!(-1)),
+            "Assets:B should be -1G after 2-hop c→s→G conversion"
+        );
+    }
+
+    /// 3-hop balance verification: `C 1P = 10G` + `C 1G = 100s` + `C 1s = 100c`.
+    ///
+    /// Chain: c → s → G → P (total divisor = 100000).
+    /// 100000c / 100000 = 1P.
+    #[test]
+    fn test_c_directive_three_hop_chain() {
+        let input = "\
+C 1.00s = 100c
+C 1.00G = 100s
+C 1.00P = 10G
+
+2024-01-01 mixed
+  Assets:A   1P
+  Assets:B  -100000c
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let asset_a = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:A")
+            .unwrap();
+        let asset_b = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:B")
+            .unwrap();
+        // Assets:A is 1P (already at chain root).
+        assert_eq!(
+            asset_a.amount_in("P"),
+            Some(dec!(1)),
+            "Assets:A should be 1P"
+        );
+        // Assets:B: -100000c resolves via c→s→G→P (divisor = 100000) = -1P.
+        assert_eq!(
+            asset_b.amount_in("P"),
+            Some(dec!(-1)),
+            "Assets:B should be -1P after 3-hop c→s→G→P conversion"
+        );
+    }
+
+    /// Cycle detection: `C 1X = 1Y` + `C 1Y = 1X` must produce a
+    /// `ResolutionError::CommodityConversionCycle`.
+    #[test]
+    fn test_c_directive_cycle_detection() {
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let input = "\
+C 1.00X = 1Y
+C 1.00Y = 1X
+
+2024-01-01 t
+  Assets:A  1X
+  Equity
+";
+        let ast = parse_ledger(input).expect("parse should succeed");
+        let err = HIR::try_from(ast).expect_err("cycle should be detected at resolution time");
+        assert!(
+            matches!(
+                err,
+                crate::resolution::ResolutionError::CommodityConversionCycle(_)
+            ),
+            "expected CommodityConversionCycle, got: {err:?}"
+        );
+    }
+
+    /// Single-hop happy path (regression of #261's basic case).
+    ///
+    /// `C 1.00s = 100c` with a posting of 250c resolves to 2.50s.
+    /// (Already covered by `test_c_directive_c_to_s`; this is an explicit
+    /// guard that the fixpoint does not break the 1-hop case.)
+    #[test]
+    fn test_c_directive_single_hop_regression() {
+        let input = "\
 C 1.00s = 100c
 
 2024-01-01 Test
@@ -6367,17 +6477,10 @@ C 1.00s = 100c
             .iter()
             .find(|p| p.account == "Assets:Cash")
             .unwrap();
-        // ledger-cli: 250c -> 2.50s (stops at first hop; does NOT chain to G).
         assert_eq!(
             cash.amount_in("s"),
             Some(dec!(2.50)),
-            "C directives do not chain: 250c should convert to 2.50s, not 0.025G"
-        );
-        // Must NOT appear as G.
-        assert_eq!(
-            cash.amount_in("G"),
-            None,
-            "no G amount expected when conversion stops at s"
+            "single-hop: 250c / 100 should be 2.50s"
         );
     }
 
