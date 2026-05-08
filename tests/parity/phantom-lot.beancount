@@ -1,0 +1,26 @@
+; Phantom-lot rejection negative fixture (#237).
+;
+; Beancount's STRICT booking method rejects a reducing posting whose
+; lot key references a per-unit cost that was never augmented in the
+; account. Two real lots exist (1500 USD and 1600 USD); the third
+; transaction sells "a 1700 USD lot" that was never bought. bean-check
+; raises a `ReductionError("No position matches ...")` and doppio's
+; Beancount frontend (defaulting to LotValidationMode::Strict) raises
+; ElaborationError::PhantomLotReduction.
+
+2024-01-01 open Assets:Coins
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading USD
+
+2024-01-15 * "Buy"
+  Assets:Coins   10 GOLD {1500.00 USD}
+  Assets:Cash   -15000.00 USD
+
+2024-02-15 * "Buy more"
+  Assets:Coins   10 GOLD {1600.00 USD}
+  Assets:Cash   -16000.00 USD
+
+2024-03-15 * "Sell, claiming a $1700 lot we never bought"
+  Assets:Coins  -10 GOLD {1700.00 USD, 2024-01-15} @ 1750.00 USD
+  Assets:Cash   17500.00 USD
+  Income:Trading

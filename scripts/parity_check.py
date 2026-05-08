@@ -699,9 +699,10 @@ POSITIVE: list[Case] = [
 ]
 
 NEGATIVE: list[Case] = [
-    Case("beancount", REPO / "tests/parity/bad-balance.beancount", beancount_balances),
-    Case("hledger",   REPO / "tests/parity/bad-balance.hledger",   hledger_balances),
-    Case("ledger",    REPO / "tests/parity/bad-balance.ledger",    ledger_balances),
+    Case("beancount",             REPO / "tests/parity/bad-balance.beancount", beancount_balances),
+    Case("hledger",               REPO / "tests/parity/bad-balance.hledger",   hledger_balances),
+    Case("ledger",                REPO / "tests/parity/bad-balance.ledger",    ledger_balances),
+    Case("beancount:phantom-lot", REPO / "tests/parity/phantom-lot.beancount", beancount_balances),
 ]
 
 

@@ -296,6 +296,7 @@ pub fn ledger_defaults() -> crate::resolution::ElaborationConfig {
         ),
         balance_mode: crate::resolution::BalanceMode::CostBasis,
         assertion_scope: crate::resolution::AssertionScope::Direct,
+        lot_validation_mode: crate::resolution::LotValidationMode::Permissive,
     }
 }
 

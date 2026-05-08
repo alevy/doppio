@@ -34,12 +34,85 @@ use crate::{
     resolution,
 };
 
-/// Per-account running balance, used during elaboration to evaluate balance
-/// assertions and the `account()` expression function.
+/// Identity of a single lot held in an account.
+///
+/// Mirrors the inventory key all three reference tools track: a position's
+/// cost basis, acquisition date, and free-form note. Two `{cost}`
+/// annotations with the same numeric value but different commodities are
+/// distinct lots; same date with different costs are distinct lots; etc.
+///
+/// `None` for any field means the corresponding annotation was absent on
+/// the posting. A posting with no lot annotation at all keys into the
+/// inventory under `Option::None` (the "default bucket") and aggregates
+/// with other plain-commodity postings just like the pre-#237 model.
+#[derive(Default, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct LotKey {
+    /// Per-unit cost basis evaluated to a concrete decimal. None when
+    /// the posting carried other lot fields (e.g. `[date]` only) but
+    /// no `{cost}` annotation.
+    pub(crate) cost: Option<Decimal>,
+    /// Cost commodity (e.g. `"USD"` for a `{1500 USD}` annotation).
+    pub(crate) cost_commodity: Option<String>,
+    /// Acquisition date (`[YYYY-MM-DD]` annotation).
+    pub(crate) date: Option<chrono::NaiveDate>,
+    /// Free-form note (Beancount calls this "label").
+    pub(crate) note: Option<String>,
+}
+
+/// Per-account running inventory, keyed at lot granularity.
+///
+/// All three reference tools (ledger-cli, hledger, Beancount) track
+/// account state as a per-lot inventory rather than a per-commodity
+/// aggregate. Two purchases of the same commodity at different costs
+/// remain distinct positions; a sale that names a specific lot
+/// decrements that lot only. The wire format already preserves the
+/// per-posting `Lot` annotation; this struct is the elaborator-side
+/// counterpart so phantom-lot reductions are detectable, lot
+/// augmentation is preserved, and downstream consumers of the running
+/// state can query per-lot positions directly. See #237.
+///
+/// Postings without a lot annotation key into `(commodity, None)` and
+/// aggregate as before — the "default bucket" preserves backward
+/// compatibility for journals that don't use `{cost}` / `[date]` /
+/// `((note))`.
 #[derive(Default, Clone, Debug)]
-struct AccountBalances {
-    /// The balance for each commodity held in this account.
-    commodity: BTreeMap<String, Decimal>,
+struct AccountInventory {
+    /// Per-(commodity, lot) running units. Keyed by commodity *then*
+    /// lot so callers iterating commodity totals can range-scan
+    /// efficiently when needed.
+    positions: BTreeMap<(String, Option<LotKey>), Decimal>,
+}
+
+impl AccountInventory {
+    /// Sum the running balance across all lots in `commodity`.
+    /// This is the commodity-aggregate view that pre-#237 callers
+    /// relied on for balance assertions, subtree aggregation, and
+    /// `==*` synthesis -- nothing about the user-visible
+    /// per-(account, commodity) total changes.
+    fn commodity_balance(&self, commodity: &str) -> Decimal {
+        self.positions
+            .iter()
+            .filter(|((c, _), _)| c == commodity)
+            .map(|(_, v)| *v)
+            .sum()
+    }
+
+    /// Iterate over every (commodity, lot) position, yielding non-zero
+    /// entries. Used by the post-elaboration metadata + report passes.
+    fn iter_positions(&self) -> impl Iterator<Item = (&(String, Option<LotKey>), &Decimal)> {
+        self.positions.iter().filter(|(_, v)| !v.is_zero())
+    }
+
+    /// Iterate over the distinct commodities held (regardless of lot).
+    fn commodities(&self) -> impl Iterator<Item = &String> {
+        self.positions.keys().map(|(c, _)| c)
+    }
+
+    /// Adjust the position keyed by (commodity, lot) by `delta`. Creates
+    /// the entry with the default `Decimal::ZERO` if it doesn't exist.
+    fn add(&mut self, commodity: String, lot: Option<LotKey>, delta: Decimal) {
+        *self.positions.entry((commodity, lot)).or_default() += delta;
+    }
 }
 
 /// Mutable state threaded through the elaboration of all transactions.
@@ -49,7 +122,7 @@ struct AccountBalances {
 /// the current posting is applied (which matches ledger-cli semantics).
 #[derive(Default, Clone, Debug)]
 struct RunningState {
-    account_balances: BTreeMap<String, AccountBalances>,
+    account_inventories: BTreeMap<String, AccountInventory>,
     /// Beancount `pad` markers awaiting their next `balance` assertion,
     /// keyed by the pad's target account. A new pad on the same target
     /// account overwrites any earlier one (Beancount's
@@ -165,6 +238,20 @@ pub enum ElaborationError {
     /// unit count is zero, so per-unit basis cannot be derived from
     /// the total.
     TotalCostWithZeroUnits,
+    /// In Strict lot validation mode, a posting reduces an account's
+    /// position in `commodity` while naming a lot key for which no
+    /// matching prior augmentation exists. Beancount's strict booking
+    /// method rejects these as ambiguous: there is no augmentation to
+    /// trace the reduction back to. See
+    /// [`crate::resolution::LotValidationMode::Strict`].
+    PhantomLotReduction {
+        /// The account whose position the posting is trying to reduce.
+        account: String,
+        /// The commodity being reduced.
+        commodity: String,
+        /// The named lot key that was not found in the inventory.
+        lot: String,
+    },
 }
 
 /// Error produced when evaluating a value expression (e.g., an amount or
@@ -350,6 +437,17 @@ impl Display for ElaborationError {
                     "`{{{{total}}}}` lot cost cannot be applied to a posting with zero units"
                 )
             }
+            ElaborationError::PhantomLotReduction {
+                account,
+                commodity,
+                lot,
+            } => {
+                write!(
+                    f,
+                    "phantom-lot reduction: account `{account}` has no prior augmentation \
+                     of `{commodity}` matching lot `{lot}`"
+                )
+            }
         }
     }
 }
@@ -398,6 +496,7 @@ pub fn elaborate(
         let tolerance_overrides = value.global_context.tolerance_overrides.clone();
         let balance_mode = config.balance_mode.clone();
         let assertion_scope = config.assertion_scope;
+        let lot_validation_mode = config.lot_validation_mode;
 
         for entry in value.entries {
             let entry_context = &value.contexts[entry.context_id];
@@ -437,17 +536,17 @@ pub fn elaborate(
                     // pad amount is the residual against the right scope.
                     let mut actual_amount = match assertion_scope {
                         crate::resolution::AssertionScope::Direct => state
-                            .account_balances
+                            .account_inventories
                             .get(&assertion.account)
-                            .and_then(|ab| ab.commodity.get(&expected_commodity))
-                            .copied()
+                            .map(|inv| inv.commodity_balance(&expected_commodity))
                             .unwrap_or(Decimal::ZERO),
-                        crate::resolution::AssertionScope::Subtree => {
-                            subtree_commodity_balance(&state.account_balances, &assertion.account)
-                                .get(&expected_commodity)
-                                .copied()
-                                .unwrap_or(Decimal::ZERO)
-                        }
+                        crate::resolution::AssertionScope::Subtree => subtree_commodity_balance(
+                            &state.account_inventories,
+                            &assertion.account,
+                        )
+                        .get(&expected_commodity)
+                        .copied()
+                        .unwrap_or(Decimal::ZERO),
                     };
 
                     // If a pad on this account is pending and has not yet
@@ -488,22 +587,18 @@ pub fn elaborate(
                             }
 
                             // Update running balances: target += diff, source -= diff.
-                            let target_bal = state
-                                .account_balances
+                            // Pad-synthesised postings have no lot annotation; key
+                            // into the default (lot=None) bucket on each side.
+                            state
+                                .account_inventories
                                 .entry(assertion.account.clone())
-                                .or_default();
-                            *(target_bal
-                                .commodity
-                                .entry(expected_commodity.clone())
-                                .or_default()) += diff;
-                            let source_bal = state
-                                .account_balances
+                                .or_default()
+                                .add(expected_commodity.clone(), None, diff);
+                            state
+                                .account_inventories
                                 .entry(pad.source_account.clone())
-                                .or_default();
-                            *(source_bal
-                                .commodity
-                                .entry(expected_commodity.clone())
-                                .or_default()) -= diff;
+                                .or_default()
+                                .add(expected_commodity.clone(), None, -diff);
 
                             // Build the synthesized transaction.
                             let pad_marker_meta: BTreeMap<String, String> =
@@ -629,7 +724,7 @@ pub fn elaborate(
                                 .get(&posting.account)
                                 .cloned()
                                 .unwrap_or(posting.account);
-                            let account_balance = state.account_balances.get(&account_name);
+                            let account_balance = state.account_inventories.get(&account_name);
                             // `lot_cash` -- the (total, commodity) pair to use for
                             // transaction balancing, along with the elaborated
                             // lot annotation for the proto output.
@@ -806,8 +901,8 @@ pub fn elaborate(
                                         // *before* this posting -- consistent with ledger-cli.
                                         if !(bacommodity == commodity
                                             && account_balance
-                                                .and_then(|ab| ab.commodity.get(&commodity))
-                                                .unwrap_or(&Decimal::ZERO)
+                                                .map(|ab| ab.commodity_balance(&commodity))
+                                                .unwrap_or(Decimal::ZERO)
                                                 + value
                                                 == baval)
                                         {
@@ -842,7 +937,7 @@ pub fn elaborate(
                                     // itself.
                                     let deltas: Vec<(String, Decimal)> =
                                         subtree_commodity_balance(
-                                            &state.account_balances,
+                                            &state.account_inventories,
                                             &account_name,
                                         )
                                         .into_iter()
@@ -853,9 +948,9 @@ pub fn elaborate(
                                         accounts.insert(account_name.clone(), Default::default());
                                     }
 
-                                    // Update transaction_state and account_balances.
+                                    // Update transaction_state and account_inventories.
                                     let bal_entry = state
-                                        .account_balances
+                                        .account_inventories
                                         .entry(account_name.clone())
                                         .or_default();
                                     let mut by_commodity: BTreeMap<
@@ -875,7 +970,13 @@ pub fn elaborate(
                                         }
                                     }
                                     for (c, delta) in &deltas {
-                                        *bal_entry.commodity.entry(c.clone()).or_default() += delta;
+                                        // The `==*` synthesis arm aggregates across all lots
+                                        // and writes the corrective delta into the default
+                                        // (lot=None) bucket on the named account. Lot-bearing
+                                        // positions in the same commodity are unchanged; only
+                                        // the aggregated commodity total reaches the asserted
+                                        // amount.
+                                        bal_entry.add(c.clone(), None, *delta);
                                         by_commodity
                                             .insert(c.clone(), crate::decimal_to_proto(*delta));
                                     }
@@ -913,10 +1014,11 @@ pub fn elaborate(
                                     // single-commodity account look multi-commodity.
                                     let from_account = account_balance.and_then(|ab| {
                                         let mut non_zero = ab
-                                            .commodity
-                                            .iter()
-                                            .filter(|(_, v)| !v.is_zero())
-                                            .map(|(k, _)| k.as_str());
+                                            .commodities()
+                                            .collect::<std::collections::BTreeSet<_>>()
+                                            .into_iter()
+                                            .filter(|c| !ab.commodity_balance(c).is_zero())
+                                            .map(|c| c.as_str());
                                         let first = non_zero.next()?;
                                         non_zero.next().is_none().then_some(first)
                                     });
@@ -935,8 +1037,8 @@ pub fn elaborate(
                                         )?;
                                     let value = newsum
                                         - account_balance
-                                            .and_then(|ab| ab.commodity.get(&commodity))
-                                            .unwrap_or(&Decimal::ZERO);
+                                            .map(|ab| ab.commodity_balance(&commodity))
+                                            .unwrap_or(Decimal::ZERO);
                                     (value, commodity, None, None, None)
                                 }
                             };
@@ -1111,7 +1213,7 @@ pub fn elaborate(
                         // Synthesize one multi-commodity posting that
                         // absorbs every (sub-tolerance) residual. The
                         // empty-string account is intentionally not added
-                        // to `accounts` or `account_balances`: it's a
+                        // to `accounts` or `account_inventories`: it's a
                         // wire-format artefact, not a user-facing account.
                         if !absorbed.is_empty() {
                             let by_commodity: BTreeMap<String, crate::elaboration::Decimal> =
@@ -1154,13 +1256,16 @@ pub fn elaborate(
                                 accounts.insert(gains_account.clone(), Default::default());
                             }
                             let gains_balances = state
-                                .account_balances
+                                .account_inventories
                                 .entry(gains_account.clone())
                                 .or_default();
                             let mut by_commodity: BTreeMap<String, crate::elaboration::Decimal> =
                                 BTreeMap::new();
                             for (c, v) in &gains {
-                                *gains_balances.commodity.entry(c.clone()).or_default() += *v;
+                                // Synthesised gains land on the gains-account's
+                                // default (lot=None) bucket; no specific lot to
+                                // attribute the synthetic posting to.
+                                gains_balances.add(c.clone(), None, *v);
                                 by_commodity.insert(c.clone(), crate::decimal_to_proto(*v));
                             }
                             resolved_postings.push(crate::elaboration::Posting {
@@ -1261,6 +1366,75 @@ pub fn elaborate(
                         )?;
                     }
 
+                    // Strict lot-validation: project this transaction's
+                    // lot-bearing postings onto the running inventory and
+                    // reject any reducing posting whose lot key picks
+                    // *one of several* lots in the same (account,
+                    // commodity) where none of them match. This mirrors
+                    // Beancount's STRICT booking method, which is
+                    // ambiguity-rejection rather than positive-position
+                    // requirement: when an account holds zero of a
+                    // commodity, a -5 AAPL {200 USD} posting creates a
+                    // labeled short position (Beancount accepts it);
+                    // when the same account already holds AAPL under a
+                    // different lot key, the named lot must match.
+                    //
+                    // Augmentation followed by reduction within the
+                    // same transaction is folded into the projected
+                    // delta first, so a tx that creates and then
+                    // reduces the same lot has zero net contribution
+                    // and is accepted. See #237.
+                    if lot_validation_mode == resolution::LotValidationMode::Strict {
+                        let mut projected: BTreeMap<(String, String, LotKey), Decimal> =
+                            BTreeMap::new();
+                        for posting in resolved_postings.iter() {
+                            let Some(lot_key) = lot_key_from_proto(posting.lot.as_ref()) else {
+                                continue;
+                            };
+                            for (commodity, delta) in posting.amounts() {
+                                *projected
+                                    .entry((
+                                        posting.account.clone(),
+                                        commodity.to_string(),
+                                        lot_key.clone(),
+                                    ))
+                                    .or_default() += delta;
+                            }
+                        }
+                        for ((account, commodity, lot), delta) in &projected {
+                            if !delta.is_sign_negative() {
+                                continue;
+                            }
+                            let prior_specific = state
+                                .account_inventories
+                                .get(account)
+                                .and_then(|inv| {
+                                    inv.positions.get(&(commodity.clone(), Some(lot.clone())))
+                                })
+                                .copied()
+                                .unwrap_or_default();
+                            if !prior_specific.is_zero() {
+                                continue;
+                            }
+                            let any_prior_same_commodity = state
+                                .account_inventories
+                                .get(account)
+                                .map(|inv| {
+                                    inv.positions
+                                        .iter()
+                                        .any(|((c, _), v)| c == commodity && !v.is_zero())
+                                })
+                                .unwrap_or(false);
+                            if any_prior_same_commodity {
+                                return Err(ElaborationError::PhantomLotReduction {
+                                    account: account.clone(),
+                                    commodity: commodity.clone(),
+                                    lot: format_lot_key(lot),
+                                });
+                            }
+                        }
+                    }
+
                     // Update running account balances and register new accounts.
                     // Virtual unbalanced postings DO update the running per-account
                     // balance (matching ledger-cli) so subsequent balance assertions
@@ -1272,12 +1446,17 @@ pub fn elaborate(
                         }
 
                         let balances = state
-                            .account_balances
+                            .account_inventories
                             .entry(posting.account.clone())
                             .or_default();
+                        // Pull the lot key off the elaborated posting (if
+                        // any) so reductions and balance assertions later
+                        // see the right per-lot inventory. Postings with
+                        // no lot annotation key into the default
+                        // (lot=None) bucket and aggregate as before.
+                        let lot_key = lot_key_from_proto(posting.lot.as_ref());
                         for (commodity, delta) in posting.amounts() {
-                            *(balances.commodity.entry(commodity.to_string()).or_default()) +=
-                                delta;
+                            balances.add(commodity.to_string(), lot_key.clone(), delta);
                         }
                     }
 
@@ -1407,20 +1586,77 @@ fn for_each_descendant<T>(map: &BTreeMap<String, T>, account: &str, mut f: impl 
     }
 }
 
+/// Extract a [`LotKey`] from an elaborated [`crate::elaboration::Lot`]
+/// (the proto wire-format representation). Returns `None` if the
+/// posting carried no lot annotation; otherwise returns a key whose
+/// fields mirror the wire format: per-unit cost as `(amount, commodity)`,
+/// acquisition date (decoded from epoch days), and free-form note.
+///
+/// `Lot.cost` is a multi-commodity `Amount`; in practice every
+/// elaborated lot has at most one commodity in the cost map (the cost
+/// commodity), so we read the first entry. If the cost map is empty
+/// (a lot with `[date]` only, for example), `cost` and `cost_commodity`
+/// are `None`.
+/// Render a [`LotKey`] for human-readable diagnostic output (error
+/// messages, primarily). Mirrors the source-syntax order
+/// `{cost} [date] ((note))`, omitting fields that are `None`. Empty
+/// keys (all fields `None`) render as `{}` so the surrounding error
+/// message still carries punctuation.
+fn format_lot_key(lot: &LotKey) -> String {
+    let mut parts = Vec::new();
+    if let (Some(cost), Some(commodity)) = (&lot.cost, &lot.cost_commodity) {
+        parts.push(format!("{{{} {}}}", cost, commodity));
+    }
+    if let Some(date) = lot.date {
+        parts.push(format!("[{}]", date));
+    }
+    if let Some(note) = &lot.note {
+        parts.push(format!("(({}))", note));
+    }
+    if parts.is_empty() {
+        "{}".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+fn lot_key_from_proto(lot: Option<&crate::elaboration::Lot>) -> Option<LotKey> {
+    let lot = lot?;
+    let mut cost = None;
+    let mut cost_commodity = None;
+    if let Some(amount) = lot.cost.as_ref()
+        && let Some((commodity, value)) = amount.by_commodity.iter().next()
+    {
+        cost = Some(value.to_decimal());
+        cost_commodity = Some(commodity.clone());
+    }
+    let date = lot.date.and_then(|epoch_days| {
+        chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+            .and_then(|epoch| epoch.checked_add_signed(chrono::Duration::days(epoch_days as i64)))
+    });
+    Some(LotKey {
+        cost,
+        cost_commodity,
+        date,
+        note: lot.note.clone(),
+    })
+}
+
 /// Per-commodity sum of the running balance across `account` and
 /// every descendant. Used by Beancount's subtree-aware `balance`
 /// directive (#214) and by hledger's `==*` synthesis (#207). Zero
 /// entries are dropped.
 fn subtree_commodity_balance(
-    account_balances: &BTreeMap<String, AccountBalances>,
+    account_inventories: &BTreeMap<String, AccountInventory>,
     account: &str,
 ) -> BTreeMap<String, Decimal> {
     let mut out: BTreeMap<String, Decimal> = BTreeMap::new();
-    for_each_descendant(account_balances, account, |_, balances| {
-        for (c, v) in &balances.commodity {
-            if !v.is_zero() {
-                *out.entry(c.clone()).or_default() += *v;
-            }
+    for_each_descendant(account_inventories, account, |_, inv| {
+        // Collapse the lot dimension: the subtree-aggregate view sums
+        // every lot in each commodity, matching what the pre-#237 code
+        // computed when running state was per-commodity only.
+        for ((c, _lot), v) in inv.iter_positions() {
+            *out.entry(c.clone()).or_default() += *v;
         }
     });
     out
@@ -2254,10 +2490,9 @@ mod evaluator {
                                 .get(&account)
                                 .unwrap_or(&account);
                             let balance = state
-                                .account_balances
+                                .account_inventories
                                 .get(account)
-                                .and_then(|ab| ab.commodity.get("$"))
-                                .cloned()
+                                .map(|ab| ab.commodity_balance("$"))
                                 .unwrap_or_default();
                             Ok(ast::ValueExpr::Object(BTreeMap::from([(
                                 "total".into(),
@@ -4181,7 +4416,7 @@ account Assets:Savings
         // The virtual posting credits $-25 to Equity:Reservations.
         // A subsequent balance assertion checks that the account balance is $-25,
         // which should succeed because virtual-unbalanced postings contribute to
-        // account_balances even though they're excluded from the transaction check.
+        // account_inventories even though they're excluded from the transaction check.
         let input = "\
 2024-01-15 Setup
     Assets:Checking           $100
@@ -4272,5 +4507,143 @@ account Assets:Savings
             "null posting should balance as -10 AAPL when no price is given"
         );
         assert!(!t.postings[0].has_lot(), "no lot annotation should be set");
+    }
+
+    // ----------------------------------------------------------------------
+    // Lot validation tests (#237)
+    // ----------------------------------------------------------------------
+
+    /// Elaborate `input` (ledger syntax) with the given lot validation
+    /// mode. Used by the strict-mode tests below; ledger syntax is
+    /// convenient because lot annotations parse identically across the
+    /// frontends, so the only thing under test is the elaborator's
+    /// strict-mode logic.
+    fn elaborate_with_lot_mode(
+        input: &str,
+        mode: resolution::LotValidationMode,
+    ) -> Result<crate::elaboration::Journal, ElaborationError> {
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let mut config = crate::grammars::ledger::ledger_defaults();
+        config.lot_validation_mode = mode;
+        crate::elaborate(hir, &config)
+    }
+
+    #[test]
+    fn strict_mode_rejects_phantom_lot_among_existing_lots() {
+        // The classic phantom-lot case Beancount also rejects: prior
+        // augmentations exist in the same (account, commodity) but
+        // under different lot keys. The reducing posting names a lot
+        // with no matching position, so the booking is ambiguous and
+        // strict mode rejects.
+        let input = "\
+2024-03-01 Buy AAPL at $150
+    Assets:Brokerage   10 AAPL {$150}
+    Assets:Cash
+
+2024-03-02 Try to sell at a phantom cost basis
+    Assets:Brokerage   -5 AAPL {$200}
+    Assets:Cash         $1000
+";
+        let err = elaborate_with_lot_mode(input, resolution::LotValidationMode::Strict)
+            .expect_err("strict mode should reject phantom lot among existing lots");
+        match err {
+            ElaborationError::PhantomLotReduction {
+                ref account,
+                ref commodity,
+                ..
+            } => {
+                assert_eq!(account, "Assets:Brokerage");
+                assert_eq!(commodity, "AAPL");
+            }
+            other => panic!("expected PhantomLotReduction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strict_mode_accepts_phantom_lot_with_no_prior_positions() {
+        // Beancount's STRICT booking is ambiguity-rejection, not
+        // positive-position requirement. With zero prior holdings of
+        // AAPL in the account, a -5 AAPL {$150} posting is allowed
+        // (creates a labeled short position) -- bean-check accepts
+        // this and so does doppio.
+        let input = "\
+2024-03-02 Open short position
+    Assets:Brokerage   -5 AAPL {$150}
+    Assets:Cash         $750
+";
+        elaborate_with_lot_mode(input, resolution::LotValidationMode::Strict)
+            .expect("strict mode should accept reduction with no prior positions");
+    }
+
+    #[test]
+    fn permissive_mode_accepts_phantom_lot_among_existing_lots() {
+        // Same journal as the rejection test above; in permissive
+        // mode (ledger-cli + hledger default) the phantom reduction
+        // is silently accepted.
+        let input = "\
+2024-03-01 Buy AAPL at $150
+    Assets:Brokerage   10 AAPL {$150}
+    Assets:Cash
+
+2024-03-02 Try to sell at a phantom cost basis
+    Assets:Brokerage   -5 AAPL {$200}
+    Assets:Cash         $1000
+";
+        let journal = elaborate_with_lot_mode(input, resolution::LotValidationMode::Permissive)
+            .expect("permissive mode should accept");
+        assert_eq!(journal.transactions.len(), 2);
+    }
+
+    #[test]
+    fn strict_mode_accepts_augmentation_followed_by_reduction_same_transaction() {
+        // A transaction can both create a lot and immediately reduce
+        // it: the projected per-(account, commodity, lot) net delta is
+        // computed across all postings before checking, so prior=0
+        // with delta=0 (or positive) is allowed.
+        let input = "\
+2024-03-02 Buy and immediately rebalance
+    Assets:Brokerage    5 AAPL {$150}
+    Assets:Brokerage   -5 AAPL {$150}
+    Assets:Cash          $0
+";
+        elaborate_with_lot_mode(input, resolution::LotValidationMode::Strict)
+            .expect("augment+reduce in same tx should be accepted");
+    }
+
+    #[test]
+    fn strict_mode_accepts_reduction_against_prior_augmentation() {
+        // Augment in transaction 1, reduce in transaction 2: the
+        // running inventory carries the lot across, so the second
+        // transaction's reduction is not phantom.
+        let input = "\
+2024-03-01 Buy AAPL
+    Assets:Brokerage   10 AAPL {$150}
+    Assets:Cash
+
+2024-03-02 Sell AAPL
+    Assets:Brokerage   -5 AAPL {$150}
+    Assets:Cash         $750
+";
+        let journal = elaborate_with_lot_mode(input, resolution::LotValidationMode::Strict)
+            .expect("reduction with prior augmentation should be accepted");
+        assert_eq!(journal.transactions.len(), 2);
+    }
+
+    #[test]
+    fn strict_mode_does_not_constrain_postings_without_lot_annotation() {
+        // A posting with no lot annotation keys into the (commodity,
+        // None) bucket. Strict booking applies only to lot-bearing
+        // postings: a bare reduction of a commodity not previously
+        // augmented is still a transaction-balance issue, not a
+        // phantom-lot issue. Here we balance via a bare augmentation.
+        let input = "\
+2024-03-01 Plain transfer
+    Assets:Cash    -$50
+    Expenses:Food   $50
+";
+        elaborate_with_lot_mode(input, resolution::LotValidationMode::Strict)
+            .expect("non-lot postings should be unaffected by strict mode");
     }
 }

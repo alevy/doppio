@@ -129,6 +129,22 @@ surface.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-lot inventory in the elaborator's running state.** Postings are
+  now tracked per `(account, commodity, lot)` rather than per
+  `(account, commodity)` aggregate. Lot keys carry cost basis,
+  acquisition date, and free-form note. Subtree aggregation, balance
+  assertions, and `==*` synthesis collapse the lot dimension and
+  behave identically for journals without lot annotations. (#237)
+- **`ElaborationConfig::lot_validation_mode`** (`Permissive` /
+  `Strict`). The Beancount frontend defaults to `Strict`, matching
+  bean-check's STRICT booking method: a reducing posting whose lot key
+  has no matching position in an account that already holds the same
+  commodity under different lot keys is rejected with
+  `ElaborationError::PhantomLotReduction`. ledger-cli + hledger
+  defaults remain `Permissive`. (#237)
+
 ---
 
 ## [1.0.0] - 2026-05-06
