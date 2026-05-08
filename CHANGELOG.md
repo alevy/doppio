@@ -47,6 +47,15 @@
 
 ### Test infrastructure
 
+- **Investigate `tests/parity/ledger-wow.dat` for POSITIVE wiring** (refs #261, refs #263, refs #197):
+  attempted to add the already-vendored `ledger-wow.dat` fixture to the parity POSITIVE list now
+  that both `C`-directive (#261) and quoted-commodity (#263) support have landed.  `dop balance`
+  fails with an elaboration error on postings that combine a quoted commodity name containing an
+  apostrophe with a `{cost}` lot annotation under a `C`-directive commodity-conversion chain
+  (`EvaluationError(BinaryOperationTypeError((Str("Beaststalker's Belt"), Amount, Sub)))`).
+  The fixture remains vendored for reproducibility; the elaborator gap is tracked in #264.
+  `standard.dat` evaluation deferred until #264 is resolved.
+
 - **Vendor `tests/parity/ledger-drewr3.dat`** (refs #257, refs #197): the
   ledger-cli upstream `test/input/drewr3.dat` fixture is vendored with a
   provenance comment block (source URL, commit SHA, license, exercises). It is
