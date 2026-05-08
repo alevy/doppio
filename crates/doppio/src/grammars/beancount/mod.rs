@@ -2796,6 +2796,84 @@ option \"inferred_tolerance_default\" \"USD:0.1\"
         assert_eq!(booked.lot_cost_in("USD"), Some(dec!(1500.00)));
     }
 
+    /// Cost-basis-aware gain inference (#242): a `{}` reduction
+    /// balanced via `@price` with a null `Income:Trading` posting
+    /// must fill the null with the gain (cost-basis residual), not
+    /// with zero (the @price-derived residual). With FIFO matching
+    /// 5 GOLD against the oldest lot (1500 USD), cost basis is -7500
+    /// and cash is +8500, so Income:Trading absorbs -1000 USD.
+    #[test]
+    fn fifo_null_income_posting_fills_with_cost_basis_gain() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"FIFO\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-03-15 * \"Sell with empty cost spec\"
+  Assets:Brokerage   -5 GOLD {} @ 1700.00 USD
+  Assets:Cash       8500.00 USD
+  Income:Trading
+";
+        let elab = elaborate(input).expect("gain inference should succeed");
+        let sell_tx = elab
+            .transactions
+            .iter()
+            .find(|t| t.description == "Sell with empty cost spec")
+            .unwrap();
+        let income = sell_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Income:Trading")
+            .expect("Income:Trading null posting present");
+        assert_eq!(
+            income.amount_in("USD"),
+            Some(dec!(-1000.00)),
+            "null Income:Trading should absorb the cost-basis gain (cash 8500 - cost basis 7500 = 1000)"
+        );
+    }
+
+    /// FIFO multi-lot reduction with a null Income:Trading: bean-check
+    /// fills it with -2500 (gain = 25500 cash - 23000 cost basis).
+    /// doppio must match.
+    #[test]
+    fn fifo_multi_lot_null_income_fills_with_total_gain() {
+        let input = "\
+2024-01-01 open Assets:Brokerage \"FIFO\"
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Income:Trading
+
+2024-01-15 * \"Buy first lot\"
+  Assets:Brokerage   10 GOLD {1500.00 USD}
+  Assets:Cash       -15000.00 USD
+
+2024-02-15 * \"Buy second lot\"
+  Assets:Brokerage   10 GOLD {1600.00 USD}
+  Assets:Cash       -16000.00 USD
+
+2024-03-15 * \"Sell across two lots\"
+  Assets:Brokerage   -15 GOLD {} @ 1700.00 USD
+  Assets:Cash       25500.00 USD
+  Income:Trading
+";
+        let elab = elaborate(input).expect("multi-lot gain inference should succeed");
+        let sell_tx = elab
+            .transactions
+            .iter()
+            .find(|t| t.description == "Sell across two lots")
+            .unwrap();
+        let income = sell_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Income:Trading")
+            .expect("Income:Trading null posting present");
+        // 25500 cash - (10*1500 + 5*1600) = 25500 - 23000 = 2500 gain
+        assert_eq!(income.amount_in("USD"), Some(dec!(-2500.00)));
+    }
+
     /// NONE booking bypasses the booking pass entirely; the posting
     /// is recorded with cost=None even when other lots exist.
     #[test]
