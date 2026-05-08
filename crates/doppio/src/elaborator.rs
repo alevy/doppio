@@ -2582,12 +2582,15 @@ mod evaluator {
         match eval(val, eval_context, running_state, &empty_meta, EVAL_BUDGET)? {
             ast::ValueExpr::Amount { value, commodity } => {
                 let commodity = if let Some(commodity) = commodity {
-                    // Apply commodity alias (e.g. "Bitcoin" -> "BTC")
+                    // Apply commodity alias (e.g. "Bitcoin" -> "BTC").
+                    // The divisor stored in commodity_conversions is ignored in
+                    // stage 1; it will be applied in stage 2 (#248) when full
+                    // `C` conversion semantics are wired through elaboration.
                     eval_context
-                        .commodity_aliases
+                        .commodity_conversions
                         .get(&commodity)
-                        .unwrap_or(&commodity)
-                        .clone()
+                        .map(|(canonical, _divisor)| canonical.clone())
+                        .unwrap_or(commodity)
                 } else {
                     // No commodity in the expression -- try context default, then
                     // the caller-supplied fallback (e.g. inferred from account balance).

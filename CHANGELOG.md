@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Internal
+
+- **`Context::commodity_aliases` renamed to `commodity_conversions`** (pre-stage for #248, no
+  behavioural change): the field type changes from `BTreeMap<String, String>` to
+  `BTreeMap<String, (String, Decimal)>`, where the tuple is `(canonical_symbol, divisor)`.
+  All existing alias insertions use `divisor = Decimal::ONE` (a 1:1 rename), so elaboration
+  output is identical. This unification makes stage 2 of #248 (wiring the divisor through
+  for full `C`-directive semantics) a natural extension rather than a new concept.
+
 ### Added
 
 - **Explicit `*N` multiplier syntax in automated-rule bodies** (#254): both the
