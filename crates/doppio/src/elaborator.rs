@@ -814,6 +814,19 @@ pub fn elaborate(
                     // so `value.global_context` is unreachable there.
                     let account_properties = &value.global_context.account_properties;
 
+                    // Implicit-cost inference (#251): when enabled, detect the
+                    // two-real-posting multi-commodity shape and synthesise a `@@`
+                    // total-cost annotation on the non-cash leg BEFORE the
+                    // per-posting loop so that the regular lot-pricing path handles
+                    // it transparently. Only ledger-cli and hledger enable this.
+                    if config.infer_implicit_total_cost {
+                        infer_implicit_total_cost(
+                            &mut transaction.postings,
+                            entry_context,
+                            &state,
+                        )?;
+                    }
+
                     for mut posting in transaction.postings {
                         let posting_kind = posting.kind;
                         if let Some(amount) = posting.amount {
@@ -2084,6 +2097,122 @@ fn book_missing_cost_inline(
         to_consume -= take;
     }
     Ok(out)
+}
+
+/// Detect whether `postings` match the two-real-posting implicit-cost shape
+/// and, if so, synthesise an `@@`-style total-cost annotation on the non-cash leg.
+///
+/// The shape is: exactly two real (non-virtual) postings, both with explicit
+/// amounts, in two different commodities, with no existing `@`/`@@` price or
+/// `{cost}` lot annotation on either posting. When the shape matches, the
+/// non-cash leg (the one with positive units, i.e. the buyer) receives a
+/// synthesised [`ast::LotPricing::Total`] whose value is the absolute amount of
+/// the cash leg. The sign rule:
+///
+/// - Buyer leg (positive units, e.g. `866.231 GGGGG`) → `@@ 17783.72 $`
+///   (the total cost is the absolute value of the cash leg).
+/// - Seller leg (negative units, e.g. `-866.231 GGGGG`) → `@@ -17783.72 $`
+///   (negative total mirrors the negative sale proceeds).
+///
+/// If the shape does not match (wrong count, virtual postings, already priced,
+/// missing amounts, same commodity), the postings are returned unmodified.
+///
+/// Only called when `ElaborationConfig::infer_implicit_total_cost` is `true`.
+fn infer_implicit_total_cost(
+    postings: &mut [resolution::Posting],
+    eval_context: &resolution::Context,
+    state: &RunningState,
+) -> Result<(), ElaborationError> {
+    // Collect indices of real postings that have explicit amounts.
+    let real_indices: Vec<usize> = postings
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.kind == ast::PostingKind::Real && p.amount.is_some())
+        .map(|(i, _)| i)
+        .collect();
+
+    if real_indices.len() != 2 {
+        return Ok(());
+    }
+
+    let [idx_a, idx_b] = [real_indices[0], real_indices[1]];
+
+    // Check neither posting has an existing lot_pricing or lot_annotation.cost.
+    for &idx in &[idx_a, idx_b] {
+        if let Some(ast::AmountDetails::Amount {
+            lot_annotation,
+            lot_pricing,
+            ..
+        }) = &postings[idx].amount
+        {
+            if lot_pricing.is_some() {
+                return Ok(());
+            }
+            if lot_annotation
+                .as_ref()
+                .is_some_and(|ann| ann.cost.is_some())
+            {
+                return Ok(());
+            }
+        } else {
+            // Not a simple Amount — balance assignment, etc. Do not infer.
+            return Ok(());
+        }
+    }
+
+    // Evaluate both amounts to get (value, commodity). Clone the value
+    // expressions so the originals stay in the postings for the main loop.
+    let (val_a, commodity_a) = {
+        let value = match &postings[idx_a].amount {
+            Some(ast::AmountDetails::Amount { value, .. }) => value.clone(),
+            _ => return Ok(()),
+        };
+        evaluator::eval_and_normalize_amount(value, eval_context, state)?
+    };
+    let (val_b, commodity_b) = {
+        let value = match &postings[idx_b].amount {
+            Some(ast::AmountDetails::Amount { value, .. }) => value.clone(),
+            _ => return Ok(()),
+        };
+        evaluator::eval_and_normalize_amount(value, eval_context, state)?
+    };
+
+    // Both must be in DIFFERENT commodities.
+    if commodity_a == commodity_b {
+        return Ok(());
+    }
+
+    // Determine which is the non-cash (lot-bearing) leg and which is the
+    // cash leg. The non-cash leg receives the `@@` annotation; the cash
+    // leg's amount becomes the total cost.
+    //
+    // Sign convention (mirrors ledger-cli):
+    //   - If posting A has positive units → A is the buyer (non-cash),
+    //     B is the cost leg. Inferred total cost = abs(val_b).
+    //     We write `@@ abs(val_b) commodity_b` on posting A.
+    //   - If posting B has positive units → B is the buyer (non-cash),
+    //     A is the cost leg. Inferred total cost = abs(val_a).
+    //     We write `@@ abs(val_a) commodity_a` on posting B.
+    //   - If both negative or both positive (degenerate), do not infer.
+    let (buyer_idx, total_cost_value, total_cost_commodity) =
+        if val_a.is_sign_positive() && val_b.is_sign_negative() {
+            (idx_a, val_b.abs(), commodity_b)
+        } else if val_b.is_sign_positive() && val_a.is_sign_negative() {
+            (idx_b, val_a.abs(), commodity_a)
+        } else {
+            // Degenerate shape (both same sign): skip inference.
+            return Ok(());
+        };
+
+    // Synthesise: write LotPricing::Total on the buyer posting.
+    if let Some(ast::AmountDetails::Amount { lot_pricing, .. }) = &mut postings[buyer_idx].amount {
+        *lot_pricing = Some(ast::LotPricing::Total(ast::ValueExpr::Amount {
+            value: total_cost_value,
+            commodity: Some(total_cost_commodity),
+        }));
+    }
+
+    Ok(())
 }
 
 /// Render a [`LotKey`] for human-readable diagnostic output (error
@@ -5134,5 +5263,307 @@ account Assets:Savings
 ";
         elaborate_with_lot_mode(input, resolution::LotValidationMode::Strict)
             .expect("non-lot postings should be unaffected by strict mode");
+    }
+
+    // --- implicit cost-basis inference (#251) --------------------------------
+
+    /// Parse a ledger journal through the full pipeline using ledger defaults
+    /// and return the elaborated Journal (panics on error).
+    fn elaborate_ledger(input: &str) -> crate::elaboration::Journal {
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+            .expect("elaboration failed")
+    }
+
+    /// Parse a ledger journal through the full pipeline using ledger defaults
+    /// and return the Result (for negative tests).
+    fn try_elaborate_ledger(input: &str) -> Result<crate::elaboration::Journal, ElaborationError> {
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+    }
+
+    #[test]
+    fn implicit_cost_ledger_two_leg_stock_buy() {
+        // The canonical example from the issue: a stock purchase with an implicit
+        // total cost. ledger-cli accepts this as `866.231 GGGGG @@ $17783.72`.
+        // doppio should elaborate it without error.
+        let input = "\
+2002/09/30 * Buy
+    Assets:Stock      866.231 GGGGG
+    Assets:Cash     $-17783.72
+";
+        let journal = elaborate_ledger(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+
+        // The stock posting should have 866.231 GGGGG.
+        let stock = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Stock")
+            .expect("stock posting present");
+        assert_eq!(
+            stock.amount_in("GGGGG"),
+            Some(dec!(866.231)),
+            "stock posting amount"
+        );
+
+        // The cash posting should be -$17783.72.
+        let cash = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .expect("cash posting present");
+        assert_eq!(
+            cash.amount_in("$"),
+            Some(dec!(-17783.72)),
+            "cash posting amount"
+        );
+    }
+
+    #[test]
+    fn implicit_cost_ledger_two_leg_balances() {
+        // The transaction must balance after inference: no TransactionDoesNotBalance.
+        let input = "\
+2024-01-15 Buy ETH
+    Assets:Crypto    2.5 ETH
+    Assets:Bank     $-5000
+";
+        // Should not error.
+        let journal = elaborate_ledger(input);
+        assert_eq!(journal.transactions.len(), 1);
+
+        // Also verify via the running balance: after this transaction,
+        // Assets:Bank should be -$5000 and Assets:Crypto should be 2.5 ETH.
+        let tx = &journal.transactions[0];
+        let bank = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Bank")
+            .expect("bank posting");
+        assert_eq!(bank.amount_in("$"), Some(dec!(-5000)));
+
+        let crypto = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Crypto")
+            .expect("crypto posting");
+        assert_eq!(crypto.amount_in("ETH"), Some(dec!(2.5)));
+    }
+
+    #[test]
+    fn implicit_cost_ledger_inferred_lot_matches_explicit() {
+        // A transaction with an explicit `@@` annotation should produce the same
+        // final posting amounts as one where the `@@` is inferred.
+        // Both should elaborate successfully and produce balanced transactions.
+        let explicit_input = "\
+2024-03-01 Buy stock explicit
+    Assets:Brokerage    10 AAPL @@ $1800
+    Assets:Cash        $-1800
+";
+        let implicit_input = "\
+2024-03-01 Buy stock implicit
+    Assets:Brokerage    10 AAPL
+    Assets:Cash        $-1800
+";
+        let explicit_journal = elaborate_ledger(explicit_input);
+        let implicit_journal = elaborate_ledger(implicit_input);
+
+        // Both should have one balanced transaction.
+        assert_eq!(explicit_journal.transactions.len(), 1);
+        assert_eq!(implicit_journal.transactions.len(), 1);
+
+        let explicit_tx = &explicit_journal.transactions[0];
+        let implicit_tx = &implicit_journal.transactions[0];
+
+        // Both should have the same commodity amounts on each posting.
+        let explicit_brokerage = explicit_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Brokerage")
+            .expect("explicit brokerage posting");
+        let implicit_brokerage = implicit_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Brokerage")
+            .expect("implicit brokerage posting");
+
+        assert_eq!(
+            explicit_brokerage.amount_in("AAPL"),
+            implicit_brokerage.amount_in("AAPL"),
+            "brokerage AAPL amounts should match"
+        );
+
+        let explicit_cash = explicit_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .expect("explicit cash posting");
+        let implicit_cash = implicit_tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .expect("implicit cash posting");
+
+        assert_eq!(
+            explicit_cash.amount_in("$"),
+            implicit_cash.amount_in("$"),
+            "cash amounts should match"
+        );
+    }
+
+    #[test]
+    fn implicit_cost_hledger_two_leg() {
+        // hledger also infers implicit cost; test that the hledger frontend
+        // accepts the two-leg shape without error.
+        use crate::{grammars::hledger::parse_hledger, resolution::HIR};
+        let input = "\
+2024-01-15 Buy
+    Assets:Crypto    2.5 ETH
+    Assets:Bank     $-5000
+";
+        let ast = parse_hledger(input).expect("parse");
+        let hir = HIR::try_from(ast).expect("resolution");
+        let journal = crate::elaborate(hir, &crate::grammars::hledger::hledger_defaults())
+            .expect("hledger elaboration should accept implicit cost");
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        // The ETH posting should have 2.5 ETH.
+        let crypto = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Crypto")
+            .expect("crypto posting");
+        assert_eq!(
+            crypto.amount_in("ETH"),
+            Some(dec!(2.5)),
+            "hledger implicit cost: ETH posting amount"
+        );
+        // The bank posting should be -$5000.
+        let bank = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Bank")
+            .expect("bank posting");
+        assert_eq!(
+            bank.amount_in("$"),
+            Some(dec!(-5000)),
+            "hledger implicit cost: bank posting amount"
+        );
+    }
+
+    #[test]
+    fn implicit_cost_beancount_two_leg_still_rejects() {
+        // Beancount requires explicit cost; the same two-leg shape must still
+        // produce TransactionDoesNotBalance under beancount_defaults.
+        use crate::{grammars::beancount::parse_beancount, resolution::HIR};
+        let input = "\
+2024-01-15 * \"Buy\"
+    Assets:Crypto    2.5 ETH
+    Assets:Bank     -5000 USD
+";
+        let ast = parse_beancount(input).expect("beancount parse");
+        let hir = HIR::try_from(ast).expect("resolution");
+        let result = crate::elaborate(hir, &crate::grammars::beancount::beancount_defaults());
+        assert!(
+            matches!(result, Err(ElaborationError::TransactionDoesNotBalance(_))),
+            "Beancount must not infer implicit cost; got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn implicit_cost_three_leg_still_rejects() {
+        // Three-leg multi-commodity transactions are not covered by inference.
+        let input = "\
+2024-01-15 Three legs
+    Assets:Brokerage    10 AAPL
+    Assets:Cash        $-1800
+    Expenses:Commission  $5
+";
+        let result = try_elaborate_ledger(input);
+        assert!(
+            matches!(result, Err(ElaborationError::TransactionDoesNotBalance(_))),
+            "three-leg shape must not trigger implicit cost inference; got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn implicit_cost_explicit_at_at_no_regression() {
+        // An explicit `@@` annotation should continue to work; the inferred
+        // path must not fire when an explicit price is already present.
+        let input = "\
+2024-01-15 Buy with explicit price
+    Assets:Brokerage    10 AAPL @@ $1800
+    Assets:Cash        $-1800
+";
+        // Should elaborate without error.
+        let journal = elaborate_ledger(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        let stock = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Brokerage")
+            .expect("brokerage posting");
+        // The amount should be 10 AAPL.
+        assert_eq!(
+            stock.amount_in("AAPL"),
+            Some(dec!(10)),
+            "explicit @@ should preserve AAPL units"
+        );
+        // Cash posting should be -$1800.
+        let cash = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .expect("cash posting");
+        assert_eq!(cash.amount_in("$"), Some(dec!(-1800)));
+    }
+
+    #[test]
+    fn implicit_cost_virtual_posting_does_not_fire() {
+        // A virtual posting does not count as one of the two "real" postings.
+        // If the real postings don't form the two-leg shape, inference must
+        // not fire, and the transaction should balance normally (or fail).
+        //
+        // Here: one real posting with $, one virtual unbalanced posting with
+        // GGGGG, and a null real posting. The real postings balance in $ (via
+        // null inference). No implicit cost should be synthesised.
+        let input = "\
+2024-01-15 Virtual example
+    Assets:Cash          $-1000
+    (Track:Units)         10 GGGGG
+    Equity:Opening
+";
+        // The virtual posting is excluded from balance. The two real postings
+        // (Assets:Cash and Equity:Opening null) should balance normally.
+        let journal = elaborate_ledger(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        // The Equity:Opening posting should have been null-inferred to $1000.
+        let equity = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Equity:Opening")
+            .expect("equity posting");
+        assert_eq!(
+            equity.amount_in("$"),
+            Some(dec!(1000)),
+            "null posting should be filled to $1000"
+        );
+        // The virtual posting should NOT have a lot annotation.
+        let virtual_posting = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Track:Units")
+            .expect("virtual posting");
+        assert!(
+            virtual_posting.lot.is_none(),
+            "virtual posting should not receive an inferred lot"
+        );
     }
 }

@@ -298,6 +298,7 @@ pub fn ledger_defaults() -> crate::resolution::ElaborationConfig {
         assertion_scope: crate::resolution::AssertionScope::Direct,
         lot_validation_mode: crate::resolution::LotValidationMode::Permissive,
         default_booking_method: crate::resolution::BookingMethod::None,
+        infer_implicit_total_cost: true,
     }
 }
 

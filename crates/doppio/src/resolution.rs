@@ -206,6 +206,18 @@ pub struct ElaborationConfig {
     /// no-op for those frontends, even when a posting carries a
     /// cost-MISSING lot annotation like `[date]` only).
     pub default_booking_method: BookingMethod,
+    /// When `true`, the elaborator synthesises an implicit `@@` (total-cost)
+    /// annotation on the non-cash leg of a two-real-posting multi-commodity
+    /// transaction when neither posting carries an explicit cost (`{}`),
+    /// `@`/`@@` price annotation. This matches ledger-cli and hledger
+    /// semantics: the cash leg's absolute amount becomes the inferred total
+    /// cost basis of the non-cash leg, and the transaction is treated as
+    /// balanced.
+    ///
+    /// Set `true` for ledger-cli and hledger frontends, `false` (the
+    /// default) for Beancount, which requires an explicit cost on every
+    /// lot-bearing posting.
+    pub infer_implicit_total_cost: bool,
 }
 
 /// Strategy for computing a posting's cash-equivalent during the

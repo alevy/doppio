@@ -910,6 +910,9 @@ pub fn beancount_defaults() -> crate::resolution::ElaborationConfig {
         assertion_scope: crate::resolution::AssertionScope::Subtree,
         lot_validation_mode: crate::resolution::LotValidationMode::Strict,
         default_booking_method: crate::resolution::BookingMethod::Strict,
+        // Beancount requires an explicit cost on every lot-bearing posting;
+        // implicit-cost inference does not apply.
+        infer_implicit_total_cost: false,
     }
 }
 
