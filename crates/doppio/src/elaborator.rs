@@ -2690,8 +2690,7 @@ fn infer_implicit_total_cost(
 
     for (idx, _, comm) in &evaluated {
         if comm == &comm_pos
-            && let Some(ast::AmountDetails::Amount { lot_pricing, .. }) =
-                &mut postings[*idx].amount
+            && let Some(ast::AmountDetails::Amount { lot_pricing, .. }) = &mut postings[*idx].amount
         {
             *lot_pricing = Some(ast::LotPricing::Unit(ast::ValueExpr::Amount {
                 value: per_unit_price,
