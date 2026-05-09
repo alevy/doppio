@@ -2216,11 +2216,20 @@ fn collect_commodity_scales(hir: &resolution::HIR) -> BTreeMap<String, u32> {
     scales
 }
 
-/// Walk a value expression and record the scale of every leaf
-/// `Amount { value, commodity: Some(c) }` node found.
+/// Walk a value expression and record the scale of every commodity-bearing
+/// amount leaf.
 ///
-/// Only commodity-bearing leaves are recorded; bare numbers (no commodity)
-/// are skipped because their commodity is unknown at this stage.
+/// Two syntactic forms produce commodity-bearing leaves:
+///
+/// 1. `Amount { value, commodity: Some(c) }` — the commodity and numeric
+///    scale are co-located (e.g. `$-4.00` or `0.71 B` parsed by the
+///    ledger grammar when the number token itself carries the commodity).
+///
+/// 2. `Typed { expr, commodity: c }` — the numeric sub-expression has no
+///    commodity of its own (e.g. `-0.71 B` in the hledger grammar: the sign
+///    is a prefix op, producing `Typed { Unary { Sub, Amount { 0.71, None } }, "B" }`).
+///    In this case we extract the scale from the innermost bare-number leaf
+///    and record it under the outer commodity `c`.
 fn collect_scales_from_expr(expr: &ast::ValueExpr, scales: &mut BTreeMap<String, u32>) {
     match expr {
         ast::ValueExpr::Amount {
@@ -2238,7 +2247,18 @@ fn collect_scales_from_expr(expr: &ast::ValueExpr, scales: &mut BTreeMap<String,
             collect_scales_from_expr(lhs, scales);
             collect_scales_from_expr(rhs, scales);
         }
-        ast::ValueExpr::Typed { expr, .. } => collect_scales_from_expr(expr, scales),
+        // `Typed { expr, commodity }` carries the commodity as the outer annotation.
+        // The inner `expr` is a bare-number tree (no commodity on any leaf).
+        // Extract the leaf scale and record it under the outer commodity.
+        ast::ValueExpr::Typed { expr, commodity } => {
+            if let Some(scale) = bare_number_scale(expr) {
+                let entry = scales.entry(commodity.clone()).or_insert(u32::MAX);
+                *entry = (*entry).min(scale);
+            }
+            // Also recurse in case the sub-expression itself contains commodity
+            // leaves (unusual, but correct to handle).
+            collect_scales_from_expr(expr, scales);
+        }
         ast::ValueExpr::Group(bool_expr) => {
             // BoolExpr has lhs/rhs ValueExpr fields; recurse into those.
             collect_scales_from_expr(&bool_expr.lhs, scales);
@@ -2248,6 +2268,23 @@ fn collect_scales_from_expr(expr: &ast::ValueExpr, scales: &mut BTreeMap<String,
         }
         // Commodity, Str, Regex, Function, Access, Object — no leaf amount to record.
         _ => {}
+    }
+}
+
+/// Extract the decimal scale from a bare-number (no-commodity) value expression.
+///
+/// Returns `Some(scale)` when the expression reduces to a single numeric leaf
+/// (`Amount { commodity: None, .. }`) optionally wrapped in unary `+`/`-`.
+/// Returns `None` for complex expressions (arithmetic, function calls, etc.)
+/// where the scale cannot be determined without evaluation.
+fn bare_number_scale(expr: &ast::ValueExpr) -> Option<u32> {
+    match expr {
+        ast::ValueExpr::Amount {
+            value,
+            commodity: None,
+        } => Some(value.scale()),
+        ast::ValueExpr::Unary { expr, .. } => bare_number_scale(expr),
+        _ => None,
     }
 }
 
