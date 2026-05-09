@@ -1653,19 +1653,63 @@ pub fn elaborate(
                                         Decimal::ZERO
                                     } else {
                                         // tolerance = fraction * 10^(-min_scale).
-                                        // Beancount's default fraction is 0.5 and
-                                        // min_scale is the LEAST-precise posting's
-                                        // decimal place (Beancount's actual rule);
-                                        // for scale-2 postings that's 0.5 * 0.01 =
-                                        // 0.005.
-                                        let min_scale = resolved_postings
-                                            .iter()
-                                            .filter_map(|p| {
-                                                p.amount.as_ref()?.by_commodity.get(commodity)
-                                            })
-                                            .map(|d| d.scale)
-                                            .min()
-                                            .unwrap_or(0);
+                                        //
+                                        // When `fraction == 1` (ledger/hledger mode),
+                                        // `min_scale` is derived from `inferred_scale`
+                                        // on `CommodityProperties` when present and
+                                        // non-zero. `inferred_scale` encodes the
+                                        // journal's declared precision intent (from
+                                        // D/format directives and direct posting scales
+                                        // across all transactions, #281/#286). This
+                                        // matches ledger-cli's commodity display-
+                                        // precision `is_zero()` check (xact.cc:872-904):
+                                        // a residue smaller than `10^(-inferred_scale)`
+                                        // is sub-precision noise. For `$` with
+                                        // inferred_scale=2, tolerance = $0.01.
+                                        //
+                                        // For all other fractions (e.g. Beancount's
+                                        // fraction=0.5), the original per-posting
+                                        // min_scale rule is used: tolerance = fraction *
+                                        // 10^(-least_precise_posting_scale). This
+                                        // preserves Beancount's inferred-tolerance
+                                        // semantics unchanged.
+                                        //
+                                        // The inferred_scale path also falls back to
+                                        // per-posting min_scale when the commodity has
+                                        // no CommodityProperties entry (no direct
+                                        // postings and no D/format directive).
+                                        let min_scale: u32 = if fraction == Decimal::ONE {
+                                            // ledger/hledger: prefer journal-wide
+                                            // inferred_scale for the commodity.
+                                            commodity_properties
+                                                .get(commodity)
+                                                .map(|props| props.inferred_scale)
+                                                .filter(|&s| s > 0)
+                                                .unwrap_or_else(|| {
+                                                    resolved_postings
+                                                        .iter()
+                                                        .filter_map(|p| {
+                                                            p.amount
+                                                                .as_ref()?
+                                                                .by_commodity
+                                                                .get(commodity)
+                                                        })
+                                                        .map(|d| d.scale)
+                                                        .min()
+                                                        .unwrap_or(0)
+                                                })
+                                        } else {
+                                            // Beancount and others: least-precise
+                                            // posting's decimal scale.
+                                            resolved_postings
+                                                .iter()
+                                                .filter_map(|p| {
+                                                    p.amount.as_ref()?.by_commodity.get(commodity)
+                                                })
+                                                .map(|d| d.scale)
+                                                .min()
+                                                .unwrap_or(0)
+                                        };
                                         let one_unit = Decimal::new(1, min_scale);
                                         fraction * one_unit
                                     }
@@ -7429,14 +7473,20 @@ C 0 X = 100 Y
     ///
     /// Intent-driven rounding only compensates for precision residue introduced
     /// by `@`-price multiplication. A transaction with an explicit commodity
-    /// imbalance (not explained by any rounding) must still produce
-    /// `ElaborationError::TransactionDoesNotBalance`.
+    /// imbalance larger than the tolerance derived from `inferred_scale` must
+    /// still produce `ElaborationError::TransactionDoesNotBalance`.
+    ///
+    /// `1.00 G + -1.05 G`: residue = 0.05 G. `inferred_scale[G]` = 2 (from the
+    /// scale-2 direct postings). Tolerance = `1.0 * 10^(-2)` = 0.01 G.
+    /// `0.05 > 0.01` → reject. (Updated from the original `1G + -1.001G` boundary
+    /// case as part of #286: the ledger frontend now uses fraction=1 derived from
+    /// inferred_scale, so boundary-exact residues are absorbed by design.)
     #[test]
     fn test_intent_rounded_cost_high_precision_imbalance_rejected() {
         let input = "\
 2024-01-01 Unbalanced
-    Assets:A  1 G
-    Assets:B  -1.001 G
+    Assets:A  1.00 G
+    Assets:B  -1.05 G
 ";
         use crate::{grammars::ledger::parse_ledger, resolution::HIR};
         let ast = parse_ledger(input).expect("parse failed");
@@ -7447,7 +7497,7 @@ C 0 X = 100 Y
                 result,
                 Err(crate::elaborator::ElaborationError::TransactionDoesNotBalance(_))
             ),
-            "genuinely unbalanced transaction must still be rejected"
+            "genuinely unbalanced transaction (0.05 G residue > 0.01 G tolerance) must still be rejected"
         );
     }
 
@@ -7516,6 +7566,162 @@ D 1.00 GOLD
             gold_amount,
             dec!(-1.25),
             "Assets:Cash must be -1.25 GOLD (not integer-rounded to -1 GOLD)"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // #286: inferred_scale-derived tolerance absorbs sub-precision residues
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Minimal repro of standard.dat:4244 (#286).
+    ///
+    /// A multi-commodity rebalance with 28-decimal IEEE-double `@`-prices and
+    /// an explicit `$0.01` dust-compensation leg. After #281's intent-rounding
+    /// to `inferred_scale=2` for `$`, the six priced legs produce a `$-0.01`
+    /// residue; the explicit `$0.01` leg compensates for half, leaving `$-0.01`.
+    ///
+    /// ledger-cli accepts this via its `is_zero()` check at display precision 2.
+    /// doppio must accept it too: tolerance = `1.0 * 10^(-2)` = `$0.01`, and
+    /// `|-0.01| > 0.01` is false (strict `>`), so the residue is absorbed.
+    #[test]
+    fn test_tolerance_absorbs_subprecision_residue() {
+        let input = "\
+2004/05/10 * cbb4cc49824bf79827cde838e005848027ca0a38
+    A   2,242.324241 BBBBB @ $22.7300000000000000000173472348
+    A   2,558.818182 DDDDD @ $8.9099999999999999998612221219
+    A     604.908255 FFFFF @ $41.3099999999999999999479582957
+    A  -2,084.582278 AAAAA @ $24.4499999999999999972244424384
+    A    -387.278233 LMVTX @ $58.8699999999999999998959165914
+    A    -936.961582 GGGGG @ $26.6700000000000000000693889390
+    A          $0.01
+";
+        // This is the standard.dat:4244 minimal repro. ledger-cli accepts it;
+        // doppio must also accept it with the inferred_scale-derived tolerance.
+        let result = {
+            use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+            let ast = parse_ledger(input).expect("parse failed");
+            let hir = HIR::try_from(ast).expect("resolution failed");
+            crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+        };
+        assert!(
+            result.is_ok(),
+            "standard.dat:4244 repro must elaborate cleanly (sub-precision dust leg); got: {result:?}"
+        );
+        let journal = result.unwrap();
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// Adversarial: a genuinely unbalanced transaction (residue >= `$0.01`)
+    /// must still be rejected even with the tolerance relaxation from #286.
+    ///
+    /// `1 G` + `-1.01 G` (no `@`-prices, no intent-rounding) leaves a residue
+    /// of `0.01 G`. `inferred_scale[G]` = 2 (from the `0.01` posting), so
+    /// tolerance = `1.0 * 10^(-2)` = `0.01 G`. The strict `>` check means
+    /// `|0.01| > 0.01` is false — but `0.02 G` would be `> 0.01` and reject.
+    /// Use a larger imbalance (`0.05 G`) to ensure the check fires.
+    #[test]
+    fn test_tolerance_rejects_real_imbalance() {
+        // 1 G - 1.05 G = -0.05 G residue; tolerance = 0.01 G; 0.05 > 0.01 → reject.
+        let input = "\
+2024-01-01 Unbalanced
+    Assets:A  1.00 G
+    Assets:B  -1.05 G
+";
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let result = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults());
+        assert!(
+            matches!(
+                result,
+                Err(crate::elaborator::ElaborationError::TransactionDoesNotBalance(_))
+            ),
+            "real imbalance (0.05 G) must still be rejected; got: {result:?}"
+        );
+    }
+
+    /// A perfectly balanced 2-decimal `$` transaction must elaborate with no
+    /// residue absorbed — the tolerance path must not fire for clean journals.
+    #[test]
+    fn test_tolerance_doppio_native_clean_precision_unchanged() {
+        let input = "\
+2024-01-01 Transfer
+    Assets:Checking  $10.00
+    Assets:Savings  $-10.00
+";
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let journal = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults())
+            .expect("clean transaction must elaborate without error");
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        // No synthesized rounding posting (empty-string account sentinel).
+        assert!(
+            !tx.postings.iter().any(|p| p.account.is_empty()),
+            "no rounding residual should be synthesized for a cleanly-balanced transaction"
+        );
+    }
+
+    /// Beancount frontend uses its own tolerance mode (`fraction=0.5`) and must
+    /// be unaffected by the ledger-frontend default change (`fraction=1`).
+    ///
+    /// A Beancount two-commodity transaction with an explicit imbalance of
+    /// `0.006 USD` (above the 0.005 Beancount threshold for scale-2 USD) must
+    /// still be rejected — the beancount defaults are unchanged.
+    #[test]
+    fn test_beancount_tolerance_unchanged() {
+        // 100.00 USD + (-100.006 USD) = -0.006 USD residue.
+        // Beancount tolerance for scale-2 USD = 0.5 * 0.01 = 0.005.
+        // 0.006 > 0.005 → reject.
+        let input = "\
+2024-01-01 * \"Unbalanced\"
+    Assets:A  100.000 USD
+    Assets:B  -100.006 USD
+";
+        use crate::{grammars::beancount::parse_beancount, resolution::HIR};
+        let ast = parse_beancount(input).expect("beancount parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let result = crate::elaborate(hir, &crate::grammars::beancount::beancount_defaults());
+        assert!(
+            matches!(
+                result,
+                Err(crate::elaborator::ElaborationError::TransactionDoesNotBalance(_))
+            ),
+            "Beancount tolerance (0.005 USD) must reject 0.006 USD residue; got: {result:?}"
+        );
+    }
+
+    /// When a commodity has no direct postings and no D/format directive,
+    /// `inferred_scale` is 0. The tolerance computation falls back to the
+    /// per-posting min_scale, preserving the original behaviour for such
+    /// commodities.
+    ///
+    /// A transaction with `1 RARE + (-1.005 RARE)` (no other RARE postings
+    /// anywhere): `inferred_scale[RARE] = 3` (from the `0.005` posting scale),
+    /// so the fallback is used. Tolerance = `1.0 * 10^(-3)` = `0.001 RARE`.
+    /// Residue = `0.005 RARE`; `0.005 > 0.001` → reject, confirming the
+    /// fallback doesn't silently absorb larger residues.
+    #[test]
+    fn test_tolerance_fallback_when_no_inferred_scale() {
+        // There is no D directive and no other RARE posting, so inferred_scale
+        // for RARE is 3 (the max scale from the two direct postings: 0 and 3).
+        // Tolerance = 1.0 * 10^(-3) = 0.001. Residue = 0.005 > 0.001 → reject.
+        let input = "\
+2024-01-01 Unbalanced
+    Assets:A  1 RARE
+    Assets:B  -1.005 RARE
+";
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let result = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults());
+        assert!(
+            matches!(
+                result,
+                Err(crate::elaborator::ElaborationError::TransactionDoesNotBalance(_))
+            ),
+            "fallback per-posting min_scale must reject residue above tolerance; got: {result:?}"
         );
     }
 

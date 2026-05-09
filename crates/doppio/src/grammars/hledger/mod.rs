@@ -791,7 +791,7 @@ pub struct HledgerFrontend;
 pub fn hledger_defaults() -> crate::resolution::ElaborationConfig {
     crate::resolution::ElaborationConfig {
         tolerance_mode: crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
-            rust_decimal::Decimal::ZERO,
+            rust_decimal::Decimal::ONE,
         ),
         balance_mode: crate::resolution::BalanceMode::AtPriceWithSynthesis {
             gains_account: "Income:Capital Gains".to_string(),
