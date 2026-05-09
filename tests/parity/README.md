@@ -76,5 +76,41 @@ and hledger don't ship analogues.
    parse rejection of valid syntax), file the gap as its own issue
    before adding the fixture to `POSITIVE` -- the parity harness is
    only useful when its passes are honest.
+5. Add a corresponding test function to
+   `crates/doppio-cli/tests/snapshot_synthesised.rs` and regenerate
+   snapshots:
+
+       UPDATE_SNAPSHOTS=1 cargo test snapshot_synthesised
+
+   Commit the new `.snap` file under
+   `crates/doppio-cli/tests/snapshots/`. An empty snapshot (no
+   synthesised postings) is the correct baseline for most fixtures.
+
+## Snapshot regression tests for synthesised postings
+
+Two classes of postings doppio synthesises have no canonical-tool
+analogue and therefore cannot be parity-tested:
+
+- **Rounding-residual postings** (`account == ""`) — absorbed
+  sub-tolerance residuals (see [#198]).
+- **Capital-gains postings** (`account == "Income:Capital Gains"`) —
+  synthesised on the hledger frontend when a cost-basis sale price
+  differs from the lot cost (see [#210]).
+
+`crates/doppio-cli/tests/snapshot_synthesised.rs` pins the set of
+synthesised postings per fixture; `cargo test snapshot_synthesised`
+runs these checks as part of the normal test suite.
+
+### Regenerating snapshots
+
+When elaboration behaviour changes deliberately (tolerance tweak,
+gains-account rename, etc.), regenerate all snapshots with:
+
+    UPDATE_SNAPSHOTS=1 cargo test snapshot_synthesised
+
+Then review the diff with `git diff crates/doppio-cli/tests/snapshots/`
+before committing.
 
 [issue #183]: https://github.com/alevy/doppio/issues/183
+[#198]: https://github.com/alevy/doppio/issues/198
+[#210]: https://github.com/alevy/doppio/issues/210
