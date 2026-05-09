@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto-balance posting now preserves per-lot identity for multi-commodity inventory transfers** (#276):
+  When a transaction's explicit postings carry `{cost}` lot annotations on item commodities (typical of
+  inter-account inventory transfers), the auto-balanced null posting previously received a single aggregated
+  cash posting (the cost-basis total) instead of per-lot inverse item postings. This diverged from
+  ledger-cli's model, leaving inventory accounts with non-cancelled item quantities and spurious cash
+  residuals. The fix synthesizes one inverse posting per distinct `(commodity, lot_key)` from the
+  transaction's explicit lot-bearing legs on the auto-balanced account, matching ledger-cli's per-lot
+  inventory semantics. The inventory-account heuristic (the null account must already hold the item
+  commodity) prevents the per-lot path from incorrectly rewriting buy transactions where the null account
+  is a cash account. Plain cash transactions and `@`-price-only transactions are unaffected.
+  **This is a behaviour change** for journals that use inter-account inventory transfers with auto-balanced
+  postings; affected accounts will now correctly net to zero (matching ledger-cli) instead of accumulating
+  a spurious cash residual.
+
 ## [2.1.0] - 2026-05-08
 
 This release lands `C` commodity-conversion directive support (#248) with a
@@ -22,13 +38,10 @@ The library API is additive: `ResolutionError` gains
 observable behaviour for journals using only `alias` directives). The
 `.dop` wire format is unchanged.
 
-Two known wow.dat parity divergences with ledger-cli are deferred: the
-display-time chain-canonicalisation question (#270) and the auto-balance
-posting's per-lot identity preservation (#276). Neither affects the
-elaborated balance values for journals that don't use the specific
-constructs (multi-hop chains across commodity boundaries, or multi-commodity
-inter-account inventory transfers via auto-balanced postings); both are
-tracked for 2.2.
+One known wow.dat parity divergence with ledger-cli is deferred: the
+display-time chain-canonicalisation question (#270). This does not affect
+elaborated balance values for journals that don't use multi-hop chains
+across commodity boundaries; tracked for 2.2.
 
 ### Fixed
 

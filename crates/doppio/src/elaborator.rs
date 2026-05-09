@@ -813,6 +813,18 @@ pub fn elaborate(
                     // `(account, commodity, lot_key)`.
                     let mut booked_consumed: BTreeMap<(String, String, LotKey), Decimal> =
                         BTreeMap::new();
+                    // Accumulates per-(item_commodity, lot_key) net units from
+                    // explicit lot-bearing postings that carry a `{cost}` annotation.
+                    // Used in the null-posting synthesis pass to emit per-lot inverse
+                    // postings on the auto-balanced leg rather than a single cash
+                    // posting (#276).
+                    //
+                    // Value: `(net_item_units, proto_lot)` — the proto_lot is stored
+                    // so it can be cloned onto the synthesized inverse posting.
+                    let mut lot_bearing_state: BTreeMap<
+                        (String, LotKey),
+                        (Decimal, crate::elaboration::Lot),
+                    > = BTreeMap::new();
                     // Capture the account-properties map by reference
                     // before the per-posting loop: inside the
                     // `AmountDetails::Amount` arm, the local `value`
@@ -1323,6 +1335,22 @@ pub fn elaborate(
                                 }
                             }
 
+                            // Track explicit lot-bearing postings (those with a `{cost}`
+                            // annotation) so the null-posting synthesis pass can emit
+                            // per-lot inverse postings on the auto-balanced leg (#276).
+                            // Only real/balanced postings affect auto-balance; virtual-
+                            // unbalanced postings are excluded above.
+                            if posting_kind != ast::PostingKind::VirtualUnbalanced
+                                && let Some(proto_lot_ref) = &proto_lot
+                                && let Some(lot_key) = lot_key_from_proto(Some(proto_lot_ref))
+                                && lot_key.cost.is_some()
+                            {
+                                let entry = lot_bearing_state
+                                    .entry((commodity.clone(), lot_key))
+                                    .or_insert((Decimal::ZERO, proto_lot_ref.clone()));
+                                entry.0 += value;
+                            }
+
                             let by_commodity =
                                 BTreeMap::from([(commodity, crate::decimal_to_proto(value))]);
                             resolved_postings.push(crate::elaboration::Posting {
@@ -1355,39 +1383,115 @@ pub fn elaborate(
                             .unwrap_or(posting.account);
                         let payee = posting.metadata.remove("payee").unwrap_or(payee.clone());
 
-                        // The null posting's amount is the negation of the sum of all
-                        // other real/balanced postings (virtual-unbalanced postings are
-                        // excluded from transaction_state, so they don't affect inference).
-                        // Null postings are always REAL; the kind field is left unspecified
-                        // (defaults to 0 = UNSPECIFIED which is treated as REAL by consumers).
-                        let by_commodity: BTreeMap<String, _> = transaction_state
-                            .0
-                            .iter()
-                            .map(|(c, v)| (c.clone(), crate::decimal_to_proto(-v)))
-                            .collect();
-
                         // The null posting also offsets `cost_basis_state` by
-                        // the same delta -- it's a regular non-lot cash
-                        // posting and contributes equally to both running
-                        // sums. After this, any leftover in
-                        // `cost_basis_state` is the realized capital gain
-                        // (only non-zero in `AtPriceWithSynthesis` mode for
-                        // transactions with `{cost} @price` postings; see
-                        // #210).
+                        // the same delta as `transaction_state` -- after this,
+                        // any leftover in `cost_basis_state` is the realized
+                        // capital gain (only non-zero in `AtPriceWithSynthesis`
+                        // mode for transactions with `{cost} @price` postings;
+                        // see #210). This update covers the entire transaction
+                        // balance, including the per-lot legs synthesized below.
                         for (c, v) in &transaction_state.0 {
                             *cost_basis_state.0.entry(c.clone()).or_default() -= *v;
                         }
 
-                        resolved_postings.push(crate::elaboration::Posting {
-                            account: account_name,
-                            payee,
-                            amount: Some(crate::elaboration::Amount { by_commodity }),
-                            state: crate::state_to_proto(&posting.state.into()),
-                            tags: posting.tags,
-                            metadata: posting.metadata,
-                            kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
-                            lot: None,
-                        });
+                        // Convert the posting state once so we can reuse it
+                        // across the per-lot postings and the final cash residue
+                        // posting without consuming the value in a loop.
+                        let proto_state = crate::state_to_proto(&posting.state.into());
+
+                        // Per-lot synthesis (#276): when the transaction's explicit
+                        // postings include lot-bearing legs (those with `{cost}`
+                        // annotations), emit one inverse posting per distinct
+                        // (commodity, lot_key) on the auto-balanced account rather
+                        // than a single aggregated cash posting. This preserves per-
+                        // lot identity at the auto-balanced account, matching
+                        // ledger-cli's inventory semantics for inter-account transfers.
+                        //
+                        // Applicability gate: only apply per-lot synthesis for a given
+                        // item commodity when the null account already holds that
+                        // commodity in its running inventory. This distinguishes
+                        // inventory transfers (null account holds Widget → emit per-lot
+                        // Widget postings) from buy transactions (null account holds $
+                        // cash, not the item → emit the cash equivalent as before).
+                        //
+                        // For each qualifying lot, the item units are negated; the lot
+                        // annotation is copied verbatim. The cost contribution of
+                        // these lot legs is then subtracted from `transaction_state`
+                        // so the remaining cash residue (from non-lot postings and
+                        // non-qualifying lots) can be absorbed by the plain cash
+                        // posting synthesized below.
+                        let null_account_inventory = state.account_inventories.get(&account_name);
+                        let mut cash_residue = transaction_state.0.clone();
+                        let mut any_lot_posted = false;
+                        for ((item_commodity, lot_key), (net_units, proto_lot)) in
+                            &lot_bearing_state
+                        {
+                            // Only synthesize per-lot inverse postings when the null
+                            // account's running inventory already holds the item
+                            // commodity. This guards against incorrectly applying the
+                            // per-lot path to buy transactions where the null account is
+                            // a cash account that doesn't hold the item commodity.
+                            let null_holds_commodity = null_account_inventory.is_some_and(|inv| {
+                                !inv.commodity_balance(item_commodity).is_zero()
+                            });
+                            if !null_holds_commodity {
+                                continue;
+                            }
+                            // Compute and deduct this lot's cash contribution from the
+                            // residue. `lot_key.cost` is the per-unit cost, so the
+                            // total cash is `net_units * cost`.
+                            if let (Some(cost), Some(cost_commodity)) =
+                                (&lot_key.cost, &lot_key.cost_commodity)
+                            {
+                                let lot_cash_total = net_units * cost;
+                                *cash_residue.entry(cost_commodity.clone()).or_default() -=
+                                    lot_cash_total;
+                            }
+                            // Synthesize the inverse item posting with the lot annotation.
+                            let by_commodity = BTreeMap::from([(
+                                item_commodity.clone(),
+                                crate::decimal_to_proto(-net_units),
+                            )]);
+                            resolved_postings.push(crate::elaboration::Posting {
+                                account: account_name.clone(),
+                                payee: payee.clone(),
+                                amount: Some(crate::elaboration::Amount { by_commodity }),
+                                state: proto_state,
+                                tags: posting.tags.clone(),
+                                metadata: posting.metadata.clone(),
+                                kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
+                                lot: Some(proto_lot.clone()),
+                            });
+                            any_lot_posted = true;
+                        }
+
+                        // Emit a plain cash posting for the remaining non-lot residue.
+                        // This covers purely cash transactions and any cash legs that
+                        // were not attributed to lot-bearing postings.
+                        // Null postings are always REAL; the kind field is left unspecified
+                        // (defaults to 0 = UNSPECIFIED which is treated as REAL by consumers).
+                        let by_commodity: BTreeMap<String, _> = cash_residue
+                            .iter()
+                            .filter(|(_, v)| !v.is_zero())
+                            .map(|(c, v)| (c.clone(), crate::decimal_to_proto(-v)))
+                            .collect();
+                        if !by_commodity.is_empty() || !any_lot_posted {
+                            // Emit the plain cash posting when there is a non-zero
+                            // cash residue, OR when no per-lot postings were emitted
+                            // (the common cash-only case and buy transactions -- we
+                            // always emit exactly one posting in that scenario to
+                            // preserve the existing wire format).
+                            resolved_postings.push(crate::elaboration::Posting {
+                                account: account_name,
+                                payee,
+                                amount: Some(crate::elaboration::Amount { by_commodity }),
+                                state: proto_state,
+                                tags: posting.tags,
+                                metadata: posting.metadata,
+                                kind: crate::posting_kind_to_proto(ast::PostingKind::Real),
+                                lot: None,
+                            });
+                        }
                     } else {
                         // No null posting. The transaction must balance to
                         // zero per commodity, modulo the active tolerance
@@ -6719,6 +6823,288 @@ C 0 X = 100 Y
                 crate::resolution::ResolutionError::InvalidCommodityConversion(_, _)
             ),
             "expected InvalidCommodityConversion, got: {err:?}"
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // Auto-balance per-lot synthesis tests (#276)
+    // ----------------------------------------------------------------------
+
+    /// Minimal repro from issue #276: an inventory transfer where the
+    /// explicit legs carry `{cost}` lot annotations and the auto-balanced
+    /// leg should receive per-lot inverse postings, not a cash aggregate.
+    ///
+    /// After elaboration:
+    /// - `Assets:Tajer:Items` nets to 0 Widget (the buys cancel the per-lot
+    ///   transfer reversal) with NO spurious GOLD residual.
+    /// - `Assets:Wyshona:Items` accumulates 2 Widget.
+    /// - `Assets:Tajer` absorbs -22 GOLD (the cash paid for the buys).
+    #[test]
+    fn test_auto_balance_lot_bearing_transfer() {
+        // First transaction: buy 2 widgets at Tajer using `@` price (no lot).
+        // Auto-balance on Assets:Tajer gives -22 GOLD (cash path, unchanged).
+        let input = "\
+2024/01/01 Buy 2 widgets at Tajer
+    Assets:Tajer:Items   \"Widget\" 1 @ 10 GOLD
+    Assets:Tajer:Items   \"Widget\" 1 @ 12 GOLD
+    Assets:Tajer
+
+2024/01/02 Transfer to Wyshona
+    Assets:Wyshona:Items   \"Widget\" 1 {10 GOLD}
+    Assets:Wyshona:Items   \"Widget\" 1 {12 GOLD}
+    Assets:Tajer:Items
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2, "two transactions expected");
+
+        // --- Validate transaction 1: buy ---
+        let t1 = &journal.transactions[0];
+        let tajer_cash = t1
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Tajer")
+            .expect("Assets:Tajer must be present in tx1");
+        assert_eq!(
+            tajer_cash.amount_in("GOLD"),
+            Some(dec!(-22)),
+            "Assets:Tajer should absorb -22 GOLD from the two @-price buys"
+        );
+
+        // --- Validate transaction 2: transfer ---
+        let t2 = &journal.transactions[1];
+
+        // Wyshona:Items receives 2 Widget total.
+        let wyshona_total: rust_decimal::Decimal = t2
+            .postings
+            .iter()
+            .filter(|p| p.account == "Assets:Wyshona:Items")
+            .filter_map(|p| p.amount_in("Widget"))
+            .sum();
+        assert_eq!(
+            wyshona_total,
+            dec!(2),
+            "Assets:Wyshona:Items should receive 2 Widget in total"
+        );
+
+        // Tajer:Items auto-balanced leg: should have per-lot inverse postings
+        // (one per distinct {cost} lot) and NO plain GOLD cash posting.
+        let tajer_items_postings: Vec<_> = t2
+            .postings
+            .iter()
+            .filter(|p| p.account == "Assets:Tajer:Items")
+            .collect();
+        assert!(
+            !tajer_items_postings.is_empty(),
+            "Assets:Tajer:Items must have at least one posting in the transfer"
+        );
+
+        // No GOLD cash residual on the auto-balanced account.
+        let gold_residual: rust_decimal::Decimal = tajer_items_postings
+            .iter()
+            .filter_map(|p| p.amount_in("GOLD"))
+            .sum();
+        assert_eq!(
+            gold_residual,
+            dec!(0),
+            "Assets:Tajer:Items must have no GOLD residual (per-lot synthesis should absorb it)"
+        );
+
+        // Net Widget units on the auto-balanced account should be -2 (inverting the two {cost} legs).
+        let widget_net: rust_decimal::Decimal = tajer_items_postings
+            .iter()
+            .filter_map(|p| p.amount_in("Widget"))
+            .sum();
+        assert_eq!(
+            widget_net,
+            dec!(-2),
+            "Assets:Tajer:Items should net -2 Widget from the per-lot inverse postings"
+        );
+
+        // Each per-lot posting should carry the lot annotation.
+        assert!(
+            tajer_items_postings.iter().all(|p| p.has_lot()),
+            "all auto-balanced Tajer:Items postings should carry a lot annotation"
+        );
+    }
+
+    /// A transaction with both lot-bearing explicit postings AND a bare cash
+    /// explicit posting. The auto-balanced leg should receive per-lot item
+    /// postings (from the lot legs) and also absorb the cash residue from the
+    /// non-lot explicit legs.
+    ///
+    /// tx2 in the journal below:
+    ///   Dest:Items 1 Widget {10 GOLD}: +10 GOLD to tx_state (lot)
+    ///   Dest:Items 1 Widget {10 GOLD}: +10 GOLD to tx_state (lot)
+    ///   FeeVault   2 GOLD             : +2 GOLD  to tx_state (bare cash)
+    ///   Assets:Items (null)
+    ///
+    /// tx_state = {GOLD: 22}. Assets:Items holds Widget from tx1.
+    /// Per-lot synthesis removes 20 GOLD from cash_residue -> 2 GOLD remain.
+    /// Net on Assets:Items: -2 Widget {10 GOLD} (lot) + -2 GOLD (cash residue).
+    #[test]
+    fn test_auto_balance_mixed_lot_and_cash() {
+        let input = "\
+2024/01/01 Buy widgets
+    Assets:Items   \"Widget\" 2 @ 10 GOLD
+    Assets:Vault
+
+2024/01/02 Transfer with fee
+    Assets:Dest:Items   \"Widget\" 1 {10 GOLD}
+    Assets:Dest:Items   \"Widget\" 1 {10 GOLD}
+    Assets:FeeVault   2 GOLD
+    Assets:Items
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 2);
+        let t2 = &journal.transactions[1];
+
+        let items_postings: Vec<_> = t2
+            .postings
+            .iter()
+            .filter(|p| p.account == "Assets:Items")
+            .collect();
+
+        // Per-lot synthesis emits -2 Widget {10 GOLD} (the two lot legs are
+        // grouped into one entry since they share the same lot key).
+        let widget_net: rust_decimal::Decimal = items_postings
+            .iter()
+            .filter_map(|p| p.amount_in("Widget"))
+            .sum();
+        assert_eq!(
+            widget_net,
+            dec!(-2),
+            "lot-bearing synthesis: Assets:Items should net -2 Widget"
+        );
+
+        // The cash residue (2 GOLD from FeeVault leg) appears as a plain
+        // GOLD posting on Assets:Items.
+        let gold_on_items: rust_decimal::Decimal = items_postings
+            .iter()
+            .filter_map(|p| p.amount_in("GOLD"))
+            .sum();
+        assert_eq!(
+            gold_on_items,
+            dec!(-2),
+            "cash residue: Assets:Items should absorb -2 GOLD from the fee leg"
+        );
+    }
+
+    /// Multiple explicit postings at the same lot key should be grouped into
+    /// a single auto-balanced inverse entry (summed units, one posting per
+    /// distinct lot key), not one posting per explicit leg.
+    #[test]
+    fn test_auto_balance_distinct_lot_keys_grouped() {
+        // Establish inventory at source.
+        let input = "\
+2024/01/01 Buy widgets
+    Assets:Source   \"Widget\" 3 @ 10 GOLD
+    Assets:Vault
+
+2024/01/02 Transfer grouped
+    Assets:Dest   \"Widget\" 1 {10 GOLD}
+    Assets:Dest   \"Widget\" 2 {10 GOLD}
+    Assets:Source
+";
+        // tx2: two explicit postings both at {10 GOLD}. They should be grouped into
+        // a single lot_bearing_state entry: {("Widget", {10 GOLD}) -> 3}.
+        // Auto-balanced: one posting of -3 Widget {10 GOLD} on Assets:Source.
+        let journal = elaborate(input);
+        let t2 = &journal.transactions[1];
+
+        let source_postings: Vec<_> = t2
+            .postings
+            .iter()
+            .filter(|p| p.account == "Assets:Source")
+            .collect();
+
+        // Should be exactly ONE posting (the grouped inverse), not two.
+        assert_eq!(
+            source_postings.len(),
+            1,
+            "grouped lot key should produce exactly one inverse posting, not one per explicit leg"
+        );
+        assert_eq!(
+            source_postings[0].amount_in("Widget"),
+            Some(dec!(-3)),
+            "grouped inverse should sum to -3 Widget"
+        );
+        assert!(
+            source_postings[0].has_lot(),
+            "the grouped inverse posting must carry the lot annotation"
+        );
+        assert_eq!(
+            source_postings[0].lot_cost_in("GOLD"),
+            Some(dec!(10)),
+            "lot cost should be 10 GOLD"
+        );
+    }
+
+    /// Plain cash transaction (no lots anywhere). Auto-balance behavior must
+    /// be unchanged: one posting on the null account with the cash negation.
+    #[test]
+    fn test_auto_balance_cash_only_regression() {
+        let input = "\
+2024-01-01 Coffee
+    Expenses:Coffee   $4.50
+    Assets:Checking
+";
+        let journal = elaborate(input);
+        let t = &journal.transactions[0];
+
+        let checking = t
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Checking")
+            .expect("Assets:Checking must be present");
+
+        assert_eq!(
+            checking.amount_in("$"),
+            Some(dec!(-4.50)),
+            "cash-only null posting should balance as -$4.50"
+        );
+        assert!(
+            !checking.has_lot(),
+            "cash-only null posting must not carry a lot annotation"
+        );
+        // Exactly one posting on the null account.
+        let checking_count = t
+            .postings
+            .iter()
+            .filter(|p| p.account == "Assets:Checking")
+            .count();
+        assert_eq!(
+            checking_count, 1,
+            "cash-only auto-balance should produce exactly one posting"
+        );
+    }
+
+    /// A transaction with `@`-price annotations but no `{cost}` lots.
+    /// Auto-balance should still produce the cash equivalent (current
+    /// behavior), not per-lot item postings.
+    #[test]
+    fn test_auto_balance_with_at_price_no_lot() {
+        let input = "\
+2024-01-01 Buy AAPL
+    Assets:Brokerage   10 AAPL @ $155
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        let t = &journal.transactions[0];
+
+        let cash = t
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .expect("Assets:Cash must be present");
+
+        assert_eq!(
+            cash.amount_in("$"),
+            Some(dec!(-1550)),
+            "@-price posting should drive cash balance to -$1550 (10 * 155)"
+        );
+        assert!(
+            !cash.has_lot(),
+            "null posting in @-price-only transaction must not carry a lot annotation"
         );
     }
 }
