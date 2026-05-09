@@ -816,17 +816,35 @@ pub fn elaborate(
                     // Accumulates per-(item_commodity, lot_key) net units from explicit
                     // lot-bearing postings eligible for null-posting per-lot synthesis (#276).
                     //
-                    // Only populated in `LotValidationMode::Permissive` (ledger-cli / hledger).
-                    // Beancount's `Strict` mode rejects negative lot positions on accounts
-                    // without prior holdings; bean-example/starter/basic fixtures empirically
-                    // require the cash-residue path on cash auto-balance legs.
+                    // ledger-cli and Beancount have **genuinely different** auto-balance
+                    // semantics for transactions with `{cost}`-only explicit legs:
+                    //
+                    //   ledger-cli:  `Assets:Foo 10 AAPL {$150} / Assets:Cash`
+                    //                → Cash gets `-10 AAPL {$150}` (per-lot inverse;
+                    //                  Cash carries an AAPL "short position" at the lot's cost).
+                    //
+                    //   Beancount:   same input → Cash gets `-1500 USD` (cash residue;
+                    //                Cash carries USD, not AAPL).
+                    //
+                    // These are mathematically equivalent at the value level but produce
+                    // different `(account, commodity, amount)` tuples in the elaborated
+                    // Journal — which downstream consumers see directly. Beancount further
+                    // enforces its model via `LotValidationMode::Strict`, which raises
+                    // `PhantomLotReduction` if a negative lot lands on an account without
+                    // prior holdings. The gate routes each frontend to its reference tool's
+                    // behavior; it is a structural encoding of the divergence, not a
+                    // defensive workaround.
                     //
                     // Eligibility criteria per posting (all must hold):
                     //   - Real or virtual-balanced (affects transaction balance).
                     //   - `{cost}` annotation present (lot_key.cost.is_some()).
-                    //   - NO `@ price` annotation (ledger emits per-lot only for pure moves).
-                    //   - Positive net units (items flowing INTO an account, not a sale).
-                    //   - `LotValidationMode::Permissive` (ledger-cli / hledger; not Beancount).
+                    //   - NO `@ price` annotation. With `@ price` ledger uses the
+                    //     cash-residue path (e.g. for sales, where the auto-balance leg
+                    //     is the proceeds).
+                    //   - Positive net units (items flowing INTO an account). Negative
+                    //     units are sales/reductions; ledger uses cash-residue there.
+                    //   - `LotValidationMode::Permissive` (ledger-cli / hledger). Beancount
+                    //     uses `Strict` and the cash-residue path.
                     //
                     // Value: `(net_item_units, proto_lot)` — the proto_lot is cloned
                     // onto the synthesized inverse posting.
@@ -1372,27 +1390,34 @@ pub fn elaborate(
                             }
 
                             // Track explicit lot-bearing postings for per-lot null-posting
-                            // synthesis (#276). A posting qualifies when ALL of:
+                            // synthesis (#276). The synthesis path mirrors ledger-cli's
+                            // semantics: when an auto-balance leg sits opposite a `{cost}`-
+                            // annotated explicit leg, ledger emits a per-lot inverse on the
+                            // auto-balance leg (so e.g. a Cash account opposite `10 AAPL {$150}`
+                            // ends up holding `-10 AAPL {$150}`, not `-$1500`). Beancount has
+                            // a different model (cash residue, not per-lot inverse) — see the
+                            // `lot_bearing_state` declaration above for the full structural
+                            // explanation; this gate routes each frontend to its reference
+                            // tool's behavior.
+                            //
+                            // A posting qualifies when ALL of:
                             //
                             //   1. Real or virtual-balanced (affects transaction balance).
                             //   2. `{cost}` annotation is present (lot_key.cost.is_some()).
-                            //   3. NO `@ price` annotation — ledger-cli emits per-lot item
-                            //      postings only for pure inventory moves without `@ price`;
-                            //      when `@ price` is present the cost-basis cash path applies.
-                            //      Empirically: `AAPL {$150}` → per-lot inverse;
-                            //      `AAPL {$150} @ $155` → cash.
-                            //   4. Positive net units (items flowing INTO accounts).
-                            //      Sales (negative units) have their cost-basis cash in
-                            //      `transaction_state`; the cash-residue path is correct there.
+                            //   3. NO `@ price` annotation. With `@ price` (typically a sale)
+                            //      ledger-cli switches to the cash-residue path; the auto-
+                            //      balance leg is the proceeds in the price commodity.
+                            //   4. Positive net units (items flowing INTO accounts). Negative
+                            //      units are sales/reductions; cash-residue is correct there.
                             //   5. `Permissive` lot-validation mode (ledger-cli / hledger).
-                            //      Empirically required for beancount: bean-example, bean-starter,
-                            //      and bean-basic fixtures contain transfer-shaped transactions
-                            //      where the auto-balanced leg is a cash account that doesn't
-                            //      hold the item commodity. Beancount's `Strict` mode rejects
-                            //      negative-lot positions on accounts without prior holdings
-                            //      (`PhantomLotReduction`), so the per-lot inverse path must be
-                            //      gated to ledger/hledger. Verified by removing the gate and
-                            //      observing CI parity failures on those fixtures.
+                            //      Beancount's `Strict` mode applies the cash-residue rule
+                            //      and would reject the per-lot inverse via
+                            //      `PhantomLotReduction` for auto-balance accounts that
+                            //      don't already hold the item commodity. Real Beancount
+                            //      fixtures (bean-example, bean-starter, bean-basic) hit
+                            //      this path with cash auto-balance legs, so the gate is
+                            //      load-bearing — verified by CI failures on those fixtures
+                            //      when the gate is removed.
                             if posting_kind != ast::PostingKind::VirtualUnbalanced
                                 && no_price_annotation
                                 && lot_validation_mode == resolution::LotValidationMode::Permissive
