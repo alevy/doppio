@@ -298,7 +298,7 @@ pub struct LedgerFrontend;
 pub fn ledger_defaults() -> crate::resolution::ElaborationConfig {
     crate::resolution::ElaborationConfig {
         tolerance_mode: crate::resolution::ToleranceMode::FractionOfSmallestPrecision(
-            rust_decimal::Decimal::ZERO,
+            rust_decimal::Decimal::ONE,
         ),
         balance_mode: crate::resolution::BalanceMode::CostBasis,
         assertion_scope: crate::resolution::AssertionScope::Direct,

@@ -482,18 +482,35 @@ pub enum BookingMethod {
 #[non_exhaustive]
 pub enum ToleranceMode {
     /// Accept residuals whose absolute value is at most
-    /// `fraction * 10^(-min_scale)` per commodity, where `min_scale`
-    /// is the smallest decimal precision among the transaction's
-    /// explicit postings in that commodity.
+    /// `fraction * 10^(-min_scale)` per commodity.
     ///
-    /// - `fraction = 0`: every transaction must balance to exact
-    ///   zero per commodity. This is the default and matches
-    ///   ledger-cli + hledger semantics.
-    /// - `fraction = 0.5`: accept residuals up to half the
-    ///   least-precise posting's decimal place. Matches Beancount's
-    ///   default (e.g. for scale-2 USD postings, tolerance = 0.005).
-    /// - Other fractions are valid; the CLI exposes a `--tolerance`
-    ///   flag that accepts any decimal in `[0, 1)`.
+    /// `min_scale` is resolved with priority:
+    ///
+    /// 1. **`inferred_scale` from [`CommodityProperties`]** — derived from
+    ///    `D`/`commodity format` directives and direct posting scales (#281).
+    ///    When present (and non-zero), this embodies the journal's declared
+    ///    precision intent. A residue smaller than `10^(-inferred_scale)` is
+    ///    sub-precision noise, consistent with ledger-cli's commodity
+    ///    display-precision `is_zero()` check (xact.cc:872-904).
+    ///
+    /// 2. **Least-precise resolved posting's decimal scale** — used as
+    ///    fallback when the commodity has no `CommodityProperties` entry
+    ///    (the commodity appeared in no direct posting and has no
+    ///    `D`/`commodity format` directive). This is Beancount's original
+    ///    inferred-tolerance rule.
+    ///
+    /// Common fraction values:
+    ///
+    /// - `fraction = 0`: every transaction must balance to exact zero per
+    ///   commodity.
+    /// - `fraction = 0.5`: accept residuals up to half the least-precise
+    ///   posting's decimal place. Matches Beancount's default (e.g. for
+    ///   scale-2 USD postings, tolerance = 0.005).
+    /// - `fraction = 1`: accept residuals up to one full unit at the
+    ///   commodity's declared precision. Combined with inferred_scale, this
+    ///   matches ledger-cli and hledger behaviour for journals with
+    ///   28-decimal IEEE-double `@`-prices and an explicit dust-compensation
+    ///   leg (the standard.dat:4244 pattern, #286).
     FractionOfSmallestPrecision(rust_decimal::Decimal),
 }
 
