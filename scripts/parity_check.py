@@ -1032,6 +1032,12 @@ POSITIVE: list[Case] = [
     Case("ledger:demo",           REPO / "tests/parity/ledger-demo.ledger",      ledger_balances),
     Case("ledger:no-trailing-newline", REPO / "tests/parity/ledger-no-trailing-newline.dat", ledger_balances),
     Case("ledger:drewr3",         REPO / "tests/parity/ledger-drewr3.dat",     ledger_balances),
+    # ledger-standard.dat is the 5,619-line ledger-cli upstream stress fixture.
+    # display_scale=2 collapses ledger-cli's 2-decimal display vs doppio's
+    # full-precision output. Closes #256 once #285 (N-leg implicit cost basis)
+    # and #286 (inferred-scale tolerance) have landed.
+    Case("ledger:standard",       REPO / "tests/parity/ledger-standard.dat",   ledger_balances,
+         display_scale=2),
     Case("hledger:quickstart",    REPO / "tests/parity/hledger-quickstart.journal", hledger_balances),
     Case("hledger:ascii",         REPO / "tests/parity/hledger-ascii.journal", hledger_balances),
     Case("hledger:zerostar",      REPO / "tests/parity/hledger-zerostar.journal", hledger_balances),
