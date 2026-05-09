@@ -523,13 +523,36 @@ pub struct CommodityProperties {
     pub no_market: bool,
     /// A free-form note describing the commodity.
     pub note: Option<String>,
-    /// Maximum decimal scale observed across all direct posting amounts for
-    /// this commodity. Populated during resolution as a side-effect of the
+    /// Maximum decimal scale intended for this commodity, inferred from the
+    /// journal source. Populated during resolution as a side-effect of the
     /// AST → HIR walk. Used by the elaborator to round `qty * price` costs
     /// for `@`-priced postings to the journal's intended precision before the
     /// balance check, matching ledger-cli's commodity display-precision
     /// mechanism (xact.cc:872-904). Defaults to 0 when no postings of this
     /// commodity were seen.
+    ///
+    /// # Scale-source priority
+    ///
+    /// Two authoritative sources contribute to this value; the maximum across
+    /// both is taken:
+    ///
+    /// 1. **`D` / `commodity format` directives** — the format string
+    ///    explicitly declares the display precision (e.g. `D 1.00 GOLD`
+    ///    declares GOLD has 2 decimal places). This is the primary fix for
+    ///    #288: wow.dat declares `D 1.00 GOLD` which establishes
+    ///    `inferred_scale[GOLD] = 2` so that `@ 1.25 GOLD` costs are not
+    ///    integer-rounded.
+    ///
+    /// 2. **Direct posting amounts** — the amounts written on the posting
+    ///    line itself (not `@`/`@@` price annotations or `{cost}` lot costs).
+    ///    This captures journals that use explicit fractional amounts
+    ///    (e.g. `$474.31`) to establish commodity precision.
+    ///
+    /// `@`-price and `{cost}` lot annotations are intentionally excluded from
+    /// the scale computation because they may carry IEEE-double noise from
+    /// import tools (e.g. a 28-digit `@ $53.659999...` price would
+    /// incorrectly inflate `inferred_scale[$]` to 28, defeating the rounding
+    /// that eliminates floating-point residue from the balance check).
     pub inferred_scale: u32,
 }
 
@@ -1044,6 +1067,26 @@ impl TryFrom<ast::Journal> for HIR {
                                     });
                             }
                             ast::CommodityItem::Format(format) => {
+                                // Extract the decimal scale from the format
+                                // string and use it as a precision anchor for
+                                // `inferred_scale`. This is the primary fix for
+                                // #288: `D 1.00 GOLD` in wow.dat lowers to a
+                                // `Format("1.00 GOLD")` item that declares
+                                // GOLD has scale 2, even though the direct
+                                // GOLD postings in that journal are integer
+                                // amounts (scale 0). The elaborator uses
+                                // `inferred_scale` when rounding `qty * @price`
+                                // costs for GOLD, so without this the
+                                // integer scale 0 would over-round fractional
+                                // GOLD values computed from `@`-price annotations.
+                                //
+                                // `scale_from_format` counts digits after the
+                                // first decimal point in the format string,
+                                // ignoring grouping separators. A format with
+                                // no decimal point contributes scale 0.
+                                let fmt_scale = scale_from_format(&format);
+                                global_context.inferred_scale =
+                                    global_context.inferred_scale.max(fmt_scale);
                                 global_context.format = Some(format);
                             }
                             ast::CommodityItem::NoMarket => {
@@ -1173,11 +1216,27 @@ impl TryFrom<ast::Journal> for HIR {
                         })
                         .collect();
 
-                    // Populate `inferred_scale` on each commodity seen in direct
-                    // posting amounts (not @-price annotations). This is a
-                    // side-effect of the AST → HIR walk; the elaborator reads
-                    // the result from `global_context.commodity_properties` to
-                    // round `qty * price` costs for `@`-priced postings (#281).
+                    // Populate `inferred_scale` from direct posting amounts.
+                    //
+                    // This is a side-effect of the AST → HIR walk; the
+                    // elaborator reads the result from
+                    // `global_context.commodity_properties` to round
+                    // `qty * price` costs for `@`-priced postings (#281).
+                    //
+                    // Only the `value` field of each `AmountDetails::Amount`
+                    // posting contributes here — NOT `@`/`@@` price annotations
+                    // and NOT `{cost}` lot annotations. This prevents
+                    // IEEE-double noise from high-precision price strings
+                    // (e.g. `@ $53.6599999999999999998612221219`, 28 digits)
+                    // from inflating the inferred scale of `$` beyond the
+                    // user's true intent. (#281 anchor preserved for
+                    // standard.dat:1880)
+                    //
+                    // `D` / `commodity format` directives are the other
+                    // authoritative source of scale — they are handled in
+                    // the `CommodityItem::Format` arm above (#288 fix for
+                    // wow.dat where `D 1.00 GOLD` establishes scale 2
+                    // even though direct GOLD postings are integers).
                     {
                         let mut scales: BTreeMap<String, u32> = BTreeMap::new();
                         for posting in &postings {
@@ -1327,16 +1386,16 @@ impl TryFrom<ast::Journal> for HIR {
 /// scale seen for each commodity-bearing amount leaf.
 ///
 /// Called during the AST → HIR resolution walk (in [`HIR::try_from`]) for
-/// every direct posting amount. The result is stored on
+/// direct posting amounts. The result is stored on
 /// [`CommodityProperties::inferred_scale`] and consumed by the elaborator
 /// when rounding `qty * price` costs for `@`-priced postings to the
 /// journal's intended precision (see `crates/doppio/src/elaborator.rs`).
 ///
-/// "Direct posting amount" means the `value` field in an
-/// [`ast::AmountDetails::Amount`] posting — NOT the `@`/`@@` price annotation.
-/// Price annotations are excluded because they may carry IEEE-double noise
-/// (e.g. 28-digit prices like `$53.6599999999999999998612221219`) that would
-/// inflate the apparent scale of the commodity.
+/// Only the `value` field of each posting is passed here — NOT `@`/`@@` price
+/// annotations or `{cost}` lot costs. This prevents IEEE-double noise from
+/// high-precision price strings from inflating the inferred scale.
+/// `D` / `commodity format` directives also feed `inferred_scale` directly
+/// (see [`scale_from_format`]).
 ///
 /// The algorithm records the **maximum** scale across all direct posting amounts
 /// for each commodity. This preserves the highest declared precision: a journal
@@ -1398,6 +1457,35 @@ fn bare_number_scale(expr: &ast::ValueExpr) -> Option<u32> {
         } => Some(value.scale()),
         ast::ValueExpr::Unary { expr, .. } => bare_number_scale(expr),
         _ => None,
+    }
+}
+
+/// Extract the decimal scale declared in a commodity format string.
+///
+/// A format string is the raw source text of a `D` directive or a `format`
+/// sub-item inside a `commodity` block — for example `"1.00 GOLD"`,
+/// `"$1,000.00"`, or `"1,000.00 USD"`.
+///
+/// The scale is the count of ASCII digit characters immediately following the
+/// first `.` in the string, ignoring all other characters (currency symbols,
+/// grouping commas, commodity names). If the string contains no `.`, the
+/// format declares zero decimal places and `0` is returned.
+///
+/// # Examples
+///
+/// ```text
+/// "1.00 GOLD"   -> 2
+/// "$1,000.00"   -> 2
+/// "1,000.00 $"  -> 2
+/// "1.0000 EUR"  -> 4
+/// "1000 USD"    -> 0
+/// ```
+fn scale_from_format(format: &str) -> u32 {
+    if let Some(dot_pos) = format.find('.') {
+        let after_dot = &format[dot_pos + 1..];
+        after_dot.chars().take_while(|c| c.is_ascii_digit()).count() as u32
+    } else {
+        0
     }
 }
 
@@ -1911,6 +1999,230 @@ mod resolution_tests {
         assert_eq!(
             props.inferred_scale, 2,
             "inferred_scale for B must be 2 from the Typed{{Unary{{Sub, 0.71}}}} node"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Format-directive scale feeds inferred_scale (#288)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// A `D 1.00 GOLD` (or `commodity GOLD\n  format 1.00 GOLD`) directive
+    /// declares that GOLD has 2 decimal places. This scale must be recorded
+    /// in `inferred_scale` even when the only direct GOLD postings in the
+    /// journal are integers (scale 0).
+    ///
+    /// This is the root cause of #288: wow.dat has `D 1.00 GOLD` but all
+    /// direct GOLD postings are integers (`1 GOLD`, `3 GOLD`, …). Without
+    /// the format-directive contribution, `inferred_scale[GOLD] = 0`, causing
+    /// `qty * @price` GOLD costs to be integer-rounded instead of
+    /// 2-decimal-rounded.
+    #[test]
+    fn test_inferred_scale_from_format_directive() {
+        // `D 1.00 GOLD` lowers to a Commodity directive with Format("1.00 GOLD")
+        // and Default items.
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::Directive(ast::Directive::Commodity {
+                name: "GOLD".into(),
+                notes: vec![],
+                items: vec![
+                    ast::CommodityItem::Default,
+                    ast::CommodityItem::Format("1.00 GOLD".into()),
+                ],
+            })],
+        };
+
+        let hir = HIR::try_from(journal).unwrap();
+
+        let props = hir
+            .global_context
+            .commodity_properties
+            .get("GOLD")
+            .expect("GOLD should have properties from D directive");
+
+        assert_eq!(
+            props.inferred_scale, 2,
+            "inferred_scale for GOLD must be 2 from D 1.00 GOLD format directive"
+        );
+    }
+
+    /// When BOTH a format directive AND direct posting amounts exist for a
+    /// commodity, `inferred_scale` takes the maximum of both. This preserves
+    /// the highest declared precision.
+    ///
+    /// Example: `D 1.000 GOLD` (scale 3) + direct `1.00 GOLD` (scale 2) →
+    /// `inferred_scale[GOLD] = 3`.
+    #[test]
+    fn test_inferred_scale_format_and_direct_max() {
+        use rust_decimal::dec;
+
+        let format_directive = ast::Entry::Directive(ast::Directive::Commodity {
+            name: "GOLD".into(),
+            notes: vec![],
+            items: vec![ast::CommodityItem::Format("1.000 GOLD".into())],
+        });
+
+        let tx = ast::Transaction {
+            date: ast::Date {
+                year: Some(2024),
+                month: 1,
+                date: 1,
+            },
+            description: "Format + direct max test".into(),
+            postings: vec![
+                ast::Posting::new("Assets:Wallet").with_amount(ast::AmountDetails::Amount {
+                    value: ast::ValueExpr::Amount {
+                        value: dec!(1.00),
+                        commodity: Some("GOLD".into()),
+                    },
+                    lot_annotation: None,
+                    lot_pricing: None,
+                    balance_assertion: None,
+                }),
+                ast::Posting::new("Assets:Cash"),
+            ],
+            ..Default::default()
+        };
+
+        let journal = ast::Journal {
+            entries: vec![format_directive, ast::Entry::Transaction(tx)],
+        };
+        let hir = HIR::try_from(journal).unwrap();
+
+        let props = hir
+            .global_context
+            .commodity_properties
+            .get("GOLD")
+            .expect("GOLD should have properties");
+
+        assert_eq!(
+            props.inferred_scale, 3,
+            "inferred_scale for GOLD must be 3 (max of format scale 3 and direct scale 2)"
+        );
+    }
+
+    /// `@`-price annotations are NOT included in `inferred_scale`. Only
+    /// direct posting amounts and format directives contribute. This prevents
+    /// IEEE-double noise from high-precision price strings from inflating the
+    /// apparent scale of a commodity that already has clear precision from
+    /// direct postings.
+    ///
+    /// Example: `1 GOLD` direct (scale 0) + `@ 1.250 GOLD` @-price (scale 3)
+    /// → `inferred_scale[GOLD] = 0` (direct only; @-price is not consulted).
+    #[test]
+    fn test_inferred_scale_at_price_not_included() {
+        use rust_decimal::dec;
+
+        // Direct posting: 1 GOLD (scale 0)
+        let posting_direct =
+            ast::Posting::new("Assets:Wallet").with_amount(ast::AmountDetails::Amount {
+                value: ast::ValueExpr::Amount {
+                    value: dec!(1),
+                    commodity: Some("GOLD".into()),
+                },
+                lot_annotation: None,
+                lot_pricing: None,
+                balance_assertion: None,
+            });
+
+        // Posting with @-price annotation: 1 ITEM @ 1.250 GOLD (scale 3)
+        // The @-price must NOT affect inferred_scale[GOLD].
+        let posting_at =
+            ast::Posting::new("Assets:Items").with_amount(ast::AmountDetails::Amount {
+                value: ast::ValueExpr::Amount {
+                    value: dec!(1),
+                    commodity: Some("ITEM".into()),
+                },
+                lot_annotation: None,
+                lot_pricing: Some(ast::LotPricing::Unit(ast::ValueExpr::Amount {
+                    value: dec!(1.250),
+                    commodity: Some("GOLD".into()),
+                })),
+                balance_assertion: None,
+            });
+        let counter = ast::Posting::new("Assets:Cash");
+
+        let tx = ast::Transaction {
+            date: ast::Date {
+                year: Some(2024),
+                month: 1,
+                date: 1,
+            },
+            description: "At-price not included test".into(),
+            postings: vec![posting_direct, posting_at, counter],
+            ..Default::default()
+        };
+
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::Transaction(tx)],
+        };
+        let hir = HIR::try_from(journal).unwrap();
+
+        let props = hir
+            .global_context
+            .commodity_properties
+            .get("GOLD")
+            .expect("GOLD should have properties from direct posting");
+
+        assert_eq!(
+            props.inferred_scale, 0,
+            "inferred_scale for GOLD must be 0 (direct posting only; @-price scale 3 excluded)"
+        );
+    }
+
+    /// `{cost}` lot annotations are NOT included in `inferred_scale`.
+    ///
+    /// Example: `1 AAPL {150.50 USD}` with no direct USD postings and no
+    /// format directive → `inferred_scale[USD] = 0` (lot cost is not consulted).
+    #[test]
+    fn test_inferred_scale_lot_cost_not_included() {
+        use rust_decimal::dec;
+
+        let posting =
+            ast::Posting::new("Assets:Brokerage").with_amount(ast::AmountDetails::Amount {
+                value: ast::ValueExpr::Amount {
+                    value: dec!(1),
+                    commodity: Some("AAPL".into()),
+                },
+                lot_annotation: Some(ast::LotAnnotation {
+                    cost: Some(ast::ValueExpr::Amount {
+                        value: dec!(150.50),
+                        commodity: Some("USD".into()),
+                    }),
+                    ..Default::default()
+                }),
+                lot_pricing: None,
+                balance_assertion: None,
+            });
+        let counter = ast::Posting::new("Assets:Cash");
+
+        let tx = ast::Transaction {
+            date: ast::Date {
+                year: Some(2024),
+                month: 1,
+                date: 1,
+            },
+            description: "Lot cost not included test".into(),
+            postings: vec![posting, counter],
+            ..Default::default()
+        };
+
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::Transaction(tx)],
+        };
+        let hir = HIR::try_from(journal).unwrap();
+
+        // USD should NOT appear in commodity_properties at all (no direct
+        // posting or format directive introduced USD).
+        let has_usd = hir
+            .global_context
+            .commodity_properties
+            .get("USD")
+            .map(|p| p.inferred_scale > 0)
+            .unwrap_or(false);
+
+        assert!(
+            !has_usd,
+            "inferred_scale for USD must NOT be populated from {{cost}} lot annotations"
         );
     }
 }
