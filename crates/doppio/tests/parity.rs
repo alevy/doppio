@@ -551,11 +551,25 @@ fn lot_persistence_cost() {
 #[test]
 fn lot_persistence_date() {
     // Fixture: 10 AAPL {$150} [2024-03-01]. Cost + lot acquisition date.
+    //
+    // Behavior after #276 fix (matches ledger-cli empirically):
+    // No `@ price` → the null posting receives a per-lot inverse item posting
+    // (-10 AAPL {$150} [date]), NOT a dollar cash posting. Ledger-cli verified:
+    //   `ledger balance --lots --flat` → `-10 AAPL {$150} [2024/03/01]` on Assets:Cash.
     let j = compile("lot_persistence_date.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-    // No `@ price` -- cash side null posting balances against cost ($150 * 10 = $1500).
-    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
+    // Per-lot synthesis: null posting is -10 AAPL with lot annotation, no cash.
+    assert_eq!(
+        t.postings[1].amount_in("AAPL"),
+        Some(dec!(-10)),
+        "null posting should be -10 AAPL (per-lot inverse, no @price)"
+    );
+    assert_eq!(
+        t.postings[1].amount_in("$"),
+        None,
+        "no cash posting when {{cost}} has no @price"
+    );
     let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
     assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
     assert_eq!(
@@ -567,10 +581,23 @@ fn lot_persistence_date() {
 #[test]
 fn lot_persistence_note() {
     // Fixture: 10 AAPL {$150} ((BUY-2024-01)). Cost + free-form note.
+    //
+    // Behavior after #276 fix (matches ledger-cli empirically):
+    // No `@ price` → the null posting receives a per-lot inverse item posting,
+    // not a dollar cash posting.
     let j = compile("lot_persistence_note.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
+    assert_eq!(
+        t.postings[1].amount_in("AAPL"),
+        Some(dec!(-10)),
+        "null posting should be -10 AAPL (per-lot inverse, no @price)"
+    );
+    assert_eq!(
+        t.postings[1].amount_in("$"),
+        None,
+        "no cash posting when {{cost}} has no @price"
+    );
     let lot = t.postings[0].lot.as_ref().expect("lot annotation present");
     assert_eq!(lot.cost.as_ref().and_then(|a| a.get("$")), Some(dec!(150)));
     assert_eq!(t.postings[0].lot_note(), Some("BUY-2024-01"));
@@ -579,11 +606,23 @@ fn lot_persistence_note() {
 #[test]
 fn lot_persistence_combined() {
     // Fixture: 10 AAPL {$150} [2024-03-01] ((BUY-2024-01)).
-    // All three annotations combined; cost drives cash balance (no @ price).
+    //
+    // Behavior after #276 fix (matches ledger-cli empirically):
+    // No `@ price` → the null posting receives a per-lot inverse item posting,
+    // not a dollar cash posting.
     let j = compile("lot_persistence_combined.ledger");
     let t = &j.transactions[0];
     assert_eq!(t.postings[0].amount_in("AAPL"), Some(dec!(10)));
-    assert_eq!(t.postings[1].amount_in("$"), Some(dec!(-1500)));
+    assert_eq!(
+        t.postings[1].amount_in("AAPL"),
+        Some(dec!(-10)),
+        "null posting should be -10 AAPL (per-lot inverse, no @price)"
+    );
+    assert_eq!(
+        t.postings[1].amount_in("$"),
+        None,
+        "no cash posting when {{cost}} has no @price"
+    );
     assert!(t.postings[0].has_lot());
     assert_eq!(
         t.postings[0].lot_cost_in("$"),

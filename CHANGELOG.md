@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto-balance posting preserves per-lot identity — principled rule, no inventory-account guard** (#276):
+  When a transaction's explicit postings carry `{cost}` lot annotations on item commodities (typical of
+  inter-account inventory transfers and first-time grants), doppio previously emitted a single aggregated
+  cash posting on the auto-balanced account instead of per-lot inverse item postings. This diverged from
+  ledger-cli, leaving inventory accounts with non-cancelled item quantities and spurious cash residuals.
+
+  The fix applies the principled rule from ledger-cli: for each distinct `(commodity, lot_key)` accumulated
+  from positive-unit `{cost}`-bearing explicit postings (those with no `@ price` annotation), one inverse
+  item posting is synthesized on the auto-balanced account with the lot annotation preserved. Any remaining
+  cash residual (from non-lot legs or `{cost} @ price` postings) is emitted as a plain cash posting.
+
+  Key behavior points verified against ledger-cli:
+  - **Inventory transfer**: `Wyshona:Items Widget 1 {10 GOLD}` with null `Tajer:Items` → Tajer:Items gets
+    `-1 Widget {10 GOLD}` (per-lot inverse). Tajer:Items nets to 0 Widget with no spurious GOLD residual.
+  - **First-time grant**: `Assets:Items Widget 1 {10 GOLD}` with null `Equity:Open` → Equity:Open gets
+    `-1 Widget {10 GOLD}`. The previous `null_holds_commodity` heuristic incorrectly skipped this case
+    because Equity:Open had no prior Widget balance; the principled rule has no such guard.
+  - **`{cost}` only (no `@ price`)**: null account receives a per-lot item inverse, not cost-basis cash.
+    Empirically: `10 AAPL {$150}` with null `Assets:Cash` → Cash gets `-10 AAPL {$150}`, not `-$1500`.
+  - **`{cost} @ price`**: cost-basis cash path unchanged. `10 AAPL {$150} @ $155` → Cash gets `-$1500`.
+  - **Sale (`{cost} @ price` negative units)**: cost-basis cash path unchanged. `-1 Widget {10 GOLD} @ 15 GOLD`
+    → null Cash gets `+10 GOLD` (cost basis), matching ledger-cli exactly.
+  - **Plain cash transactions** and `@`-price-only transactions: unaffected.
+
+  **This is a behaviour change** for journals using `{cost}` lot annotations without `@ price`. Accounts
+  that previously received cost-basis cash on auto-balanced legs will now receive per-lot item inverses,
+  matching ledger-cli's inventory semantics. Journals using `{cost} @ price` (the typical buy/sell form)
+  are unaffected.
+
 ## [2.1.0] - 2026-05-08
 
 This release lands `C` commodity-conversion directive support (#248) with a
@@ -22,13 +53,10 @@ The library API is additive: `ResolutionError` gains
 observable behaviour for journals using only `alias` directives). The
 `.dop` wire format is unchanged.
 
-Two known wow.dat parity divergences with ledger-cli are deferred: the
-display-time chain-canonicalisation question (#270) and the auto-balance
-posting's per-lot identity preservation (#276). Neither affects the
-elaborated balance values for journals that don't use the specific
-constructs (multi-hop chains across commodity boundaries, or multi-commodity
-inter-account inventory transfers via auto-balanced postings); both are
-tracked for 2.2.
+One known wow.dat parity divergence with ledger-cli is deferred: the
+display-time chain-canonicalisation question (#270). This does not affect
+elaborated balance values for journals that don't use multi-hop chains
+across commodity boundaries; tracked for 2.2.
 
 ### Fixed
 
