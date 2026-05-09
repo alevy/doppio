@@ -523,6 +523,14 @@ pub struct CommodityProperties {
     pub no_market: bool,
     /// A free-form note describing the commodity.
     pub note: Option<String>,
+    /// Maximum decimal scale observed across all direct posting amounts for
+    /// this commodity. Populated during resolution as a side-effect of the
+    /// AST → HIR walk. Used by the elaborator to round `qty * price` costs
+    /// for `@`-priced postings to the journal's intended precision before the
+    /// balance check, matching ledger-cli's commodity display-precision
+    /// mechanism (xact.cc:872-904). Defaults to 0 when no postings of this
+    /// commodity were seen.
+    pub inferred_scale: u32,
 }
 
 /// Properties of an account declared with an `account` directive.
@@ -1147,7 +1155,7 @@ impl TryFrom<ast::Journal> for HIR {
                     };
 
                     let (tags, metadata, comments) = Self::resolve_metadata(transaction.notes);
-                    let postings = transaction
+                    let postings: Vec<Posting> = transaction
                         .postings
                         .into_iter()
                         .map(|p| {
@@ -1164,6 +1172,29 @@ impl TryFrom<ast::Journal> for HIR {
                             }
                         })
                         .collect();
+
+                    // Populate `inferred_scale` on each commodity seen in direct
+                    // posting amounts (not @-price annotations). This is a
+                    // side-effect of the AST → HIR walk; the elaborator reads
+                    // the result from `global_context.commodity_properties` to
+                    // round `qty * price` costs for `@`-priced postings (#281).
+                    {
+                        let mut scales: BTreeMap<String, u32> = BTreeMap::new();
+                        for posting in &postings {
+                            if let Some(ast::AmountDetails::Amount { value, .. }) = &posting.amount
+                            {
+                                collect_scales_from_expr(value, &mut scales);
+                            }
+                        }
+                        for (commodity, scale) in scales {
+                            let props = result
+                                .global_context
+                                .commodity_properties
+                                .entry(commodity)
+                                .or_default();
+                            props.inferred_scale = props.inferred_scale.max(scale);
+                        }
+                    }
 
                     let data = Entry::Transaction(Transaction {
                         date,
@@ -1289,6 +1320,84 @@ impl TryFrom<ast::Journal> for HIR {
         }
 
         Ok(result)
+    }
+}
+
+/// Walk a [`ast::ValueExpr`] and update `scales` with the maximum decimal
+/// scale seen for each commodity-bearing amount leaf.
+///
+/// Called during the AST → HIR resolution walk (in [`HIR::try_from`]) for
+/// every direct posting amount. The result is stored on
+/// [`CommodityProperties::inferred_scale`] and consumed by the elaborator
+/// when rounding `qty * price` costs for `@`-priced postings to the
+/// journal's intended precision (see `crates/doppio/src/elaborator.rs`).
+///
+/// "Direct posting amount" means the `value` field in an
+/// [`ast::AmountDetails::Amount`] posting — NOT the `@`/`@@` price annotation.
+/// Price annotations are excluded because they may carry IEEE-double noise
+/// (e.g. 28-digit prices like `$53.6599999999999999998612221219`) that would
+/// inflate the apparent scale of the commodity.
+///
+/// The algorithm records the **maximum** scale across all direct posting amounts
+/// for each commodity. This preserves the highest declared precision: a journal
+/// with `2 B` (scale 0) and `-0.71 B` (scale 2) produces `inferred_scale = 2`
+/// for `B`, so costs in `B` are rounded to 2 decimal places. Using `min` would
+/// coarsen `0.71 B` to `1 B` (incorrect).
+fn collect_scales_from_expr(expr: &ast::ValueExpr, scales: &mut BTreeMap<String, u32>) {
+    match expr {
+        ast::ValueExpr::Amount {
+            value,
+            commodity: Some(c),
+        } => {
+            let entry = scales.entry(c.clone()).or_insert(0);
+            *entry = (*entry).max(value.scale());
+        }
+        ast::ValueExpr::Amount {
+            commodity: None, ..
+        } => {}
+        ast::ValueExpr::Unary { expr, .. } => collect_scales_from_expr(expr, scales),
+        ast::ValueExpr::Binary { lhs, rhs, .. } => {
+            collect_scales_from_expr(lhs, scales);
+            collect_scales_from_expr(rhs, scales);
+        }
+        // `Typed { expr, commodity }` carries the commodity as an outer annotation.
+        // The inner `expr` is a bare-number tree (no commodity on any leaf).
+        // Extract the leaf scale and record it under the outer commodity.
+        ast::ValueExpr::Typed { expr, commodity } => {
+            if let Some(scale) = bare_number_scale(expr) {
+                let entry = scales.entry(commodity.clone()).or_insert(0);
+                *entry = (*entry).max(scale);
+            }
+            // Also recurse in case the sub-expression itself contains commodity
+            // leaves (unusual but correct to handle).
+            collect_scales_from_expr(expr, scales);
+        }
+        ast::ValueExpr::Group(bool_expr) => {
+            collect_scales_from_expr(&bool_expr.lhs, scales);
+            if let Some((_, rhs)) = &bool_expr.cmp {
+                collect_scales_from_expr(rhs, scales);
+            }
+        }
+        // Object, Commodity, Str, Regex, Function, Access — no commodity-bearing
+        // amount leaf to record.
+        _ => {}
+    }
+}
+
+/// Extract the decimal scale from a bare-number (no-commodity) value expression.
+///
+/// Returns `Some(scale)` when the expression reduces to a single numeric leaf
+/// (`Amount { commodity: None, .. }`) optionally wrapped in a unary `+`/`-`.
+/// Returns `None` for complex expressions (arithmetic, function calls, etc.)
+/// where the scale cannot be determined without evaluation.
+fn bare_number_scale(expr: &ast::ValueExpr) -> Option<u32> {
+    match expr {
+        ast::ValueExpr::Amount {
+            value,
+            commodity: None,
+        } => Some(value.scale()),
+        ast::ValueExpr::Unary { expr, .. } => bare_number_scale(expr),
+        _ => None,
     }
 }
 
@@ -1682,6 +1791,126 @@ mod resolution_tests {
         assert!(a.strict);
         assert!(
             matches!(a.amount, ast::ValueExpr::Amount { commodity: Some(ref c), .. } if c == "$")
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // inferred_scale populated in HIR (#281)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Verify that `inferred_scale` is populated on `CommodityProperties`
+    /// during the AST → HIR resolution walk — not by the elaborator.
+    ///
+    /// A journal with `$1.00`, `$2.50`, and `$3.00` direct posting amounts
+    /// must produce `inferred_scale == 2` for `$` (max of scales 2, 2, 2).
+    #[test]
+    fn test_inferred_scale_populated_in_hir() {
+        use rust_decimal::dec;
+
+        let make_posting = |value: rust_decimal::Decimal, commodity: &str| -> ast::Posting {
+            ast::Posting::new("Assets:Test").with_amount(ast::AmountDetails::Amount {
+                value: ast::ValueExpr::Amount {
+                    value,
+                    commodity: Some(commodity.into()),
+                },
+                lot_annotation: None,
+                lot_pricing: None,
+                balance_assertion: None,
+            })
+        };
+
+        let tx = ast::Transaction {
+            date: ast::Date {
+                year: Some(2024),
+                month: 1,
+                date: 1,
+            },
+            description: "Scale test".into(),
+            notes: vec![],
+            postings: vec![
+                make_posting(dec!(1.00), "$"),
+                make_posting(dec!(2.50), "$"),
+                make_posting(dec!(3.00), "$"),
+                // Counter-posting to balance (no commodity annotation so
+                // no scale contribution).
+                ast::Posting::new("Assets:Other"),
+            ],
+            ..Default::default()
+        };
+
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::Transaction(tx)],
+        };
+
+        let hir = HIR::try_from(journal).unwrap();
+
+        let props = hir
+            .global_context
+            .commodity_properties
+            .get("$")
+            .expect("$ should have properties after resolution");
+
+        assert_eq!(
+            props.inferred_scale, 2,
+            "inferred_scale for $ must be 2 (max of 2, 2, 2 from $1.00, $2.50, $3.00)"
+        );
+    }
+
+    /// Regression: hledger suffix-commodity amounts like `-0.71 B` parse as
+    /// `Typed { Unary { Sub, Amount { 0.71, None } }, "B" }`. The scale
+    /// collector must handle this form; otherwise `B` is absent from the
+    /// commodity-properties map and canonical-cost rounding is skipped.
+    #[test]
+    fn test_inferred_scale_hledger_typed_node() {
+        use rust_decimal::dec;
+
+        // Simulate what the hledger parser produces for `-0.71 B`
+        let typed_amount = ast::AmountDetails::Amount {
+            value: ast::ValueExpr::Typed {
+                expr: Box::new(ast::ValueExpr::Unary {
+                    op: ast::Op::Sub,
+                    expr: Box::new(ast::ValueExpr::Amount {
+                        value: dec!(0.71),
+                        commodity: None,
+                    }),
+                }),
+                commodity: "B".into(),
+            },
+            lot_annotation: None,
+            lot_pricing: None,
+            balance_assertion: None,
+        };
+
+        let tx = ast::Transaction {
+            date: ast::Date {
+                year: Some(2024),
+                month: 1,
+                date: 1,
+            },
+            description: "Typed node test".into(),
+            notes: vec![],
+            postings: vec![
+                ast::Posting::new("Assets:A").with_amount(typed_amount),
+                ast::Posting::new("Assets:B"),
+            ],
+            ..Default::default()
+        };
+
+        let journal = ast::Journal {
+            entries: vec![ast::Entry::Transaction(tx)],
+        };
+
+        let hir = HIR::try_from(journal).unwrap();
+
+        let props = hir
+            .global_context
+            .commodity_properties
+            .get("B")
+            .expect("B should have properties after resolution of Typed node");
+
+        assert_eq!(
+            props.inferred_scale, 2,
+            "inferred_scale for B must be 2 from the Typed{{Unary{{Sub, 0.71}}}} node"
         );
     }
 }

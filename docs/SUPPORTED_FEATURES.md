@@ -43,6 +43,7 @@ Status legend:
 | Lot note annotation `((note))` | + | v0.4.0 (PR #139). Free-form note stored on `proto::Lot.note` |
 | Cost-vs-price priority | + | v0.4.0 (PR #139). When `{cost}` and `@ price` both present, `@` price drives the cash balance and `{cost}` is the lot basis only |
 | Implicit cost basis (two-leg multi-commodity) | + | (#251). A two-real-posting transaction in different commodities with no `@`/`@@`/`{cost}` is accepted; the cash leg is treated as the implicit total cost of the non-cash leg. ledger-cli and hledger frontends only; Beancount requires explicit cost |
+| High-precision `@`-price balance check | + | (#281). `qty * price` costs are rounded to the price commodity's inferred decimal scale before balance checking. Scale is the max scale observed across all direct posting amounts for that commodity, recorded on `CommodityProperties::inferred_scale` during resolution. Matches ledger-cli's commodity display-precision mechanism (xact.cc:872-904); balance check still requires exact zero post-rounding |
 | Null posting (auto-inferred amount) | + | Exactly one per transaction; multiple null postings is an error |
 | Posting balance assertion `= amount` | + | Enforced during elaboration |
 | Strict balance assertion `== amount` | + | Enforced during elaboration |
