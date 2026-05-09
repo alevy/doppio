@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-05-09
+
+This release closes the standard.dat parity loop: ledger-cli's 5,619-line
+upstream stress fixture (real-world bookkeeping data, anonymised) elaborates
+under doppio and matches ledger-cli's output across 83/83 (account, commodity,
+amount-rounded-to-2dp) tuples. The path took five interlocking fixes —
+intent-driven canonical cost (#281), per-lot identity preservation in
+auto-balanced postings (#276), broadened implicit-cost-basis inference (#285),
+inferred-scale tolerance for sub-precision residue (#286), and a regression fix
+extending scale inference to `D` / `commodity format` directives (#288) — plus
+harness-side commodity-chain normalisation (#270) so wow.dat's chain-display
+divergence stops being a parity false-positive.
+
+The library API is additive: `CommodityProperties` gains `inferred_scale: u32`
+(populated during resolution from direct posting amounts and `D`/`commodity
+format` directives). `evaluator::Precision` is a new public enum surfaced by
+`eval_and_normalize_amount_with_precision` to let consumers distinguish
+chain-converted (mathematically exact) values from possibly-noisy products.
+
+A new `testing` cargo feature exposes `doppio::testing::{journal, txn,
+posting, lot}` — fluent builders for `elaboration::Journal` fixtures that
+hide the proto3 `Option<Amount>` / `decimal_to_proto` / `state: i32` plumbing.
+Downstream test code can now construct journals in three lines instead of
+thirty.
+
+The `.dop` wire format is unchanged.
+
 ### Fixed
 
 - **Intent-driven canonical-cost balance check for `@`-priced transactions** (#281):
@@ -56,6 +83,91 @@
   that previously received cost-basis cash on auto-balanced legs will now receive per-lot item inverses,
   matching ledger-cli's inventory semantics. Journals using `{cost} @ price` (the typical buy/sell form)
   are unaffected.
+
+- **Implicit cost-basis inference broadened to N-leg transactions reducing to 2 commodities** (#285):
+  doppio's implicit cost-basis inference (#251) previously fired only for transactions with **exactly
+  two real postings in different commodities**. ledger-cli is more permissive: it accepts N-leg shapes
+  whose net per-commodity balance reduces to two commodities (typical when intra-transaction cash legs
+  on different accounts cancel each other out). The trigger is now "exactly 2 non-zero commodity nets,
+  no explicit `@`/`@@`/`{cost}` annotation," matching ledger-cli's `xact.cc` phase 3 algorithm.
+  Per-unit cost is computed as `|cash_total / item_total|` and assigned proportionally to each
+  item-side posting (handles N item postings cleanly without rounding accumulation).
+
+  Empirical anchor: `standard.dat:4063` (a 4-leg AAPL sale where two `\$955.98` cash legs on different
+  accounts cancel and the residual structure is `-70 AAPL` + `\$1,911.96`) elaborates cleanly. Beancount
+  frontend behaviour is unchanged (the gate for `infer_implicit_total_cost = false` still applies).
+
+- **Tolerance derived from `inferred_scale` absorbs sub-precision residue** (#286):
+  After #281's intent-rounding, some transactions still leave a residue smaller than the commodity's
+  inferred display precision (e.g. an explicit `\$0.01` cents-dust leg compensating for half a rounding
+  imbalance). ledger-cli accepts these via its display-precision `is_zero()` check. doppio's
+  `tolerance_mode` for ledger and hledger frontends is now `FractionOfSmallestPrecision(1.0)`
+  (was `0`); when `fraction == 1`, the elaborator uses `CommodityProperties::inferred_scale` as
+  `min_scale` rather than the per-posting minimum. Tolerance becomes `10^(-inferred_scale)`. Beancount's
+  `0.5` fraction is unchanged; its tolerance continues to use per-posting `min_scale`.
+
+  Empirical anchor: `standard.dat:4244` (a multi-commodity portfolio rebalance with 28-decimal
+  IEEE-double prices and an explicit `\$0.01` dust leg) elaborates cleanly. Real imbalances larger
+  than `10^(-inferred_scale)` continue to reject.
+
+- **`inferred_scale` populated from `D` / `commodity format` directives** (#288):
+  PR #284's initial implementation only collected `inferred_scale` from direct posting amounts. wow.dat
+  has direct GOLD postings at scale 0 but `@`-price annotations at scale 2 (`@ 1.25 GOLD`); the
+  `inferred_scale[GOLD] = 0` over-rounded fractional GOLD costs to integer (a regression caught
+  on push to main, before any tagged release). The fix extends scale inference to also read the format
+  string in `D` / `commodity format` directives — `D 1.00 GOLD` correctly populates
+  `inferred_scale[GOLD] = 2`. C-chain-converted `@`-prices skip intent-rounding entirely (chain-converted
+  values are mathematically exact via the fixed-ratio divisor; no rounding is appropriate).
+
+  The new `evaluator::Precision` enum (`Exact` / `PossiblyNoisy`) is the public surface for distinguishing
+  these cases; `eval_and_normalize_amount_with_precision` returns it.
+
+### Added
+
+- **`doppio::testing` module** for fixture construction in downstream test code (#124). Gated behind a
+  new `testing` cargo feature (excluded from default and production builds). Public surface:
+
+  ```rust
+  use doppio::testing::{journal, txn, posting};
+  use chrono::NaiveDate;
+
+  let j = journal()
+      .with_txn(txn(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(), "Groceries")
+          .with_posting(posting("Expenses:Food").with_amount(50, "$"))
+          .with_posting(posting("Assets:Checking").with_amount(-50, "$")))
+      .build();
+  ```
+
+  Builders hide the proto3 `Option<Amount>` quirk, the `decimal_to_proto` conversion, the epoch-days
+  date encoding, and the `state: i32` enum-cast. `LotBuilder` is included for lot-bearing postings.
+  Opt in via `doppio = { version = "...", features = ["testing"] }` in dev-dependencies.
+
+### Test infrastructure
+
+- **wow.dat into POSITIVE via harness chain normalisation** (#270): `scripts/parity_check.py` now parses
+  `C` directives from each fixture, applies the same fixpoint chain resolution doppio uses, and
+  rebrands ledger-cli's per-(account, commodity, amount) tuples to the chain root before comparison.
+  Plus a configurable `display_scale` per-`Case` for rounding both sides to a common precision before
+  set comparison. Fixtures without `C` directives are unaffected (empty chain map; post-processing is
+  identity). `tests/parity/ledger-wow.dat` is now in POSITIVE — 10/10 matching tuples, 0 divergences.
+
+- **standard.dat into POSITIVE** (#256): the 5,619-line ledger-cli upstream stress fixture is wired in
+  with `display_scale=2`. After all the above fixes plus #270's harness work, parity is 83/83 matching
+  tuples with 0 divergences. Substantial validation of the elaborator on real-world bookkeeping data.
+
+- **Posting-level tags + metadata diffing for Beancount fixtures + multiset precision for transaction
+  fingerprints** (#234 sub-items 1+2): adds `*_posting_fingerprints` extractors and
+  `diff_posting_fingerprints` set comparator for Beancount fixtures (catches silently-dropped posting-
+  level `; key: value` notes). Replaces the transaction-level `set` comparator with `collections.Counter`
+  for true multiset precision (catches the case where two duplicate transactions in source A become one
+  in source B). Sub-item 3 (ledger-cli tag extraction) is deferred per the issue's recommendation —
+  no consumer surfaced.
+
+- **Snapshot regression tests for synthesised postings** (#235): pinned per-fixture snapshots of
+  doppio's two synthesis classes that have no canonical-tool analogue: capital-gains synthesis (#210,
+  hledger frontend; default `Income:Capital Gains`) and rounding-residual synthesis (#198,
+  empty-string account). 20 snapshot files (2 with content, 18 empty baselines that fail if synthesis
+  is unexpectedly introduced). Regenerate with `UPDATE_SNAPSHOTS=1 cargo test snapshot_synthesised`.
 
 ## [2.1.0] - 2026-05-08
 
