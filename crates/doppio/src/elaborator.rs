@@ -813,19 +813,21 @@ pub fn elaborate(
                     // `(account, commodity, lot_key)`.
                     let mut booked_consumed: BTreeMap<(String, String, LotKey), Decimal> =
                         BTreeMap::new();
-                    // Accumulates per-(item_commodity, lot_key) net units from
-                    // explicit lot-bearing postings that carry a `{cost}` annotation
-                    // AND have positive net units (items flowing INTO accounts).
+                    // Accumulates per-(item_commodity, lot_key) net units from explicit
+                    // lot-bearing postings eligible for null-posting per-lot synthesis (#276).
                     //
-                    // Negative-unit lot postings (sales/reductions) are excluded:
-                    // their cost-basis cash already flows through `transaction_state`
-                    // correctly, and the null posting's cash path produces the right
-                    // result (matching ledger-cli empirically verified: a sale with
-                    // `{cost} @ price` auto-balances to the cost-basis cash amount,
-                    // not a per-lot item posting on the cash account).
+                    // Only populated in `LotValidationMode::Permissive` (ledger-cli / hledger).
+                    // In Beancount's `Strict` mode, `{cost}` drives cash balance rather than
+                    // lot identity on the null account, so the cash-residue path is used.
+                    //
+                    // Eligibility criteria per posting (all must hold):
+                    //   - Real or virtual-balanced (affects transaction balance).
+                    //   - `{cost}` annotation present (lot_key.cost.is_some()).
+                    //   - NO `@ price` annotation (ledger emits per-lot only for pure moves).
+                    //   - Positive net units (items flowing INTO an account, not a sale).
                     //
                     // Value: `(net_item_units, proto_lot)` — the proto_lot is cloned
-                    // onto the synthesized inverse posting (#276).
+                    // onto the synthesized inverse posting.
                     let mut lot_bearing_state: BTreeMap<
                         (String, LotKey),
                         (Decimal, crate::elaboration::Lot),
@@ -1367,34 +1369,31 @@ pub fn elaborate(
                                 }
                             }
 
-                            // Track explicit lot-bearing postings whose `{cost}` annotation
-                            // is present AND whose net units are positive (items flowing
-                            // INTO an account). These are used in the null-posting synthesis
-                            // pass to emit per-lot inverse postings on the auto-balanced
-                            // account rather than a single cash posting (#276).
+                            // Track explicit lot-bearing postings for per-lot null-posting
+                            // synthesis (#276). A posting qualifies when ALL of:
                             //
-                            // Negative-unit lot postings (sales/reductions) are excluded:
-                            // their cost-basis contribution already flows through
-                            // `transaction_state`, and the cash-residue path handles the
-                            // null posting correctly for those legs (ledger-cli confirmed:
-                            // a sale with `{cost} @ price` auto-balances to cost-basis
-                            // cash on the null account, not a per-lot item posting).
-                            //
-                            // Virtual-unbalanced postings are excluded because they don't
-                            // participate in transaction balancing.
-                            // A posting qualifies for per-lot synthesis (#276) when ALL of:
                             //   1. Real or virtual-balanced (affects transaction balance).
                             //   2. `{cost}` annotation is present (lot_key.cost.is_some()).
                             //   3. NO `@ price` annotation — ledger-cli emits per-lot item
-                            //      postings only for pure inventory moves; when `@ price` is
-                            //      also present it uses the cost-basis cash path instead.
-                            //      Empirically verified: `AAPL {$150}` → per-lot, but
+                            //      postings only for pure inventory moves without `@ price`;
+                            //      when `@ price` is present the cost-basis cash path applies.
+                            //      Empirically: `AAPL {$150}` → per-lot inverse;
                             //      `AAPL {$150} @ $155` → cash.
-                            //   4. Positive net units (items flowing INTO accounts, not sales).
-                            //      Sales (negative units) have their cost-basis in transaction_state
-                            //      already; the cash-residue path handles them correctly.
+                            //   4. Positive net units (items flowing INTO accounts).
+                            //      Sales (negative units) have their cost-basis cash in
+                            //      `transaction_state`; the cash-residue path is correct there.
+                            //   5. `Permissive` lot-validation mode (ledger-cli / hledger).
+                            //      Beancount's `Strict` mode treats `{cost}` as a cash-balance
+                            //      driver: the null posting always receives cost-basis cash
+                            //      rather than a per-lot item inverse. Applying per-lot synthesis
+                            //      in Strict mode would emit phantom HOOL (or other commodity)
+                            //      positions on cash accounts, violating the strict lot check
+                            //      and diverging from beancount's reference tool output.
+                            //      Permissive mode (ledger-cli / hledger) allows short positions
+                            //      on any account, so the per-lot inverse is always valid there.
                             if posting_kind != ast::PostingKind::VirtualUnbalanced
                                 && no_price_annotation
+                                && lot_validation_mode == resolution::LotValidationMode::Permissive
                                 && let Some(proto_lot_ref) = &proto_lot
                                 && let Some(lot_key) = lot_key_from_proto(Some(proto_lot_ref))
                                 && lot_key.cost.is_some()
