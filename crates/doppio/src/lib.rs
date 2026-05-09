@@ -65,6 +65,15 @@
 //! ```
 
 pub mod ast;
+
+/// Fluent test-fixture builders for [`elaboration::Journal`], [`elaboration::Transaction`],
+/// and [`elaboration::Posting`].
+///
+/// Gated behind the `testing` cargo feature. See the module-level docs for usage and the
+/// required dev-dependency declaration.
+#[cfg(feature = "testing")]
+pub mod testing;
+
 // Crate-private elaboration pipeline. Exposes `ElaborationError` (re-exported
 // at crate root) so callers can catch elaboration failures without needing to
 // know about the internal pipeline types. Eventually this module's job will
@@ -146,7 +155,7 @@ pub fn frontend_for_extension(ext: Option<&str>) -> Box<dyn Frontend> {
 ///
 /// The mantissa is split into low (u64) and high (i64, sign-extended) halves of
 /// the 128-bit two's-complement integer, with the scale preserved as-is.
-fn decimal_to_proto(d: rust_decimal::Decimal) -> elaboration::Decimal {
+pub(crate) fn decimal_to_proto(d: rust_decimal::Decimal) -> elaboration::Decimal {
     let mantissa: i128 = d.mantissa();
     let scale = d.scale();
     let mantissa_low = mantissa as u64;

@@ -11,6 +11,9 @@ keywords.workspace = true
 categories.workspace = true
 autobenches = false
 
+[features]
+testing = []
+
 [dependencies]
 chrono = { workspace = true }
 miniz_oxide = { workspace = true }
