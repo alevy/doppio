@@ -1071,25 +1071,52 @@ pub fn elaborate(
                                                 // rounded to 2dp (cents), removing
                                                 // IEEE-double noise and producing a
                                                 // zero-sum balance.
-                                                let (v, c) = evaluator::eval_and_normalize_amount(
+                                                //
+                                                // Exception: when the `@`-price was
+                                                // expressed in a different commodity and
+                                                // reached the canonical form via a
+                                                // `C`-directive chain conversion (#288),
+                                                // skip rounding. Chain-converted values
+                                                // are exact (e.g. `21050 COPPER / 10000
+                                                // = 2.105 GOLD` with no precision loss),
+                                                // so rounding would introduce error
+                                                // (`2.10`) rather than remove it.
+                                                // ledger-cli matches this: it accumulates
+                                                // amounts in their native commodity and
+                                                // only converts to the chain root at
+                                                // display/reporting time.
+                                                let (v, c, precision) = evaluator::eval_and_normalize_amount_with_precision(
                                                     expr,
                                                     entry_context,
                                                     state,
+                                                    None,
                                                 )?;
                                                 let exact_cost = v * value;
-                                                // Round to the commodity's inferred
-                                                // scale only when the commodity was
-                                                // observed in direct posting amounts
-                                                // during resolution. If it only appears
-                                                // in @-price annotations (not in the
-                                                // map), skip rounding to avoid coercing
-                                                // a genuinely unknown precision.
-                                                let canonical_cost = if let Some(props) =
-                                                    commodity_properties.get(&c)
-                                                {
-                                                    exact_cost.round_dp(props.inferred_scale)
-                                                } else {
-                                                    exact_cost
+                                                // Intent-rounding is only meaningful for
+                                                // values that may carry IEEE-double noise
+                                                // from a high-precision input literal.
+                                                // A `Precision::Exact` price (currently:
+                                                // produced by a `C`-directive chain
+                                                // conversion) is mathematically exact;
+                                                // rounding it to the result commodity's
+                                                // inferred display scale would discard
+                                                // genuine precision (e.g. truncating
+                                                // `21050 COPPER → 2.105 GOLD` to
+                                                // `2.10 GOLD`), which ledger-cli does NOT
+                                                // do — it accumulates in the native
+                                                // commodity and only converts at display
+                                                // time.
+                                                let canonical_cost = match precision {
+                                                    evaluator::Precision::Exact => exact_cost,
+                                                    evaluator::Precision::PossiblyNoisy => {
+                                                        commodity_properties
+                                                            .get(&c)
+                                                            .map(|p| {
+                                                                exact_cost
+                                                                    .round_dp(p.inferred_scale)
+                                                            })
+                                                            .unwrap_or(exact_cost)
+                                                    }
                                                 };
                                                 Some((canonical_cost, c))
                                             }
@@ -2776,13 +2803,69 @@ mod evaluator {
         running_state: &RunningState,
         fallback_commodity: Option<&str>,
     ) -> Result<(Decimal, String), ElaborationError> {
+        let (value, commodity, _precision) = eval_and_normalize_amount_with_precision(
+            val,
+            eval_context,
+            running_state,
+            fallback_commodity,
+        )?;
+        Ok((value, commodity))
+    }
+
+    /// Whether an evaluated amount's value is mathematically exact or may
+    /// carry input-precision noise. Surfaced by
+    /// [`eval_and_normalize_amount_with_precision`] so callers (specifically
+    /// the elaborator's `@`-price cost computation) can decide whether to
+    /// round to the result commodity's intent precision.
+    ///
+    /// `Exact` is set when the amount passes through a `C`-directive
+    /// chain conversion: the value was divided by a fixed divisor stored on
+    /// [`resolution::Context::commodity_conversions`], an operation that is
+    /// lossless by construction. Rounding such values would discard
+    /// genuine precision (e.g. truncating `21050 COPPER → 2.105 GOLD`
+    /// to `2.10 GOLD` and losing 50 COPPER per posting).
+    ///
+    /// `PossiblyNoisy` is set otherwise. The value may have been multiplied
+    /// against an input literal that carries IEEE-double serialisation noise
+    /// (e.g. a tool round-tripping `$53.66` through a 64-bit float emits
+    /// `$53.6599999999999999998612221219`). Rounding to the result
+    /// commodity's inferred scale absorbs that noise without affecting
+    /// values that were already at intent precision.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Precision {
+        Exact,
+        PossiblyNoisy,
+    }
+
+    /// Like [`eval_and_normalize_amount_with_fallback`], but also returns a
+    /// [`Precision`] tag describing whether the result is mathematically exact
+    /// or may carry input-precision noise.
+    ///
+    /// The tag drives the elaborator's `@`-price intent-rounding decision:
+    /// `Exact` values are emitted unchanged (rounding would discard precision
+    /// rather than absorb noise); `PossiblyNoisy` values are rounded to the
+    /// commodity's inferred display scale to absorb IEEE-double serialisation
+    /// noise from inputs like `$53.6599999999999999998612221219`.
+    ///
+    /// Currently the only signal that produces `Exact` is having passed
+    /// through a `C`-directive chain conversion (a division by a fixed
+    /// divisor stored in [`resolution::Context::commodity_conversions`]),
+    /// which by construction is lossless. A 1:1 alias entry also produces
+    /// `Exact`, which is harmless — the divisor is `Decimal::ONE` so the
+    /// rounding step it skips would have been a no-op anyway.
+    pub fn eval_and_normalize_amount_with_precision(
+        val: ast::ValueExpr,
+        eval_context: &resolution::Context,
+        running_state: &RunningState,
+        fallback_commodity: Option<&str>,
+    ) -> Result<(Decimal, String, Precision), ElaborationError> {
         // Amount expressions don't involve posting metadata (tags); pass an
         // empty map so the `tag()` built-in is a no-op when called from amount
         // contexts (which would be a programmer error, but we don't panic).
         let empty_meta = BTreeMap::default();
         match eval(val, eval_context, running_state, &empty_meta, EVAL_BUDGET)? {
             ast::ValueExpr::Amount { value, commodity } => {
-                let (value, commodity) = if let Some(commodity) = commodity {
+                let (value, commodity, precision) = if let Some(commodity) = commodity {
                     // Apply commodity conversion: if the commodity appears in
                     // commodity_conversions, divide the amount by the stored divisor
                     // and rebrand to the canonical commodity.
@@ -2796,9 +2879,9 @@ mod evaluator {
                     if let Some((canonical, divisor)) =
                         eval_context.commodity_conversions.get(&commodity)
                     {
-                        (value / divisor, canonical.clone())
+                        (value / divisor, canonical.clone(), Precision::Exact)
                     } else {
-                        (value, commodity)
+                        (value, commodity, Precision::PossiblyNoisy)
                     }
                 } else {
                     // No commodity in the expression -- try context default, then
@@ -2809,9 +2892,9 @@ mod evaluator {
                         .or(fallback_commodity)
                         .ok_or(ElaborationError::AmountWithNoCommodity)?
                         .to_owned();
-                    (value, commodity)
+                    (value, commodity, Precision::PossiblyNoisy)
                 };
-                Ok((value, commodity))
+                Ok((value, commodity, precision))
             }
             val => Err(ElaborationError::NonAmountWhereAmountExpected(val)),
         }
@@ -7393,5 +7476,83 @@ C 0 X = 100 Y
         );
         let journal = result.unwrap();
         assert_eq!(journal.transactions.len(), 1);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // #288 regression: @-price scale fallback when no direct posting exists
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Minimal repro of the wow.dat shape that regressed in #288.
+    ///
+    /// GOLD has no direct postings — the `D 1.00 GOLD` directive is a default
+    /// directive, not a posting. The `@ 1.25 GOLD` annotation must establish
+    /// `inferred_scale[GOLD] = 2`, so `1 @ 1.25 GOLD` is elaborated as
+    /// `-1.25 GOLD` on the auto-balance leg (not integer-rounded to `-1 GOLD`).
+    #[test]
+    fn test_at_price_intent_rounding_when_no_direct_posting_at_higher_scale() {
+        let input = "\
+D 1.00 GOLD
+
+2024/01/01 Buy
+    Assets:Items   \"Widget\" 1 @ 1.25 GOLD
+    Assets:Cash
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+
+        // The auto-balanced Assets:Cash posting must be -1.25 GOLD, not -1 GOLD.
+        let cash = tx
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Cash")
+            .expect("Assets:Cash posting must be present");
+
+        let gold_amount = cash
+            .amount_in("GOLD")
+            .expect("Assets:Cash must hold GOLD (the price commodity)");
+
+        assert_eq!(
+            gold_amount,
+            dec!(-1.25),
+            "Assets:Cash must be -1.25 GOLD (not integer-rounded to -1 GOLD)"
+        );
+    }
+
+    /// Guard the original #281 anchor: standard.dat:1880 still elaborates
+    /// cleanly after the #288 fix.
+    ///
+    /// The four-leg LMVTX/EEEEE transaction has direct `$` postings at scale
+    /// 2 (`$474.31` etc.) and 28-decimal `@` prices. The fix must NOT let the
+    /// 28-decimal prices inflate `inferred_scale[$]` — direct postings must win.
+    #[test]
+    fn test_standard_dat_1880_regression_preserved() {
+        let input = "\
+2003/06/19 * cbb4cc49824bf79827cde838e005848027ca0a38
+    c56a21d2  331.296869 LMVTX @ $53.6599999999999999998612221219
+    c56a21d2  -523.942988 EEEEE @ $33.9299999999999999998438748872
+    c56a21d2  55.981364 LMVTX @ $53.6599999999999999998612221219
+    c56a21d2  -88.534054 EEEEE @ $33.9299999999999999998438748872
+    c56a21d2
+";
+        // This must elaborate cleanly — no TransactionDoesNotBalance error.
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+
+        // Quantities must be preserved exactly as written (no over-rounding).
+        let lmvtx_qtys: Vec<rust_decimal::Decimal> = tx
+            .postings
+            .iter()
+            .filter_map(|p| p.amount_in("LMVTX"))
+            .collect();
+        assert!(
+            lmvtx_qtys.contains(&dec!(331.296869)),
+            "first LMVTX qty must be 331.296869, got {lmvtx_qtys:?}"
+        );
+        assert!(
+            lmvtx_qtys.contains(&dec!(55.981364)),
+            "second LMVTX qty must be 55.981364, got {lmvtx_qtys:?}"
+        );
     }
 }
