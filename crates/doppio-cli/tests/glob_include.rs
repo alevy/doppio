@@ -36,8 +36,8 @@ fn compile_with_dir(
         opener: doppio::file_opener,
         base_path: dir.to_path_buf(),
     };
-    let mut input = source.to_owned();
-    doppio::compile(&mut input, parser)
+    let input = source.to_owned();
+    doppio::compile(&input, parser)
 }
 
 // -- single-file include ------------------------------------------------------─
