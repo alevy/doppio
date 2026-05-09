@@ -4,6 +4,29 @@
 
 ### Fixed
 
+- **Intent-driven canonical-cost balance check for `@`-priced transactions** (#281):
+  doppio previously rejected transactions whose `@`-price costs did not sum to exactly zero at
+  full `rust_decimal` precision, even when the residue was fully explained by the prices'
+  intended decimal precision. ledger-cli accepts such transactions by rounding each per-posting
+  cost to the price commodity's "display precision" before the balance check.
+
+  The fix: a pre-elaboration scan collects the minimum decimal scale observed for each commodity
+  across all direct posting amounts in the journal. At cost-computation time, each `qty * price`
+  product is rounded to that commodity's natural scale before being accumulated into the
+  transaction balance. The balance check still requires exact zero — "cost" is redefined to use
+  intent-rounded values rather than full-precision products. No tolerance window is introduced.
+
+  This unblocks transactions with high-precision prices that are IEEE-double serialisations of
+  two-decimal-place values (e.g. `$53.6599999999999999998612221219` for `$53.66`): once
+  rounded to the 2-decimal-place natural precision of the `$` commodity established by earlier
+  transactions, the four-leg buy/sell in `standard.dat:1880` sums to exactly zero.
+
+  **Behaviour change**: journals where `@`-price products do not sum to exact zero at full
+  `rust_decimal` precision will now be accepted rather than rejected, provided the residue is
+  explained by per-commodity precision. Journals where direct posting amounts are written as
+  whole numbers (e.g. `$100` with scale 0) will have their `@`-price costs rounded to whole
+  numbers; use `$100.00` to avoid this.
+
 - **Auto-balance posting preserves per-lot identity — principled rule, no inventory-account guard** (#276):
   When a transaction's explicit postings carry `{cost}` lot annotations on item commodities (typical of
   inter-account inventory transfers and first-time grants), doppio previously emitted a single aggregated

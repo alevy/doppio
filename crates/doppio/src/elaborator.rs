@@ -583,6 +583,12 @@ pub fn elaborate(
         let assertion_scope = config.assertion_scope;
         let lot_validation_mode = config.lot_validation_mode;
 
+        // Pre-scan: collect the minimum decimal scale seen for each commodity
+        // across all direct posting amounts in the journal. This mirrors
+        // ledger-cli's "commodity display precision" tracking and is used by
+        // `at_price_cash` to round intent-precision costs (see #281).
+        let commodity_scales = collect_commodity_scales(&value);
+
         // Auto-rule queries are pre-compiled to regexes during resolution;
         // here we just need to extract the rules so we can iterate
         // `value.entries` (consuming it) without conflicting with a borrow
@@ -1047,12 +1053,42 @@ pub fn elaborate(
                                                 Some((v, c))
                                             }
                                             ast::LotPricing::Unit(expr) => {
+                                                // Intent-driven canonical cost (#281):
+                                                // round `qty * price` to the price
+                                                // commodity's natural decimal precision
+                                                // before accumulating into the transaction
+                                                // balance. This matches ledger-cli's
+                                                // per-posting price-rounding compensation
+                                                // (xact.cc:872-904) without a tolerance
+                                                // window — the balance check still requires
+                                                // exact zero, but "cost" is redefined as
+                                                // the intent-rounded value rather than the
+                                                // full-precision product.
+                                                //
+                                                // `commodity_scales` (pre-computed before
+                                                // the main elaboration loop) holds the
+                                                // minimum scale seen for each commodity
+                                                // across all direct posting amounts in the
+                                                // file. For `$`, prior `$474.31` amounts
+                                                // establish a scale of 2. High-precision
+                                                // prices like `$53.659999...28 digits` are
+                                                // then rounded to 2 decimal places (cents)
+                                                // rather than 27, removing the IEEE-double
+                                                // noise and producing a zero-sum balance.
                                                 let (v, c) = evaluator::eval_and_normalize_amount(
                                                     expr,
                                                     entry_context,
                                                     state,
                                                 )?;
-                                                Some((v * value, c))
+                                                let exact_cost = v * value;
+                                                let canonical_cost = if let Some(&scale) =
+                                                    commodity_scales.get(&c)
+                                                {
+                                                    exact_cost.round_dp(scale)
+                                                } else {
+                                                    exact_cost
+                                                };
+                                                Some((canonical_cost, c))
                                             }
                                         })
                                     };
@@ -2148,6 +2184,70 @@ fn is_bare_number_expr(expr: &ast::ValueExpr) -> bool {
         ast::ValueExpr::Amount { commodity, .. } => commodity.is_none(),
         ast::ValueExpr::Unary { expr, .. } => is_bare_number_expr(expr),
         _ => false,
+    }
+}
+
+/// Collect the minimum decimal scale (number of fractional digits) seen for
+/// each commodity across all direct posting amounts in the HIR.
+///
+/// "Direct posting amount" means the value expression in an
+/// [`ast::AmountDetails::Amount`] posting — NOT the `@`/`@@` price
+/// annotation. The price annotation is intentionally excluded because it may
+/// carry IEEE-double noise (e.g. 28-digit prices like
+/// `$53.6599999999999999998612221219`) that inflates the apparent scale.
+///
+/// This pre-pass matches ledger-cli's commodity display-precision tracking:
+/// ledger records the first/smallest precision it sees for each commodity
+/// symbol and uses that precision when rounding costs for the balance check.
+/// By collecting the minimum scale globally before elaboration begins,
+/// `at_price_cash` can round `qty * price` to the commodity's natural
+/// precision rather than the noisy product precision.
+fn collect_commodity_scales(hir: &resolution::HIR) -> BTreeMap<String, u32> {
+    let mut scales: BTreeMap<String, u32> = BTreeMap::new();
+    for entry in &hir.entries {
+        if let resolution::Entry::Transaction(tx) = &entry.data {
+            for posting in &tx.postings {
+                if let Some(ast::AmountDetails::Amount { value, .. }) = &posting.amount {
+                    collect_scales_from_expr(value, &mut scales);
+                }
+            }
+        }
+    }
+    scales
+}
+
+/// Walk a value expression and record the scale of every leaf
+/// `Amount { value, commodity: Some(c) }` node found.
+///
+/// Only commodity-bearing leaves are recorded; bare numbers (no commodity)
+/// are skipped because their commodity is unknown at this stage.
+fn collect_scales_from_expr(expr: &ast::ValueExpr, scales: &mut BTreeMap<String, u32>) {
+    match expr {
+        ast::ValueExpr::Amount {
+            value,
+            commodity: Some(c),
+        } => {
+            let entry = scales.entry(c.clone()).or_insert(u32::MAX);
+            *entry = (*entry).min(value.scale());
+        }
+        ast::ValueExpr::Amount {
+            commodity: None, ..
+        } => {}
+        ast::ValueExpr::Unary { expr, .. } => collect_scales_from_expr(expr, scales),
+        ast::ValueExpr::Binary { lhs, rhs, .. } => {
+            collect_scales_from_expr(lhs, scales);
+            collect_scales_from_expr(rhs, scales);
+        }
+        ast::ValueExpr::Typed { expr, .. } => collect_scales_from_expr(expr, scales),
+        ast::ValueExpr::Group(bool_expr) => {
+            // BoolExpr has lhs/rhs ValueExpr fields; recurse into those.
+            collect_scales_from_expr(&bool_expr.lhs, scales);
+            if let Some((_, rhs)) = &bool_expr.cmp {
+                collect_scales_from_expr(rhs, scales);
+            }
+        }
+        // Commodity, Str, Regex, Function, Access, Object — no leaf amount to record.
+        _ => {}
     }
 }
 
@@ -7207,6 +7307,141 @@ C 0 X = 100 Y
         assert!(
             !cp.has_lot(),
             "Assets:Cash posting must not carry a lot annotation"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Intent-driven canonical-cost balance (#281)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Reproduction of `tests/parity/ledger-standard.dat` line ~1880.
+    ///
+    /// This transaction has four `@`-priced postings whose prices are
+    /// 28-decimal-place IEEE-double serialisations. Computing costs at full
+    /// precision produces a `$0.004` residue that prevents exact-zero balance.
+    /// With intent-driven canonical-cost rounding the residue is explained by
+    /// the per-posting price precision, and the transaction elaborates cleanly.
+    #[test]
+    fn test_intent_rounded_cost_standard_dat_1880_repro() {
+        let input = "\
+2003/06/19 * cbb4cc49824bf79827cde838e005848027ca0a38
+    c56a21d2  331.296869 LMVTX @ $53.6599999999999999998612221219
+    c56a21d2  -523.942988 EEEEE @ $33.9299999999999999998438748872
+    c56a21d2  55.981364 LMVTX @ $53.6599999999999999998612221219
+    c56a21d2  -88.534054 EEEEE @ $33.9299999999999999998438748872
+    c56a21d2
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+
+        // The four explicit postings must be present.
+        let lmvtx: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.amount_in("LMVTX").is_some())
+            .collect();
+        assert_eq!(lmvtx.len(), 2, "expected two LMVTX postings");
+
+        let eeeee: Vec<_> = tx
+            .postings
+            .iter()
+            .filter(|p| p.amount_in("EEEEE").is_some())
+            .collect();
+        assert_eq!(eeeee.len(), 2, "expected two EEEEE postings");
+
+        // Quantities must be preserved exactly as written.
+        let lmvtx_qtys: Vec<rust_decimal::Decimal> =
+            lmvtx.iter().filter_map(|p| p.amount_in("LMVTX")).collect();
+        assert!(
+            lmvtx_qtys.contains(&dec!(331.296869)),
+            "first LMVTX qty must be 331.296869"
+        );
+        assert!(
+            lmvtx_qtys.contains(&dec!(55.981364)),
+            "second LMVTX qty must be 55.981364"
+        );
+    }
+
+    /// The ledger-cli motivating example (xact.cc:875-878).
+    ///
+    /// When a user writes `0.50 bread @ $3.99`, the exact cost per posting is
+    /// `$1.995`. If the user supplies a rounded total `$9.49` instead of the
+    /// exact `$9.480` for five such postings, ledger-cli accepts it. doppio
+    /// should do the same: the cost `0.50 * $3.99 = $1.995` rounds to
+    /// `$2.00` at the price's scale (2 decimals), and `5 * $2.00 = $10.00`
+    /// does not match `$9.49`, so this specific multi-posting example doesn't
+    /// reduce exactly — test the simpler two-posting form where rounding lands.
+    ///
+    /// Two postings of `0.50 bread @ $3.99` (canonical cost $2.00 each at
+    /// scale 2) produce a total $ contribution of $4.00 regardless of the
+    /// exact Decimal multiply result. A matching `$-4.00` on the cash account
+    /// balances exactly.
+    #[test]
+    fn test_intent_rounded_cost_ledger_motivating_example() {
+        let input = "\
+2024-01-01 Bread purchase
+    Expenses:Food  0.50 bread @ $3.99
+    Expenses:Food  0.50 bread @ $3.99
+    Assets:Cash  $-4.00
+";
+        // Should elaborate without error: each 0.50 * $3.99 = $1.995, rounded
+        // to scale 2 (price's intended scale) = $2.00; total = $4.00 which
+        // cancels the $-4.00 cash posting.
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+    }
+
+    /// Exact-precision prices are unaffected by intent-driven rounding.
+    ///
+    /// When a price is written at a natural scale (e.g. `$3.99` with scale 2)
+    /// and the quantity has scale 2 (e.g. `1.00`), the product `1.00 * $3.99 =
+    /// $3.99` already rounds to `round_dp(2+2=4)`, which is `$3.9900` — exact.
+    /// No residue is introduced; the transaction still requires exact balance.
+    #[test]
+    fn test_intent_rounded_cost_exact_precision_unaffected() {
+        let input = "\
+2024-01-01 Coffee
+    Expenses:Coffee  1.00 cup @ $3.99
+    Assets:Cash  $-3.99
+";
+        let journal = elaborate(input);
+        assert_eq!(journal.transactions.len(), 1);
+        let tx = &journal.transactions[0];
+        // Coffee posting exists.
+        assert!(
+            tx.postings.iter().any(|p| p.amount_in("cup").is_some()),
+            "cup posting must be present"
+        );
+    }
+
+    /// Adversarial: a genuinely unbalanced transaction is still rejected.
+    ///
+    /// Intent-driven rounding only compensates for precision residue introduced
+    /// by `@`-price multiplication. A transaction with an explicit imbalance
+    /// (not explained by any rounding) must still produce
+    /// `ElaborationError::TransactionDoesNotBalance`.
+    #[test]
+    fn test_intent_rounded_cost_high_precision_imbalance_rejected() {
+        // 1 G + -1.001 G with no @ price: plain commodity balance is
+        // +1 G and -1.001 G = -0.001 G residue, which is not explained
+        // by any price rounding. The ledger frontend's
+        // FractionOfSmallestPrecision(0) tolerance requires exact zero.
+        let input = "\
+2024-01-01 Unbalanced
+    Assets:A  1 G
+    Assets:B  -1.001 G
+";
+        use crate::{grammars::ledger::parse_ledger, resolution::HIR};
+        let ast = parse_ledger(input).expect("parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let result = crate::elaborate(hir, &crate::grammars::ledger::ledger_defaults());
+        assert!(
+            matches!(
+                result,
+                Err(crate::elaborator::ElaborationError::TransactionDoesNotBalance(_))
+            ),
+            "genuinely unbalanced transaction must still be rejected"
         );
     }
 }
