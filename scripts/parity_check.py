@@ -21,6 +21,28 @@ catches divergences instead of silently returning None (#226 acceptance).
 
 Usage:
     python3 scripts/parity_check.py [--dop-bin path/to/dop] [--negative | --self-test]
+
+## C-directive chain normalisation (issue #270)
+
+Some ledger fixtures contain `C N1 X = N2 Y` commodity-conversion directives
+that form a chain (e.g. COPPER → SILVER → GOLD). doppio's library canonicalises
+all amounts to the chain root; ledger-cli's `bal` display only partially
+traverses the chain (one hop per account's history), so `Expenses:Fees:Mail`
+may appear as `29.10 SILVER` from ledger-cli but `0.291 GOLD` from doppio.
+
+For fixtures with a non-zero `display_scale`, this harness:
+  1. Parses `C` directives from the journal file and resolves the transitive
+     fixpoint chain (same algorithm as `Context::resolve_commodity_conversion_chains`
+     in `crates/doppio/src/resolution.rs`).
+  2. Post-processes ledger-cli's output: any `(account, commodity, amount)` tuple
+     whose commodity is a non-root entry in the chain is rebranded to
+     `(account, root, amount / total_divisor)`.
+  3. Rounds both sides to `display_scale` decimal places before comparison, so
+     that ledger-cli's 2-decimal display (`147.82`) and doppio's full-precision
+     output (`147.8220`) compare equal.
+
+Fixtures without `C` directives (the majority) produce an empty chain map, so
+steps 2 and 3 are no-ops and existing test behaviour is unchanged.
 """
 from __future__ import annotations
 
@@ -31,11 +53,132 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Callable
 
 REPO = Path(__file__).resolve().parent.parent
+
+# ---------------------------------------------------------------------------
+# C-directive chain parsing and resolution (issue #270).
+#
+# `C N1 X = N2 Y` means: 1 X = (N2/N1) Y, i.e. amounts in Y are divided by
+# (N2/N1) to get amounts in X.  The map entry is `{Y: (X, N2/N1)}`.
+# After a fixpoint pass, every entry points directly at the chain root.
+# ---------------------------------------------------------------------------
+
+# Matches a ledger-cli `C` commodity-conversion directive:
+#   C 1.00 SILVER = 100 COPPER
+# Groups: (N1, X, N2, Y) — "1 X = (N2/N1) Y", so Y converts to X via ÷(N2/N1).
+_C_DIRECTIVE = re.compile(
+    r"^C\s+([0-9.,]+)\s+([A-Za-z0-9_]+)\s*=\s*([0-9.,]+)\s+([A-Za-z0-9_]+)\s*$"
+)
+
+# Maps: source commodity -> (canonical root commodity, total divisor).
+# `amount_in_source / total_divisor == amount_in_root`.
+ChainMap = dict[str, tuple[str, Decimal]]
+
+
+def parse_c_chain(fixture: Path) -> ChainMap:
+    """Parse `C` directives from *fixture* and resolve the transitive chain.
+
+    Returns a map ``{source: (root, total_divisor)}`` such that, for any
+    amount ``A`` in commodity ``source``, ``A / total_divisor`` gives the
+    equivalent amount in commodity ``root``.
+
+    Commodities that ARE already a chain root (i.e. not a source in any
+    directive) are not present as keys; looking up an absent commodity means
+    "no conversion needed — leave as-is".
+
+    The resolution algorithm mirrors
+    ``Context::resolve_commodity_conversion_chains`` in
+    ``crates/doppio/src/resolution.rs`` (issue #266).
+
+    Raises ``ValueError`` if a cycle is detected (hop count exceeds map
+    length).
+    """
+    raw_map: ChainMap = {}
+
+    text = fixture.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        m = _C_DIRECTIVE.match(line.strip())
+        if not m:
+            continue
+        n1_str, x, n2_str, y = m.group(1), m.group(2), m.group(3), m.group(4)
+        n1 = Decimal(n1_str.replace(",", ""))
+        n2 = Decimal(n2_str.replace(",", ""))
+        divisor = n2 / n1  # Y * (1/divisor) = X, so amount_in_Y / divisor = amount_in_X
+        # RHS commodity (Y) maps to LHS commodity (X) via the divisor.
+        raw_map[y] = (x, divisor)
+        # LHS commodity (X) self-loop sentinel: marks it as a chain root.
+        # Use setdefault so a more-specific entry from an earlier directive
+        # is not overwritten.
+        raw_map.setdefault(x, (x, Decimal(1)))
+
+    if not raw_map:
+        return {}
+
+    # Fixpoint pass: resolve every entry to its chain root, accumulating
+    # divisors multiplicatively.  Same algorithm as Rust's
+    # `resolve_commodity_conversion_chains`.
+    max_hops = len(raw_map)
+    resolved: ChainMap = {}
+    for start in list(raw_map):
+        current = start
+        total_divisor = Decimal(1)
+        hops = 0
+        while current in raw_map:
+            next_commodity, div = raw_map[current]
+            if next_commodity == current:
+                # Self-loop sentinel: this is the chain root.
+                break
+            total_divisor *= div
+            current = next_commodity
+            hops += 1
+            if hops > max_hops:
+                raise ValueError(
+                    f"Commodity conversion cycle detected starting from {start!r}"
+                )
+        resolved[start] = (current, total_divisor)
+
+    # Remove self-loop entries (root → root) — they are sentinels only;
+    # amounts already in the root commodity need no conversion.
+    return {
+        src: (root, div)
+        for src, (root, div) in resolved.items()
+        if src != root
+    }
+
+
+def _apply_chain(
+    tuples: set["Tuple3"], chain: ChainMap
+) -> set["Tuple3"]:
+    """Rebrand any tuple whose commodity is a non-root chain entry.
+
+    For each ``(account, commodity, amount)`` where ``commodity`` is a key
+    in *chain*, replace with ``(account, root, amount / divisor)``.
+    Tuples with no chain entry are returned unchanged.
+    """
+    out: set[Tuple3] = set()
+    for account, commodity, amount in tuples:
+        if commodity in chain:
+            root, divisor = chain[commodity]
+            out.add((account, root, amount / divisor))
+        else:
+            out.add((account, commodity, amount))
+    return out
+
+
+def _round_tuples(tuples: set["Tuple3"], scale: int) -> set["Tuple3"]:
+    """Round amounts in every tuple to *scale* decimal places.
+
+    Uses ``ROUND_HALF_UP`` to match ledger-cli's display rounding (e.g.
+    ``69.445`` rounds to ``69.45``, not ``69.44`` as Python's default
+    banker's rounding would give).
+    """
+    quantizer = Decimal(10) ** -scale
+    return {(a, c, v.quantize(quantizer, rounding=ROUND_HALF_UP)) for (a, c, v) in tuples}
+
 
 # ---------------------------------------------------------------------------
 # Canonical-tool balance extractors. Each returns a set of
@@ -870,6 +1013,9 @@ class Case:
     fixture: Path
     canonical: CanonicalFn
     canonical_args: dict | None = None  # for canonicals that need extra args
+    display_scale: int | None = None    # when set, round both sides to this many decimal
+                                        # places before comparison; also triggers C-directive
+                                        # chain normalisation on the canonical (ledger) side
 
 
 POSITIVE: list[Case] = [
@@ -897,6 +1043,12 @@ POSITIVE: list[Case] = [
     Case("beancount:starter",         REPO / "tests/parity/beancount-starter.beancount",         beancount_balances),
     Case("beancount:basic",           REPO / "tests/parity/beancount-basic.beancount",           beancount_balances),
     Case("beancount:fifo",            REPO / "tests/parity/beancount-fifo.beancount",            beancount_balances),
+    # ledger-wow.dat exercises C-directive commodity chains (COPPER→SILVER→GOLD).
+    # display_scale=2 triggers harness-side chain normalisation (rebranding
+    # ledger-cli's partial-chain output to the chain root) and rounding to a
+    # common 2-decimal precision before comparison (issue #270).
+    Case("ledger:wow",                REPO / "tests/parity/ledger-wow.dat",                      ledger_balances,
+         display_scale=2),
 ]
 
 NEGATIVE: list[Case] = [
@@ -948,6 +1100,18 @@ def run_positive(case: Case, dop_bin: Path) -> bool:
     # Phase 0: balance equality (the original parity check, #196).
     canonical = case.canonical(case.fixture)
     doppio = doppio_balances(case.fixture, dop_bin)
+
+    # C-directive chain normalisation (issue #270): when display_scale is set,
+    # parse C directives from the fixture, apply the fixpoint chain to the
+    # canonical (ledger-cli) output to rebrand partially-traversed commodities
+    # to the chain root, then round both sides to the specified precision.
+    if case.display_scale is not None:
+        chain = parse_c_chain(case.fixture)
+        if chain:
+            canonical = _apply_chain(canonical, chain)
+        canonical = _round_tuples(canonical, case.display_scale)
+        doppio = _round_tuples(doppio, case.display_scale)
+
     bal_diff = diff_sets(canonical, doppio)
 
     # Phase 1: per-transaction tags + metadata (#226). Skipped for ledger-cli
@@ -1043,8 +1207,121 @@ def run_negative(case: Case, dop_bin: Path) -> bool:
     return False
 
 
+def _test_chain_normalisation(failures: list[str]) -> None:
+    """Unit tests for parse_c_chain and _apply_chain (issue #270).
+
+    These are self-contained (no fixtures, no external tools); they mirror the
+    Rust tests in ``crates/doppio/src/resolution.rs`` for the same algorithm.
+    """
+
+    def check_chain(label: str, chain: ChainMap, src: str, expected_root: str, expected_div: Decimal) -> None:
+        if src not in chain:
+            failures.append(f"  chain/{label}: {src!r} not in chain map (keys: {list(chain)})")
+            return
+        root, div = chain[src]
+        if root != expected_root:
+            failures.append(f"  chain/{label}: {src!r} root={root!r}, expected {expected_root!r}")
+        if div != expected_div:
+            failures.append(f"  chain/{label}: {src!r} divisor={div}, expected {expected_div}")
+
+    # --- Test 1: empty fixture (no C directives) --------------------------
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".dat", delete=False) as f:
+        f.write("; no C directives\n2024/01/01 Test\n  Assets:Cash  100 USD\n  Equity:Open\n")
+        tmp_no_c = Path(f.name)
+    try:
+        chain_empty = parse_c_chain(tmp_no_c)
+        if chain_empty:
+            failures.append(f"  chain/no-C-directives: expected empty map, got {chain_empty}")
+    finally:
+        os.unlink(tmp_no_c)
+
+    # --- Test 2: linear chain COPPER → SILVER → GOLD ----------------------
+    # C 1 SILVER = 100 COPPER  =>  COPPER → SILVER via ÷100
+    # C 1 GOLD   = 100 SILVER  =>  SILVER → GOLD   via ÷100
+    # After fixpoint: COPPER → GOLD via ÷10000, SILVER → GOLD via ÷100
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".dat", delete=False) as f:
+        f.write("C 1.00 SILVER = 100 COPPER\nC 1.00 GOLD = 100 SILVER\n")
+        tmp_chain = Path(f.name)
+    try:
+        chain_linear = parse_c_chain(tmp_chain)
+        check_chain("linear/COPPER", chain_linear, "COPPER", "GOLD", Decimal("10000"))
+        check_chain("linear/SILVER", chain_linear, "SILVER", "GOLD", Decimal("100"))
+        if "GOLD" in chain_linear:
+            failures.append("  chain/linear: GOLD (root) should not be a key in chain map")
+    finally:
+        os.unlink(tmp_chain)
+
+    # --- Test 3: cycle detection ------------------------------------------
+    # C 1 X = 1 Y  =>  Y → X
+    # C 1 Y = 1 X  =>  X → Y  (cycle: X → Y → X → ...)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".dat", delete=False) as f:
+        f.write("C 1 X = 1 Y\nC 1 Y = 1 X\n")
+        tmp_cycle = Path(f.name)
+    try:
+        raised = False
+        try:
+            parse_c_chain(tmp_cycle)
+        except ValueError:
+            raised = True
+        if not raised:
+            failures.append("  chain/cycle: expected ValueError for cyclic C directives")
+    finally:
+        os.unlink(tmp_cycle)
+
+    # --- Test 4: _apply_chain rebrands partial-chain tuples ---------------
+    chain_test: ChainMap = {
+        "COPPER": ("GOLD", Decimal("10000")),
+        "SILVER": ("GOLD", Decimal("100")),
+    }
+    tuples_in = {
+        ("Expenses:Fees:Mail", "SILVER", Decimal("29.10")),
+        ("Assets:Tajer", "GOLD", Decimal("147.8220")),
+        ("Assets:Wallet", "USD", Decimal("50")),
+    }
+    rebranded = _apply_chain(tuples_in, chain_test)
+    expected_mail = ("Expenses:Fees:Mail", "GOLD", Decimal("29.10") / Decimal("100"))
+    if expected_mail not in rebranded:
+        failures.append(
+            f"  chain/_apply_chain: expected {expected_mail} in rebranded set, got {rebranded}"
+        )
+    # GOLD already at root — must pass through unchanged.
+    tajer = ("Assets:Tajer", "GOLD", Decimal("147.8220"))
+    if tajer not in rebranded:
+        failures.append(
+            f"  chain/_apply_chain: GOLD tuple should pass through unchanged, rebranded={rebranded}"
+        )
+    # USD has no chain entry — must pass through unchanged.
+    usd = ("Assets:Wallet", "USD", Decimal("50"))
+    if usd not in rebranded:
+        failures.append(
+            f"  chain/_apply_chain: USD tuple should pass through unchanged, rebranded={rebranded}"
+        )
+
+    # --- Test 5: _round_tuples collapses precision difference -------------
+    raw_a = {("Assets:Tajer", "GOLD", Decimal("147.8220"))}
+    raw_b = {("Assets:Tajer", "GOLD", Decimal("147.82"))}
+    rounded_a = _round_tuples(raw_a, 2)
+    rounded_b = _round_tuples(raw_b, 2)
+    if rounded_a != rounded_b:
+        failures.append(
+            f"  chain/_round_tuples: 147.8220 and 147.82 should be equal at scale=2; "
+            f"got {rounded_a} vs {rounded_b}"
+        )
+    # ROUND_HALF_UP: 69.445 should round to 69.45, not 69.44 (banker's rounding).
+    half_up_in = {("Expenses:Items", "GOLD", Decimal("69.445"))}
+    half_up_out = _round_tuples(half_up_in, 2)
+    expected_half_up = {("Expenses:Items", "GOLD", Decimal("69.45"))}
+    if half_up_out != expected_half_up:
+        failures.append(
+            f"  chain/_round_tuples: 69.445 should round to 69.45 (ROUND_HALF_UP); "
+            f"got {half_up_out}"
+        )
+
+
 def self_test() -> int:
-    """Negative-control self-test for the four comparators (#226 acceptance).
+    """Negative-control self-test for the four comparators (#226 acceptance)
+    and the C-directive chain normalisation helpers (issue #270).
 
     For each diff function (`diff_sets`, `diff_fingerprints`, `diff_prices`,
     `diff_pad_fingerprints`), assert:
@@ -1053,6 +1330,9 @@ def self_test() -> int:
       2. A pair with a single deliberate divergence (a tag dropped, a
          price changed, a pad date shifted, a balance moved) returns a
          non-None message that mentions the divergent item.
+
+    Also asserts the chain-normalisation helpers (`parse_c_chain`,
+    `_apply_chain`, `_round_tuples`) behave correctly on synthetic inputs.
 
     The aim is to prove the comparators actually catch divergences --
     closing the silent-no-op-CI risk that #226 was filed against, but
@@ -1150,12 +1430,15 @@ def self_test() -> int:
         diff_pad_fingerprints(pad_a, pad_date_shift),
     )
 
+    # --- C-directive chain normalisation (issue #270) --------------------
+    _test_chain_normalisation(failures)
+
     if failures:
         print("Self-test FAILED:", file=sys.stderr)
         for line in failures:
             print(line, file=sys.stderr)
         return 1
-    print("Self-test passed: 12/12 comparator assertions held.")
+    print("Self-test passed: 12/12 comparator assertions + 6/6 chain normalisation assertions held.")
     return 0
 
 
