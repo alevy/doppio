@@ -816,11 +816,17 @@ pub fn elaborate(
                     // Accumulates per-(item_commodity, lot_key) net units from explicit
                     // lot-bearing postings eligible for null-posting per-lot synthesis (#276).
                     //
+                    // Only populated in `LotValidationMode::Permissive` (ledger-cli / hledger).
+                    // Beancount's `Strict` mode rejects negative lot positions on accounts
+                    // without prior holdings; bean-example/starter/basic fixtures empirically
+                    // require the cash-residue path on cash auto-balance legs.
+                    //
                     // Eligibility criteria per posting (all must hold):
                     //   - Real or virtual-balanced (affects transaction balance).
                     //   - `{cost}` annotation present (lot_key.cost.is_some()).
                     //   - NO `@ price` annotation (ledger emits per-lot only for pure moves).
                     //   - Positive net units (items flowing INTO an account, not a sale).
+                    //   - `LotValidationMode::Permissive` (ledger-cli / hledger; not Beancount).
                     //
                     // Value: `(net_item_units, proto_lot)` — the proto_lot is cloned
                     // onto the synthesized inverse posting.
@@ -1378,8 +1384,18 @@ pub fn elaborate(
                             //   4. Positive net units (items flowing INTO accounts).
                             //      Sales (negative units) have their cost-basis cash in
                             //      `transaction_state`; the cash-residue path is correct there.
+                            //   5. `Permissive` lot-validation mode (ledger-cli / hledger).
+                            //      Empirically required for beancount: bean-example, bean-starter,
+                            //      and bean-basic fixtures contain transfer-shaped transactions
+                            //      where the auto-balanced leg is a cash account that doesn't
+                            //      hold the item commodity. Beancount's `Strict` mode rejects
+                            //      negative-lot positions on accounts without prior holdings
+                            //      (`PhantomLotReduction`), so the per-lot inverse path must be
+                            //      gated to ledger/hledger. Verified by removing the gate and
+                            //      observing CI parity failures on those fixtures.
                             if posting_kind != ast::PostingKind::VirtualUnbalanced
                                 && no_price_annotation
+                                && lot_validation_mode == resolution::LotValidationMode::Permissive
                                 && let Some(proto_lot_ref) = &proto_lot
                                 && let Some(lot_key) = lot_key_from_proto(Some(proto_lot_ref))
                                 && lot_key.cost.is_some()
