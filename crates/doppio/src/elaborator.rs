@@ -2196,12 +2196,10 @@ fn is_bare_number_expr(expr: &ast::ValueExpr) -> bool {
 /// carry IEEE-double noise (e.g. 28-digit prices like
 /// `$53.6599999999999999998612221219`) that inflates the apparent scale.
 ///
-/// This pre-pass matches ledger-cli's commodity display-precision tracking:
-/// ledger records the first/smallest precision it sees for each commodity
-/// symbol and uses that precision when rounding costs for the balance check.
-/// By collecting the minimum scale globally before elaboration begins,
-/// `at_price_cash` can round `qty * price` to the commodity's natural
-/// precision rather than the noisy product precision.
+/// The maximum scale across all direct postings is used. This preserves the
+/// highest declared precision for each commodity: `2 B` (scale 0) and
+/// `-0.71 B` (scale 2) in the same journal produce max scale 2 for `B`,
+/// meaning costs in `B` are rounded to 2 decimal places.
 fn collect_commodity_scales(hir: &resolution::HIR) -> BTreeMap<String, u32> {
     let mut scales: BTreeMap<String, u32> = BTreeMap::new();
     for entry in &hir.entries {
@@ -2216,28 +2214,29 @@ fn collect_commodity_scales(hir: &resolution::HIR) -> BTreeMap<String, u32> {
     scales
 }
 
-/// Walk a value expression and record the scale of every commodity-bearing
-/// amount leaf.
+/// Walk a value expression and record the maximum scale seen for each
+/// commodity-bearing amount leaf.
 ///
-/// Two syntactic forms produce commodity-bearing leaves:
+/// Common forms encountered:
 ///
-/// 1. `Amount { value, commodity: Some(c) }` — the commodity and numeric
-///    scale are co-located (e.g. `$-4.00` or `0.71 B` parsed by the
-///    ledger grammar when the number token itself carries the commodity).
+/// - `Amount { value, commodity: Some(c) }` — commodity and scale
+///   co-located (e.g. `$-4.00`, `1 A`, `0.71 B`).
+///   Both ledger and hledger produce this node for commodity amounts.
+///   A signed amount like `-0.71 B` in the hledger grammar is
+///   `Unary { Sub, Amount { 0.71, Some("B") } }` (the sign is consumed by
+///   the Pratt `prefix_op` and the `amount` rule captures `0.71 B` together).
 ///
-/// 2. `Typed { expr, commodity: c }` — the numeric sub-expression has no
-///    commodity of its own (e.g. `-0.71 B` in the hledger grammar: the sign
-///    is a prefix op, producing `Typed { Unary { Sub, Amount { 0.71, None } }, "B" }`).
-///    In this case we extract the scale from the innermost bare-number leaf
-///    and record it under the outer commodity `c`.
+/// - `Typed { expr, commodity: c }` — suffix-commodity arithmetic
+///   expressions (e.g. `(100 + 50) USD`). The `expr` is a bare-number tree;
+///   its scale is extracted via `bare_number_scale` and recorded under `c`.
 fn collect_scales_from_expr(expr: &ast::ValueExpr, scales: &mut BTreeMap<String, u32>) {
     match expr {
         ast::ValueExpr::Amount {
             value,
             commodity: Some(c),
         } => {
-            let entry = scales.entry(c.clone()).or_insert(u32::MAX);
-            *entry = (*entry).min(value.scale());
+            let entry = scales.entry(c.clone()).or_insert(0);
+            *entry = (*entry).max(value.scale());
         }
         ast::ValueExpr::Amount {
             commodity: None, ..
@@ -2252,8 +2251,8 @@ fn collect_scales_from_expr(expr: &ast::ValueExpr, scales: &mut BTreeMap<String,
         // Extract the leaf scale and record it under the outer commodity.
         ast::ValueExpr::Typed { expr, commodity } => {
             if let Some(scale) = bare_number_scale(expr) {
-                let entry = scales.entry(commodity.clone()).or_insert(u32::MAX);
-                *entry = (*entry).min(scale);
+                let entry = scales.entry(commodity.clone()).or_insert(0);
+                *entry = (*entry).max(scale);
             }
             // Also recurse in case the sub-expression itself contains commodity
             // leaves (unusual, but correct to handle).
@@ -7480,5 +7479,32 @@ C 0 X = 100 Y
             ),
             "genuinely unbalanced transaction must still be rejected"
         );
+    }
+
+    /// Regression test for hledger-ascii.journal parity fixture.
+    ///
+    /// In hledger grammar, a suffix-commodity amount like `-0.71 B` parses as
+    /// `Typed { Unary { Sub, Amount { 0.71, None } }, "B" }`.  The commodity
+    /// scale collector must recognise this form; otherwise `B` is absent from
+    /// the commodity-scales map and the canonical-cost rounding is skipped,
+    /// leaving a non-zero balance residue.
+    #[test]
+    fn test_intent_rounded_cost_hledger_typed_node_regression() {
+        let input = "\
+2000-01-01 transaction 1
+  1                                          1 A @ 0.71 B
+  1:2                                       -0.71 B
+";
+        use crate::{grammars::hledger::parse_hledger, resolution::HIR};
+        let ast = parse_hledger(input).expect("hledger parse failed");
+        let hir = HIR::try_from(ast).expect("resolution failed");
+        let result = crate::elaborate(hir, &crate::grammars::hledger::hledger_defaults());
+        assert!(
+            result.is_ok(),
+            "hledger suffix-commodity posting should balance: {:?}",
+            result.err()
+        );
+        let journal = result.unwrap();
+        assert_eq!(journal.transactions.len(), 1);
     }
 }
