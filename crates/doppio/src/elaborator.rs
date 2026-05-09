@@ -816,10 +816,6 @@ pub fn elaborate(
                     // Accumulates per-(item_commodity, lot_key) net units from explicit
                     // lot-bearing postings eligible for null-posting per-lot synthesis (#276).
                     //
-                    // Only populated in `LotValidationMode::Permissive` (ledger-cli / hledger).
-                    // In Beancount's `Strict` mode, `{cost}` drives cash balance rather than
-                    // lot identity on the null account, so the cash-residue path is used.
-                    //
                     // Eligibility criteria per posting (all must hold):
                     //   - Real or virtual-balanced (affects transaction balance).
                     //   - `{cost}` annotation present (lot_key.cost.is_some()).
@@ -1382,18 +1378,8 @@ pub fn elaborate(
                             //   4. Positive net units (items flowing INTO accounts).
                             //      Sales (negative units) have their cost-basis cash in
                             //      `transaction_state`; the cash-residue path is correct there.
-                            //   5. `Permissive` lot-validation mode (ledger-cli / hledger).
-                            //      Beancount's `Strict` mode treats `{cost}` as a cash-balance
-                            //      driver: the null posting always receives cost-basis cash
-                            //      rather than a per-lot item inverse. Applying per-lot synthesis
-                            //      in Strict mode would emit phantom HOOL (or other commodity)
-                            //      positions on cash accounts, violating the strict lot check
-                            //      and diverging from beancount's reference tool output.
-                            //      Permissive mode (ledger-cli / hledger) allows short positions
-                            //      on any account, so the per-lot inverse is always valid there.
                             if posting_kind != ast::PostingKind::VirtualUnbalanced
                                 && no_price_annotation
-                                && lot_validation_mode == resolution::LotValidationMode::Permissive
                                 && let Some(proto_lot_ref) = &proto_lot
                                 && let Some(lot_key) = lot_key_from_proto(Some(proto_lot_ref))
                                 && lot_key.cost.is_some()
