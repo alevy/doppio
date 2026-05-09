@@ -63,6 +63,36 @@ The `Frontend` trait pluralises the parser dispatch -- `LedgerFrontend`
 and `HledgerFrontend` are shipped; new formats (e.g. Beancount) can
 implement the trait without modifying the library.
 
+## Using doppio in tests
+
+When writing tests that consume `elaboration::Journal` directly, use the
+`doppio::testing` module to build fixtures without wrestling with proto3 quirks
+(`Option<Amount>`, epoch-days dates, `state: i32` enum casts). Enable it via
+the `testing` feature in your `dev-dependencies`:
+
+```toml
+[dev-dependencies]
+doppio = { version = "...", features = ["testing"] }
+```
+
+Then construct journals with the fluent builder:
+
+```rust
+use doppio::testing::{journal, txn, posting};
+use chrono::NaiveDate;
+
+let j = journal()
+    .with_txn(txn(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(), "Groceries")
+        .with_posting(posting("Expenses:Food").with_amount(50, "$"))
+        .with_posting(posting("Assets:Checking").with_amount(-50, "$")))
+    .build();
+assert_eq!(j.transactions.len(), 1);
+assert_eq!(j.transactions[0].postings.len(), 2);
+```
+
+The `testing` feature is intentionally excluded from default and production
+builds so it does not bloat binary consumers.
+
 ## Companion crates
 
 - **[`doppio-cli`](https://crates.io/crates/doppio-cli)** -- the `dop`
