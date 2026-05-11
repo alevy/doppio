@@ -73,6 +73,8 @@ dop balance my-journal.dop --pattern "^Expenses" --format json
 
 Prints account balances grouped by commodity. Flags: `--depth N` (truncate hierarchy), `--flat` (single-line output), `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--tag KEY` (transactions tagged with `KEY`), `--pattern REGEX` (filter accounts), `--format text|json|csv`.
 
+When stdout is a terminal, balance output is colorized: negative amounts appear in red and account names in blue, matching ledger-cli's color scheme. Pass `--color=never` to suppress color or `--color=always` to force it even when piped. The `NO_COLOR` environment variable is also honoured.
+
 ### `register` -- posting register
 
 ```

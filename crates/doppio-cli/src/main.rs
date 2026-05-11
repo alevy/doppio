@@ -1,18 +1,65 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::Read as _,
+    io::{Read as _, Write as _},
     path::PathBuf,
 };
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use regex::Regex;
 
 mod account_path;
+mod color;
+
+use color::ColorMode;
+
+/// Three-way color preference flag, matching the `ls`/`git`/`grep` convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ColorChoice {
+    /// Emit color when stdout is a TTY and `NO_COLOR` is unset (default).
+    Auto,
+    /// Always emit ANSI color codes, even when piped or redirected.
+    Always,
+    /// Never emit color codes.
+    Never,
+}
+
+impl ColorChoice {
+    /// Resolve to a concrete [`ColorMode`] by querying TTY state and environment.
+    ///
+    /// Delegates `auto` detection to `anstream`, which honours `NO_COLOR`,
+    /// `CLICOLOR_FORCE`, and `CLICOLOR` in addition to the raw TTY check.
+    fn resolve(self) -> ColorMode {
+        match self {
+            ColorChoice::Always => ColorMode::On,
+            ColorChoice::Never => ColorMode::Off,
+            ColorChoice::Auto => {
+                // anstream::AutoStream::auto queries the stream's TTY state plus
+                // NO_COLOR / CLICOLOR_FORCE / CLICOLOR / CI env vars.
+                // current_choice() returns AlwaysAnsi when ANSI output is active.
+                let choice = anstream::AutoStream::auto(std::io::stdout()).current_choice();
+                if choice == anstream::ColorChoice::AlwaysAnsi
+                    || choice == anstream::ColorChoice::Always
+                {
+                    ColorMode::On
+                } else {
+                    ColorMode::Off
+                }
+            }
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// Control color output: auto (default), always, or never.
+    ///
+    /// `auto` enables color when stdout is a TTY and NO_COLOR is unset.
+    /// Matches the convention of ls, git, grep, and ledger-cli.
+    #[arg(long, global = true, default_value = "auto", value_name = "WHEN")]
+    color: ColorChoice,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -382,6 +429,7 @@ fn maybe_convert_amount(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let color = cli.color.resolve();
 
     match cli.command {
         Commands::Compile {
@@ -892,6 +940,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match format {
                 OutputFormat::Text => {
+                    let stdout = std::io::stdout();
+                    let mut out = stdout.lock();
                     for (account, _direct_commodities) in balances.iter() {
                         // Indentation depth: number of `:` separators in the name.
                         let indent_depth = account_path::segment_count(account) - 1;
@@ -920,6 +970,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Box::new(rolled.iter().map(|(&c, &v)| (c, v)))
                         };
 
+                        let colored_label = color.style_account(label);
                         let mut commodities_iter = display_commodities;
                         if let Some((commodity, value)) = commodities_iter.next() {
                             let balance = display_amount(
@@ -927,7 +978,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 value,
                                 commodity_format(commodity, &journal.commodities),
                             );
-                            println!("{balance:>20}  {prefix}{label}");
+                            // Right-align within 20 display columns; ANSI codes are
+                            // applied outside the padding so column widths are correct.
+                            // Pass the decimal value for negativity detection because
+                            // commodity-prefix formats (e.g. "$ -2,000.00") don't start
+                            // with '-'.
+                            let colored_balance =
+                                color.render_amount(&balance, 20, value.is_sign_negative());
+                            writeln!(out, "{colored_balance}  {prefix}{colored_label}")?;
                         }
                         for (commodity, value) in commodities_iter {
                             let balance = display_amount(
@@ -935,7 +993,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 value,
                                 commodity_format(commodity, &journal.commodities),
                             );
-                            println!("{balance:>20}");
+                            let colored_balance =
+                                color.render_amount(&balance, 20, value.is_sign_negative());
+                            writeln!(out, "{colored_balance}")?;
                         }
                     }
                 }
