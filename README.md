@@ -71,7 +71,7 @@ dop balance my-journal.dop --depth 2 --begin 2024-01-01 --cleared
 dop balance my-journal.dop --pattern "^Expenses" --format json
 ```
 
-Prints account balances grouped by commodity. Flags: `--depth N` (truncate hierarchy), `--flat` (single-line output), `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--tag KEY` (transactions tagged with `KEY`), `--pattern REGEX` (filter accounts), `--format text|json|csv`.
+Prints account balances grouped by commodity, with a grand-total footer per commodity beneath a divider. By default, output is rendered as an indented tree where parent rows show the sum of every descendant; pass `--flat` to revert to the classic single-line-per-account form. Flags: `--depth N` (truncate hierarchy), `--flat`, `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--tag KEY` (transactions tagged with `KEY`), `--pattern REGEX` (filter accounts), `-X`/`--exchange COMMODITY` (convert balances to `COMMODITY` using `P` price directives), `--format text|json|csv`.
 
 When stdout is a terminal, balance output is colorized: negative amounts appear in red and account names in blue, matching ledger-cli's color scheme. Pass `--color=never` to suppress color or `--color=always` to force it even when piped. The `NO_COLOR` environment variable is also honoured.
 
