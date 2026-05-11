@@ -1250,7 +1250,7 @@ POSITIVE: list[Case] = [
     # harness reaches in to validate them.
     Case("beancount:sample", REPO / "crates/doppio/tests/fixtures/sample.beancount", beancount_balances),
     Case("hledger:sample",   REPO / "crates/doppio-cli/tests/fixtures/sample.hledger", hledger_balances),
-    Case("ledger:sample",    REPO / "web/fixtures/sample.ledger", ledger_balances),
+    Case("ledger:sample",    REPO / "web/dashboard/fixtures/sample.ledger", ledger_balances),
     # Upstream-sourced corpus under tests/parity/. Each fixture's
     # leading comment block records source URL + commit SHA + license
     # per the convention documented in tests/parity/README.md.

@@ -1,6 +1,6 @@
 version: v2
 modules:
-  - path: ../crates/doppio/proto
+  - path: ../../crates/doppio/proto
 lint:
   use:
     - STANDARD

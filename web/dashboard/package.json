@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "generate": "buf generate",
-    "fixtures": "cd .. && cargo run -q --bin dop -- compile web/fixtures/sample.ledger -o web/public/sample.dop"
+    "fixtures": "cd ../.. && cargo run -q --bin dop -- compile web/dashboard/fixtures/sample.ledger -o web/dashboard/public/sample.dop"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.2.0",

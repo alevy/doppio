@@ -247,7 +247,10 @@ fn snapshot_hledger_sample() {
 #[test]
 fn snapshot_ledger_sample() {
     let root = workspace_root();
-    assert_snapshot("ledger_sample", &root.join("web/fixtures/sample.ledger"));
+    assert_snapshot(
+        "ledger_sample",
+        &root.join("web/dashboard/fixtures/sample.ledger"),
+    );
 }
 
 #[test]

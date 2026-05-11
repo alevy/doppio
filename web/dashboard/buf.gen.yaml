@@ -6,4 +6,4 @@ plugins:
       - target=ts
       - import_extension=js
 inputs:
-  - directory: ../crates/doppio/proto
+  - directory: ../../crates/doppio/proto
