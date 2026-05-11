@@ -258,11 +258,14 @@ python3 scripts/parity_check.py --negative  # broken-fixture controls
 Requires `hledger`, `ledger`, and the `beancount` Python package on
 PATH (`pip install 'beancount==3.2.0'`).
 
-## Web demo
+## Web demos
 
-A small browser app under [`web/dashboard/`](./web/dashboard/) renders balance, register, and chart views over a `.dop` file using a JS-native protobuf decoder -- no Rust or WASM at runtime. It serves as the working validator of doppio's format-as-API claim: any non-Rust language can read `.dop` files via the published [`proto/doppio.proto`](./proto/doppio.proto) schema.
+Two browser apps live in this repo and are deployed to GitHub Pages from `main`:
 
-Live preview: <https://alevy.github.io/doppio/> (deployed automatically from `main`).
+- **Dashboard** ([`web/dashboard/`](./web/dashboard/), live at <https://alevy.github.io/doppio/dashboard/>) — renders balance, register, and chart views over a `.dop` file using a JS-native protobuf decoder. No Rust or WASM at runtime. Validates doppio's format-as-API claim: any non-Rust language can read `.dop` files via the published [`proto/doppio.proto`](./crates/doppio/proto/doppio.proto) schema.
+- **Compile** ([`web/compile/`](./web/compile/), live at <https://alevy.github.io/doppio/compile/>) — paste ledger / hledger / Beancount source and compile it to a `.dop` byte-stream in the browser via the [`doppio-wasm`](./crates/doppio-wasm/) shim. No server round-trip.
+
+A small landing page at <https://alevy.github.io/doppio/> links to both.
 
 ## Changelog
 
