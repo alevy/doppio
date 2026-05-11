@@ -288,6 +288,127 @@ fn balance_exchange_converts_eur_to_usd() {
     );
 }
 
+#[test]
+fn balance_exchange_missing_rate_leaves_amount_native() {
+    // No price directive for GBP→USD.  `dop balance -X USD` should keep the
+    // GBP posting in its native currency and emit a warning to stderr — it
+    // must NOT silently drop or zero the amount.
+    let content = "2024-01-15 London expense
+    Expenses:Travel  50 GBP
+    Assets:Checking
+";
+    let f = tmp_journal_file(content);
+    let bin = env!("CARGO_BIN_EXE_dop");
+    let result = std::process::Command::new(bin)
+        .args([
+            "balance",
+            f.path().to_str().unwrap(),
+            "--flat",
+            "--exchange",
+            "USD",
+        ])
+        .output()
+        .expect("failed to run dop");
+    // The command should succeed (exit 0) even when conversion is unavailable.
+    assert!(
+        result.status.success(),
+        "dop should exit successfully even when no FX path exists: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let out = String::from_utf8(result.stdout).expect("non-UTF-8 stdout");
+    // The native commodity GBP must appear — the amount is kept unconverted.
+    assert!(
+        out.contains("GBP"),
+        "unconvertible commodity GBP should remain in output: {out}"
+    );
+    assert!(
+        out.contains("50"),
+        "unconverted amount 50 should appear in output: {out}"
+    );
+    // USD must not appear — there was no conversion.
+    assert!(
+        !out.contains("USD"),
+        "target commodity USD should be absent when no FX path exists: {out}"
+    );
+    // A warning should have been emitted to stderr.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("GBP"),
+        "stderr warning should mention the unconverted commodity GBP: {stderr}"
+    );
+}
+
+#[test]
+fn balance_exchange_partial_conversion_mixed_total() {
+    // EUR has a USD price directive; GBP does not.
+    // After `-X USD`, the total should have both USD (from EUR) and GBP (residual).
+    let content = "P 2024-01-01 EUR USD 1.10
+
+2024-01-10 EUR expense
+    Expenses:Foreign  100 EUR
+    Assets:Checking
+
+2024-01-11 GBP expense
+    Expenses:UK  50 GBP
+    Assets:Checking
+";
+    let f = tmp_journal_file(content);
+    let bin = env!("CARGO_BIN_EXE_dop");
+    let result = std::process::Command::new(bin)
+        .args([
+            "balance",
+            f.path().to_str().unwrap(),
+            "--flat",
+            "--exchange",
+            "USD",
+        ])
+        .output()
+        .expect("failed to run dop");
+    assert!(
+        result.status.success(),
+        "dop should exit successfully with partial conversion: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let out = String::from_utf8(result.stdout).expect("non-UTF-8 stdout");
+    // EUR was converted → USD should appear (110 USD from 100 EUR × 1.10).
+    assert!(
+        out.contains("USD"),
+        "converted commodity USD should appear in output: {out}"
+    );
+    assert!(
+        out.contains("110"),
+        "converted amount 110 USD should appear in output: {out}"
+    );
+    // GBP had no path → it remains native in the output.
+    assert!(
+        out.contains("GBP"),
+        "unconverted commodity GBP should remain in output: {out}"
+    );
+    assert!(
+        out.contains("50"),
+        "unconverted amount 50 GBP should appear in output: {out}"
+    );
+    // The grand-total footer should show both commodities — USD for the
+    // converted EUR lines and GBP for the residual line.
+    let lines: Vec<&str> = out.lines().collect();
+    let sep_idx = lines.iter().position(|l| l.starts_with("----"));
+    assert!(
+        sep_idx.is_some(),
+        "grand-total separator line should be present: {out}"
+    );
+    // Lines after the separator are the grand total.
+    let footer: Vec<&str> = sep_idx.map(|i| lines[i + 1..].to_vec()).unwrap_or_default();
+    let footer_str = footer.join("\n");
+    assert!(
+        footer_str.contains("USD"),
+        "grand total should include USD for converted amounts: {footer_str}"
+    );
+    assert!(
+        footer_str.contains("GBP"),
+        "grand total should include GBP residual for unconverted amounts: {footer_str}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tree-mode balance rollup (refs #216)
 // ---------------------------------------------------------------------------

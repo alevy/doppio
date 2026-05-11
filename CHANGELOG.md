@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Grand-total footer for `dop balance`** (refs #216): After the last account
+  row, `dop balance` now emits a separator line of 20 dashes followed by one
+  line per commodity with the grand total, matching ledger-cli's `bal` footer.
+  Multi-commodity journals produce one total line per commodity. The footer is
+  suppressed when no rows are rendered (empty journal or fully filtered). Negative
+  totals are styled red when color is enabled, using the same `color::ColorMode`
+  helpers as regular rows. Tree mode accumulates top-level subtree totals to avoid
+  double-counting intermediate parent rows; flat mode sums all displayed rows.
+  When `-X`/`--exchange` is active, converted commodities aggregate into the
+  target and residual unconverted commodities appear on separate total lines.
+
 - **`--color` global flag for terminal-aware color output** (refs #216):
   `dop balance` now renders negative amounts in red and account names in blue
   when stdout is a TTY, matching ledger-cli's `bal --force-color` color scheme.
