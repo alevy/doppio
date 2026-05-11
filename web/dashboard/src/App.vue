@@ -110,7 +110,7 @@ function loadFile(file: File) {
             <a href="https://ledger-cli.org/" target="_blank" rel="noopener">Ledger</a>
             plain-text accounting. This page reads
             <a
-              href="https://github.com/alevy/doppio/blob/main/web/fixtures/sample.ledger"
+              href="https://github.com/alevy/doppio/blob/main/web/dashboard/fixtures/sample.ledger"
               target="_blank"
               rel="noopener"
             >a fictional sample journal</a>

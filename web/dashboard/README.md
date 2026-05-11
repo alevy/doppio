@@ -1,10 +1,10 @@
 # doppio-web
 
-Browser demo for the [doppio](../README.md) compiled-ledger format.
+Browser demo for the [doppio](../../README.md) compiled-ledger format.
 
 ## What this is
 
-A small Vue 3 + Vite + TypeScript app that loads `.dop` files (and, post-1.0, `.ledger` source files via a WASM shim) and renders balance, register, and chart views over them. The runtime path for `.dop` consumption is **JS-native** -- the app uses `@bufbuild/protobuf` to decode the wire format directly from the published [`proto/doppio.proto`](../proto/doppio.proto) schema, with no Rust or WASM dependency for the read-only path.
+A small Vue 3 + Vite + TypeScript app that loads `.dop` files (and, post-1.0, `.ledger` source files via a WASM shim) and renders balance, register, and chart views over them. The runtime path for `.dop` consumption is **JS-native** -- the app uses `@bufbuild/protobuf` to decode the wire format directly from the published [`proto/doppio.proto`](../../crates/doppio/proto/doppio.proto) schema, with no Rust or WASM dependency for the read-only path.
 
 This is the central architectural validator of doppio's format-as-API claim: any non-Rust language consumer can read `.dop` files via the published schema, no special tooling required.
 
@@ -13,7 +13,7 @@ This is the central architectural validator of doppio's format-as-API claim: any
 - **UI framework:** Vue 3 (Composition API) + Pinia
 - **Build tool:** Vite
 - **Language:** TypeScript (strict)
-- **Protobuf codegen:** [`@bufbuild/protoc-gen-es`](https://github.com/bufbuild/protobuf-es) -- generates idiomatic TS interfaces from `../proto/doppio.proto`
+- **Protobuf codegen:** [`@bufbuild/protoc-gen-es`](https://github.com/bufbuild/protobuf-es) -- generates idiomatic TS interfaces from `../../crates/doppio/proto/doppio.proto`
 - **Decimal:** [`decimal.js`](https://mikemcl.github.io/decimal.js/) (eager conversion at the loader boundary)
 - **Charts:** [Chart.js](https://www.chartjs.org/) via `vue-chartjs`
 - **Decompression:** [`pako`](https://github.com/nodeca/pako) (deflate, matching the `.dop` body codec)
@@ -25,7 +25,7 @@ npm install
 npm run dev
 ```
 
-The dev server hot-reloads on changes to `src/` and the schema at `../proto/doppio.proto` (regenerated at every `dev`/`build` start).
+The dev server hot-reloads on changes to `src/` and the schema at `../../crates/doppio/proto/doppio.proto` (regenerated at every `dev`/`build` start).
 
 ## Building for production
 
@@ -51,7 +51,7 @@ This shells out to the workspace's `dop` CLI (`cargo run -p doppio-cli`), so you
 ## Layout
 
 ```
-web/
+web/dashboard/
 ├── fixtures/sample.ledger        # hand-written demo journal (synthetic)
 ├── public/sample.dop             # compiled artifact, served at /sample.dop
 ├── src/

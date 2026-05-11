@@ -24,7 +24,7 @@ Beancount API for `.beancount`, `hledger` for `.hledger`, `ledger` for
   stay where their primary consumers do
   (`crates/doppio/tests/fixtures/sample.beancount`,
   `crates/doppio-cli/tests/fixtures/sample.hledger`,
-  `web/fixtures/sample.ledger`); broader corpus additions go here.
+  `web/dashboard/fixtures/sample.ledger`); broader corpus additions go here.
 
 ## Vendoring upstream fixtures
 

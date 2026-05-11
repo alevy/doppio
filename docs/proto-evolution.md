@@ -123,7 +123,7 @@ tag appears), which is by-construction expected and not a regression.
 2. Update `crates/doppio/src/elaborator.rs` (or wherever the proto type
    is constructed) to populate the new field.
 3. Update consumers -- Rust callers via the regenerated prost types,
-   JS callers via the regenerated Buf types in `web/src/lib/proto/`.
+   JS callers via the regenerated Buf types in `web/dashboard/src/lib/proto/`.
 4. Add a parity fixture or unit test that exercises the new field.
 5. CHANGELOG entry under the next version's "Added" section.
 
@@ -138,7 +138,7 @@ For a removal:
 ## Beyond doppio's own consumers
 
 Third parties writing readers in other languages (e.g. the JS-native
-`.dop` reader in `web/src/lib/dop/`) follow the same evolution rules
+`.dop` reader in `web/dashboard/src/lib/dop/`) follow the same evolution rules
 when they project the proto types into idiomatic shapes. The proto
 schema is the source of truth; language ports adapt to it, not the
 other way around.
