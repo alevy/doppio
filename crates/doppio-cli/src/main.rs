@@ -942,6 +942,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 OutputFormat::Text => {
                     let stdout = std::io::stdout();
                     let mut out = stdout.lock();
+                    let mut row_count: usize = 0;
                     for (account, _direct_commodities) in balances.iter() {
                         // Indentation depth: number of `:` separators in the name.
                         let indent_depth = account_path::segment_count(account) - 1;
@@ -986,6 +987,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let colored_balance =
                                 color.render_amount(&balance, 20, value.is_sign_negative());
                             writeln!(out, "{colored_balance}  {prefix}{colored_label}")?;
+                            row_count += 1;
                         }
                         for (commodity, value) in commodities_iter {
                             let balance = display_amount(
@@ -996,6 +998,91 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let colored_balance =
                                 color.render_amount(&balance, 20, value.is_sign_negative());
                             writeln!(out, "{colored_balance}")?;
+                        }
+                    }
+
+                    // Grand-total footer: separator + per-commodity totals.
+                    // Suppress when no rows were rendered (empty journal or
+                    // filtered to nothing).
+                    if row_count > 0 {
+                        // Grand total is the sum of all direct (leaf) balances —
+                        // the same values that were accumulated into `balances`
+                        // before the tree-rollup step.  This avoids double-
+                        // counting intermediate parent rows that were
+                        // materialised for display only.
+                        let mut grand_total: BTreeMap<String, rust_decimal::Decimal> =
+                            BTreeMap::new();
+                        for (_account, direct_commodities) in balances.iter() {
+                            // In tree mode only root-level accounts (no parent
+                            // present in the map) contribute, so we skip any
+                            // account whose parent IS present — otherwise
+                            // every ancestor-and-descendant pair would be
+                            // double-counted.  In flat mode every row is a
+                            // leaf anyway, so the same logic is correct.
+                            let has_parent_in_map = {
+                                let mut pos = 0;
+                                let mut found = false;
+                                while let Some(colon_off) = _account[pos..].find(':') {
+                                    let prefix_end = pos + colon_off;
+                                    let parent = &_account[..prefix_end];
+                                    if balances.contains_key(parent) {
+                                        found = true;
+                                        break;
+                                    }
+                                    pos = prefix_end + 1;
+                                }
+                                found
+                            };
+                            if flat || !has_parent_in_map {
+                                // Flat mode: sum the direct balance.
+                                // Tree mode root: sum the direct balance of
+                                // each leaf account (roots have no ancestor).
+                                // We'll accumulate all leaf postings by
+                                // traversing the subtree.
+                                if flat {
+                                    for (commodity, amount) in direct_commodities {
+                                        *grand_total.entry(commodity.clone()).or_default() +=
+                                            amount;
+                                    }
+                                } else {
+                                    // In tree mode, sum all direct balances
+                                    // from every account in the subtree rooted
+                                    // at this top-level account.
+                                    for (acct, commodities) in balances.iter() {
+                                        if account_path::is_subtree(_account, acct) {
+                                            for (commodity, amount) in commodities {
+                                                *grand_total
+                                                    .entry(commodity.clone())
+                                                    .or_default() += amount;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Separator: 20 dashes, matching the amount column width.
+                        writeln!(out, "{}", "-".repeat(20))?;
+                        let mut total_iter = grand_total.iter();
+                        if let Some((commodity, value)) = total_iter.next() {
+                            let total_str = display_amount(
+                                commodity,
+                                *value,
+                                commodity_format(commodity, &journal.commodities),
+                            );
+                            let colored_total =
+                                color.render_amount(&total_str, 20, value.is_sign_negative());
+                            writeln!(out, "{colored_total}")?;
+                        }
+                        for (commodity, value) in total_iter {
+                            let total_str = display_amount(
+                                commodity,
+                                *value,
+                                commodity_format(commodity, &journal.commodities),
+                            );
+                            let colored_total =
+                                color.render_amount(&total_str, 20, value.is_sign_negative());
+                            writeln!(out, "{colored_total}")?;
                         }
                     }
                 }
