@@ -58,8 +58,9 @@ commands.
   reference, library API, supported feature matrix.
 - [`docs/SUPPORTED_FEATURES.md`](https://github.com/alevy/doppio/blob/main/docs/SUPPORTED_FEATURES.md) --
   what ledger-cli / hledger features are implemented.
-- [Web demo](https://alevy.github.io/doppio/) -- a browser dashboard
-  that reads a `.dop` file via a JS-native protobuf decoder.
+- [Web demos](https://alevy.github.io/doppio/) -- a dashboard that
+  reads a `.dop` file via a JS-native protobuf decoder, and a compile
+  page that runs the doppio pipeline in the browser via wasm.
 
 ## License
 
