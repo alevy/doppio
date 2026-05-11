@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-05-11
+
 ### Added
 
 - **Grand-total footer for `dop balance`** (refs #216): After the last account
