@@ -15,6 +15,8 @@
 //! bind tighter than `+` and `-`. The grammar itself treats the token
 //! sequence as flat -- precedence is applied as a post-processing step.
 
+pub mod writer;
+
 use crate::ast::*;
 use pest::Parser as _;
 use pest::iterators::{Pair, Pairs};
@@ -332,6 +334,14 @@ impl crate::frontend::Frontend for LedgerFrontend {
         }
         .parse(input)?;
         Ok(ast_journal.try_into()?)
+    }
+
+    fn write_journal(
+        &self,
+        hir: &crate::resolution::HIR,
+        w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        writer::write(hir, w)
     }
 }
 
