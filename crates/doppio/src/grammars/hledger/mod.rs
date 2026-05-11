@@ -41,6 +41,8 @@
 //!   synthesizes a multi-commodity posting that brings each
 //!   currently-held commodity to `X`.
 
+pub mod writer;
+
 use crate::ast::*;
 use pest::Parser as _;
 use pest::iterators::Pair;
@@ -825,6 +827,14 @@ impl crate::frontend::Frontend for HledgerFrontend {
         .parse(input)?;
         let hir: crate::resolution::HIR = ast_journal.try_into()?;
         Ok(hir)
+    }
+
+    fn write_journal(
+        &self,
+        hir: &crate::resolution::HIR,
+        w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        writer::write(hir, w)
     }
 }
 

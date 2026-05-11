@@ -721,7 +721,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut file = String::new();
             File::open(&source)?.read_to_string(&mut file)?;
             let hir = frontend.parse(&file, base_path, &doppio::file_opener)?;
-            doppio::write_ledger(hir.transactions(), &mut std::io::stdout())?;
+            frontend.write_journal(&hir, &mut std::io::stdout())?;
         }
         Commands::Accounts { source, pattern } => {
             let journal = load_proto_journal(&source)?;

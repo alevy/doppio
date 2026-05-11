@@ -15,6 +15,28 @@
   Existing snapshot tests are unaffected because they capture stdout via a pipe
   (non-TTY), so `auto` yields plain ASCII. Added `anstream` and `anstyle` as
   workspace dependencies.
+- **Per-frontend journal writers** (`#206`). The `Frontend` trait gains a
+  `write_journal(&self, hir: &HIR, writer: &mut dyn io::Write) -> io::Result<()>`
+  method. Each of the three frontends implements it:
+  - `LedgerFrontend::write_journal` — ledger-cli source text (transactions,
+    price directives, balance assertions; pad directives emitted as
+    `; [beancount] pad …` comments).
+  - `HledgerFrontend::write_journal` — hledger source text (same data model;
+    the hledger-specific `==*` balance-assignment form is preserved verbatim).
+  - `BeancountFrontend::write_journal` — Beancount source text (double-quoted
+    descriptions, `#tag` header syntax, `number COMMODITY` amount form,
+    `balance`/`pad`/`price` directives in Beancount syntax).
+- **Free function `write_journal`** — top-level convenience wrapper around
+  `Frontend::write_journal` for callers using `Box<dyn Frontend>`.
+- **Cross-frontend transcoding with loss markers.** Format-specific constructs
+  that have no equivalent in the target format are emitted as
+  `; [<source-format>] …` comment lines (e.g. a Beancount `pad` directive
+  written through `LedgerFrontend` becomes
+  `; [beancount] pad 2024-01-01 Assets:Bank Equity:Opening`).
+- **`dop print`** now dispatches through `Frontend::write_journal` and therefore
+  emits output in the source file's own format (ledger input → ledger output,
+  hledger input → hledger output, etc.) rather than always emitting ledger-cli
+  syntax.
 
 ### Changed
 
@@ -32,6 +54,13 @@
   `truncate_account` calls in the balance-rendering path are now centralised in
   `crates/doppio-cli/src/account_path.rs` (`truncate`, `segment_count`,
   `last_segment`, `is_subtree`, `subtree_balance`). No behaviour change.
+
+### Deprecated
+
+- `doppio::write_ledger` is deprecated since 2.3.0. Use
+  `LedgerFrontend.write_journal(hir, writer)` instead. `write_ledger` only
+  handles a flat `IntoIterator<Item = resolution::Transaction>` (no prices or
+  assertions) and will be removed in v3.0.
 
 ## [2.2.0] - 2026-05-09
 
