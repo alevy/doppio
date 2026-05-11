@@ -38,31 +38,50 @@
 //!
 //! - [`frontend`] -- the [`Frontend`] trait for pluggable file-format support.
 //! - [`grammars`] -- grammar implementations ([`grammars::ledger`] for
-//!   ledger-cli, [`grammars::hledger`] for hledger).
+//!   ledger-cli, [`grammars::hledger`] for hledger, [`grammars::beancount`]
+//!   for Beancount).
 //! - [`resolution`] -- alias resolution, date normalisation, metadata
 //!   extraction.
 //! - [`elaboration`] -- prost-generated Protocol Buffers types
 //!   (`Journal`, `Transaction`, `Posting`, `Amount`, `Decimal`); this is the
 //!   canonical read-side public surface and the wire shape of `.dop` bodies.
 //!
-//! # Serialising transactions as Ledger text
+//! # Serialising journals as source text
 //!
-//! Use [`write_ledger`] to serialise a sequence of [`resolution::Transaction`]
-//! values back to canonical Ledger source text:
+//! Use [`Frontend::write_journal`] to serialise a resolved [`resolution::HIR`]
+//! back to source text in the frontend's native format:
 //!
 //! ```rust
-//! # use doppio::resolution::{Transaction, Posting};
-//! # use chrono::NaiveDate;
-//! let txns = vec![
-//!     Transaction::new(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(), "Groceries")
-//!         .with_posting(Posting::new("Expenses:Food").with_amount((
-//!             rust_decimal::Decimal::from(50u32), "$",
-//!         )))
-//!         .with_posting(Posting::new("Assets:Checking")),
-//! ];
+//! use doppio::frontend::Frontend as _;
+//! use doppio::LedgerFrontend;
+//! use std::path::Path;
+//!
+//! let hir = LedgerFrontend
+//!     .parse(
+//!         "2024-01-15 Groceries\n    Expenses:Food  $50\n    Assets:Checking\n",
+//!         Path::new(""),
+//!         &|_| Ok(String::new()),
+//!     )
+//!     .unwrap();
 //! let mut out = Vec::new();
-//! doppio::write_ledger(txns, &mut out).unwrap();
+//! LedgerFrontend.write_journal(&hir, &mut out).unwrap();
+//! let text = String::from_utf8(out).unwrap();
+//! assert!(text.contains("Groceries"));
 //! ```
+//!
+//! The same works with [`HledgerFrontend`] and [`BeancountFrontend`]; each
+//! emits the resolved journal in its own native syntax. Cross-frontend
+//! transcoding (parse one format, write another) works on a best-effort basis:
+//! format-specific constructs that have no equivalent in the target format are
+//! emitted as `; [<source-format>] ...` comment lines so they remain visible.
+//!
+//! ## Deprecated: `write_ledger`
+//!
+//! The older [`write_ledger`] API accepts an iterator of
+//! [`resolution::Transaction`] values and writes ledger-cli text. It is
+//! deprecated in favour of `LedgerFrontend.write_journal(hir, writer)`, which
+//! also handles historical prices and balance assertions. `write_ledger` will
+//! be removed in v3.0.
 
 pub mod ast;
 
@@ -306,10 +325,17 @@ pub fn read_dop<R: std::io::Read>(
 ///         .with_posting(Posting::new("Assets:Checking")),
 /// ];
 /// let mut out = Vec::new();
+/// #[allow(deprecated)]
 /// doppio::write_ledger(txns, &mut out).unwrap();
 /// let text = String::from_utf8(out).unwrap();
 /// assert!(text.starts_with("2024-01-15 Groceries"));
 /// ```
+#[deprecated(
+    since = "2.3.0",
+    note = "use `LedgerFrontend.write_journal(hir, writer)` instead; \
+            `write_ledger` only handles transactions (no prices or assertions) \
+            and will be removed in v3.0"
+)]
 pub fn write_ledger<W>(
     entries: impl IntoIterator<Item = resolution::Transaction>,
     writer: &mut W,
@@ -326,6 +352,47 @@ where
         write!(writer, "{txn}")?;
     }
     Ok(())
+}
+
+/// Convenience wrapper: serialise a resolved [`resolution::HIR`] to `writer`
+/// using the given frontend's native syntax.
+///
+/// This is equivalent to calling `frontend.write_journal(hir, writer)` directly.
+/// It exists as a top-level free function so callers working with a
+/// `Box<dyn Frontend>` don't need to import the trait.
+///
+/// # Errors
+///
+/// Propagates any [`std::io::Error`] from `writer`.
+///
+/// # Example
+///
+/// ```rust
+/// use doppio::frontend::Frontend as _;
+/// use doppio::LedgerFrontend;
+/// use std::path::Path;
+///
+/// let hir = LedgerFrontend
+///     .parse(
+///         "2024-01-15 Groceries\n    Expenses:Food  $50\n    Assets:Checking\n",
+///         Path::new(""),
+///         &|_| Ok(String::new()),
+///     )
+///     .unwrap();
+/// let mut out = Vec::new();
+/// doppio::write_journal(&LedgerFrontend, &hir, &mut out).unwrap();
+/// let text = String::from_utf8(out).unwrap();
+/// assert!(text.contains("Groceries"));
+/// ```
+pub fn write_journal<F>(
+    frontend: &F,
+    hir: &resolution::HIR,
+    writer: &mut dyn std::io::Write,
+) -> std::io::Result<()>
+where
+    F: Frontend,
+{
+    frontend.write_journal(hir, writer)
 }
 
 /// Load and concatenate all files matching a glob pattern.
@@ -610,6 +677,7 @@ pub(crate) fn dop_read_header<R: std::io::Read>(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod write_ledger_tests {
     use chrono::NaiveDate;
     use rust_decimal::Decimal;

@@ -66,6 +66,8 @@
 //! to the transaction's metadata map (where most-recent-pushed wins
 //! per key).
 
+pub mod writer;
+
 use crate::ast::*;
 use pest::Parser as _;
 use pest::iterators::{Pair, Pairs};
@@ -966,6 +968,14 @@ impl crate::frontend::Frontend for BeancountFrontend {
             }
         }
         Ok(hir)
+    }
+
+    fn write_journal(
+        &self,
+        hir: &crate::resolution::HIR,
+        w: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        writer::write(hir, w)
     }
 }
 
