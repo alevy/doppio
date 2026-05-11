@@ -118,7 +118,7 @@ Status legend:
 | Subcommand / flag | Status | Notes |
 |---|---|---|
 | `dop compile -o OUT SRC` | + | Writes a `.dop` v2 binary |
-| `dop balance` | + | Tree output by default; `--flat` for flat |
+| `dop balance` | + | Tree output by default; rolls up subtotals to parent rows (matching ledger-cli `bal`). `--flat` for flat single-line-per-account output |
 | `dop balance --depth N` | + | |
 | `dop balance --begin DATE` / `--end DATE` | + | |
 | `dop balance --cleared` | + | |

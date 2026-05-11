@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`dop balance` tree mode now rolls up subtotals to parent rows** (refs #216):
+  Previously, tree mode was "indented-flat" — each row printed only the direct
+  balance of that account, leaving parent rows blank when they had no direct
+  postings. Tree mode now matches ledger-cli's `bal` behaviour: each parent row
+  shows the sum of its own direct postings plus all descendant postings. Leaf
+  rows continue to show only their own direct balance. The `--flat` flag is
+  unchanged. Intermediate parent accounts that have no direct postings are
+  materialised as tree rows so the hierarchy is fully visible.
+
+- **Colon-segment handling extracted to `account_path` module**: the ad-hoc
+  inline `chars().filter(|c| c == ':').count()`, `rsplit_once(':')`, and
+  `truncate_account` calls in the balance-rendering path are now centralised in
+  `crates/doppio-cli/src/account_path.rs` (`truncate`, `segment_count`,
+  `last_segment`, `is_subtree`, `subtree_balance`). No behaviour change.
+
 ## [2.2.0] - 2026-05-09
 
 This release closes the standard.dat parity loop: ledger-cli's 5,619-line

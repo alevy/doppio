@@ -8,6 +8,8 @@ use std::{
 use clap::{Parser, Subcommand};
 use regex::Regex;
 
+mod account_path;
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -237,36 +239,6 @@ fn load_proto_journal_with_tolerance(
                 doppio::resolution::ToleranceMode::FractionOfSmallestPrecision(fraction);
         }
         Ok(doppio::elaborate(hir, &config)?)
-    }
-}
-
-/// Truncate an account name to at most `depth` colon-separated components.
-///
-/// Returns a subslice of `account` ending at the position of the `depth`-th
-/// colon, or the full string if it has fewer than `depth` components.
-///
-/// # Examples
-///
-/// ```
-/// assert_eq!(truncate_account("Expenses:Food:Restaurants", 2), "Expenses:Food");
-/// assert_eq!(truncate_account("Assets:Checking", 1), "Assets");
-/// assert_eq!(truncate_account("Assets", 1), "Assets");
-/// ```
-fn truncate_account(account: &str, depth: usize) -> &str {
-    let mut colon_pos = None;
-    let mut count = 0;
-    for (i, c) in account.char_indices() {
-        if c == ':' {
-            count += 1;
-            if count == depth {
-                colon_pos = Some(i);
-                break;
-            }
-        }
-    }
-    match colon_pos {
-        Some(pos) => &account[..pos],
-        None => account,
     }
 }
 
@@ -877,7 +849,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                     let account = match depth {
-                        Some(d) => truncate_account(&posting.account, d).to_owned(),
+                        Some(d) => account_path::truncate(&posting.account, d).to_owned(),
                         None => posting.account.clone(),
                     };
                     if let Some(amount) = &posting.amount {
@@ -900,27 +872,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            // In tree mode, materialise synthetic parent rows for every
+            // intermediate account path implied by the leaf accounts.  This
+            // ensures that e.g. `Assets:Bank` appears as a tree row with its
+            // rolled-up subtotal even when it carries no direct postings.
+            if !flat {
+                let leaf_accounts: Vec<String> = balances.keys().cloned().collect();
+                for acct in &leaf_accounts {
+                    // Walk every prefix of the path (all but the full string).
+                    let mut pos = 0;
+                    while let Some(colon_off) = acct[pos..].find(':') {
+                        let prefix_end = pos + colon_off;
+                        let parent = &acct[..prefix_end];
+                        balances.entry(parent.to_owned()).or_default();
+                        pos = prefix_end + 1;
+                    }
+                }
+            }
+
             match format {
                 OutputFormat::Text => {
-                    for (account, commodities) in balances.iter() {
-                        let indent_depth = account.chars().filter(|&c| c == ':').count();
+                    for (account, _direct_commodities) in balances.iter() {
+                        // Indentation depth: number of `:` separators in the name.
+                        let indent_depth = account_path::segment_count(account) - 1;
+
                         let label: &str = if flat || indent_depth == 0 {
                             account.as_str()
                         } else {
-                            // Show only the last component in tree mode.
-                            account
-                                .rsplit_once(':')
-                                .map(|(_, last)| last)
-                                .unwrap_or(account.as_str())
+                            // In tree mode show only the last segment; the
+                            // hierarchy is conveyed by indentation.
+                            account_path::last_segment(account)
                         };
                         let indent = if flat { 0 } else { indent_depth * 2 };
                         let prefix = " ".repeat(indent);
 
-                        let mut commodities_iter = commodities.iter();
+                        // In tree mode, display the rolled-up subtree balance so
+                        // that parent rows with no direct postings show the sum of
+                        // all their descendants (matching ledger-cli's `bal`).
+                        // In flat mode, use only the direct balance for this account.
+                        let rolled: std::collections::BTreeMap<&str, rust_decimal::Decimal>;
+                        let display_commodities: Box<
+                            dyn Iterator<Item = (&str, rust_decimal::Decimal)>,
+                        > = if flat {
+                            Box::new(_direct_commodities.iter().map(|(c, v)| (c.as_str(), *v)))
+                        } else {
+                            rolled = account_path::subtree_balance(&balances, account);
+                            Box::new(rolled.iter().map(|(&c, &v)| (c, v)))
+                        };
+
+                        let mut commodities_iter = display_commodities;
                         if let Some((commodity, value)) = commodities_iter.next() {
                             let balance = display_amount(
                                 commodity,
-                                *value,
+                                value,
                                 commodity_format(commodity, &journal.commodities),
                             );
                             println!("{balance:>20}  {prefix}{label}");
@@ -928,7 +932,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         for (commodity, value) in commodities_iter {
                             let balance = display_amount(
                                 commodity,
-                                *value,
+                                value,
                                 commodity_format(commodity, &journal.commodities),
                             );
                             println!("{balance:>20}");
