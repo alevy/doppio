@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>doppio · compile</title>
+    <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>%E2%98%95</text></svg>" />
+    <style>
+      :root {
+        --fg: #111;
+        --muted: #666;
+        --border: #e5e5e5;
+        --card: #fff;
+        --bg: #fafafa;
+        --accent: #7c3aed; /* purple — distinct from dashboard's blue */
+        --accent-soft: #f5f3ff;
+        --accent-border: #ddd6fe;
+        --accent-hover: #ede9fe;
+        --accent-text: #5b21b6;
+        --error: #991b1b;
+        --error-bg: #fef2f2;
+        --error-border: #fecaca;
+        --ok: #166534;
+        --ok-bg: #f0fdf4;
+        --ok-border: #bbf7d0;
+        --note: #92400e;
+        --note-bg: #fffbeb;
+        --note-border: #fde68a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        line-height: 1.45;
+      }
+
+      a {
+        color: var(--accent-text);
+      }
+
+      code,
+      pre,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+          monospace;
+      }
+
+      .app-root {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+        position: relative;
+      }
+
+      /* ── Drag overlay ──────────────────────────────────────────────────── */
+
+      .drop-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        background: rgba(124, 58, 237, 0.12);
+        border: 3px dashed var(--accent);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+      }
+
+      .drop-overlay-inner {
+        background: #fff;
+        border: 2px solid var(--accent);
+        border-radius: 0.75rem;
+        padding: 1.25rem 2.5rem;
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: var(--accent-text);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+      }
+
+      /* ── Hero ──────────────────────────────────────────────────────────── */
+
+      .hero {
+        padding: 2rem 1.5rem 1.25rem;
+        border-bottom: 1px solid var(--border);
+        background: var(--card);
+      }
+
+      .hero-inner {
+        max-width: 64rem;
+        margin: 0 auto;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 1rem;
+      }
+
+      .hero-titles {
+        flex: 1;
+        min-width: 18rem;
+      }
+
+      .hero h1 {
+        margin: 0 0 0.4rem;
+        font-size: 2.2rem;
+        letter-spacing: -0.02em;
+      }
+
+      .hero h1 .subtitle {
+        color: var(--accent-text);
+        font-size: 1.4rem;
+        font-weight: 500;
+        letter-spacing: 0;
+      }
+
+      .tagline {
+        margin: 0;
+        max-width: 42rem;
+        color: var(--muted);
+      }
+
+      .hero-controls {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 0.5rem;
+      }
+
+      .file-controls {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+      }
+
+      .source-label {
+        font-size: 0.78rem;
+        color: var(--muted);
+        max-width: 14rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ── Buttons ───────────────────────────────────────────────────────── */
+
+      .btn {
+        padding: 0.4rem 0.85rem;
+        font-size: 0.85rem;
+        font-weight: 500;
+        border-radius: 0.375rem;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background 0.15s, border-color 0.15s, color 0.15s;
+        font-family: inherit;
+      }
+
+      .btn-secondary {
+        color: var(--accent-text);
+        background: var(--accent-soft);
+        border: 1px solid var(--accent-border);
+      }
+
+      .btn-secondary:hover {
+        background: var(--accent-hover);
+      }
+
+      .btn-primary {
+        color: #fff;
+        background: var(--accent);
+        border: 1px solid var(--accent);
+        font-size: 0.95rem;
+        padding: 0.5rem 1.1rem;
+      }
+
+      .btn-primary:hover {
+        background: var(--accent-text);
+      }
+
+      .btn-primary:disabled {
+        background: #c4b5fd;
+        border-color: #c4b5fd;
+        cursor: not-allowed;
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      /* ── Main ──────────────────────────────────────────────────────────── */
+
+      .content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        max-width: 64rem;
+        width: 100%;
+        margin: 0 auto;
+        padding: 1.25rem 1.5rem;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        padding: 1rem 1.25rem;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+      }
+
+      .editor-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+      }
+
+      .editor-toolbar label {
+        font-size: 0.85rem;
+        color: var(--muted);
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .editor-toolbar select {
+        font-family: inherit;
+        font-size: 0.85rem;
+        padding: 0.3rem 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 0.375rem;
+        background: #fff;
+      }
+
+      .toolbar-spacer {
+        flex: 1;
+      }
+
+      textarea.source {
+        width: 100%;
+        min-height: 22rem;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+          monospace;
+        font-size: 0.85rem;
+        line-height: 1.5;
+        padding: 0.75rem 0.85rem;
+        border: 1px solid var(--border);
+        border-radius: 0.375rem;
+        resize: vertical;
+        background: #fff;
+        color: var(--fg);
+        tab-size: 4;
+      }
+
+      textarea.source:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+        border-color: var(--accent);
+      }
+
+      /* ── Output / error / notice panels ─────────────────────────────────── */
+
+      .panel-success {
+        background: var(--ok-bg);
+        border-color: var(--ok-border);
+        color: var(--ok);
+      }
+
+      .panel-success h2 {
+        margin: 0 0 0.5rem;
+        font-size: 1rem;
+      }
+
+      .panel-error {
+        background: var(--error-bg);
+        border-color: var(--error-border);
+        color: var(--error);
+      }
+
+      .panel-error h2 {
+        margin: 0 0 0.4rem;
+        font-size: 1rem;
+      }
+
+      .panel-error pre {
+        margin: 0.4rem 0 0;
+        white-space: pre-wrap;
+        font-size: 0.85rem;
+        color: var(--error);
+      }
+
+      .panel-notice {
+        background: var(--note-bg);
+        border-color: var(--note-border);
+        color: var(--note);
+        font-size: 0.85rem;
+      }
+
+      .output-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem;
+        margin-top: 0.5rem;
+      }
+
+      .output-stats {
+        font-size: 0.85rem;
+        color: var(--ok);
+      }
+
+      .output-stats .mono {
+        background: rgba(22, 101, 52, 0.08);
+        padding: 0.05rem 0.35rem;
+        border-radius: 0.25rem;
+      }
+
+      .roundtrip-note {
+        margin-top: 0.5rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
+      .loading-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      /* ── Footer ─────────────────────────────────────────────────────────── */
+
+      .footer {
+        border-top: 1px solid var(--border);
+        padding: 1rem 1.5rem;
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.9rem;
+        background: var(--card);
+      }
+
+      .footer code {
+        background: rgba(0, 0, 0, 0.05);
+        padding: 0.1rem 0.3rem;
+        border-radius: 0.25rem;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "vue": "https://unpkg.com/vue@3.5.13/dist/vue.esm-browser.prod.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <noscript>
+        <p style="padding: 2rem">
+          This demo needs JavaScript and WebAssembly. Please enable both.
+        </p>
+      </noscript>
+      <p style="padding: 2rem; color: #666">Loading doppio compiler…</p>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

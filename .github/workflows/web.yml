@@ -5,12 +5,18 @@ on:
     branches: [main]
     paths:
       - "web/dashboard/**"
+      - "web/compile/**"
       - "crates/doppio/proto/**"
+      - "crates/doppio-wasm/**"
+      - "crates/doppio/**"
       - ".github/workflows/web.yml"
   pull_request:
     paths:
       - "web/dashboard/**"
+      - "web/compile/**"
       - "crates/doppio/proto/**"
+      - "crates/doppio-wasm/**"
+      - "crates/doppio/**"
       - ".github/workflows/web.yml"
 
 # Allow only one concurrent deployment, cancelling in-progress runs.
@@ -19,8 +25,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build static site
+  build-dashboard:
+    name: Build dashboard (web/dashboard)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,10 +52,51 @@ jobs:
         with:
           path: web/dashboard/dist
 
+  build-compile:
+    name: Build compile demo (web/compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct cache from the workspace test job — different target.
+          key: wasm-bindgen
+      # Pin to the exact wasm-bindgen version specified in
+      # crates/doppio-wasm/Cargo.toml (`wasm-bindgen = "=0.2.117"`).
+      # If the Cargo dep is bumped, bump this too or the build will fail
+      # with a version-mismatch error from wasm-bindgen-cli.
+      - name: Install wasm-bindgen-cli (pinned to 0.2.117)
+        run: cargo install wasm-bindgen-cli --version 0.2.117 --locked
+      - name: Build doppio-wasm
+        run: bash crates/doppio-wasm/build-wasm.sh
+      - name: Assemble web/compile/dist
+        run: |
+          mkdir -p web/compile/dist
+          cp web/compile/index.html web/compile/app.js web/compile/dist/
+          cp -r crates/doppio-wasm/pkg web/compile/dist/pkg
+          echo "==> web/compile/dist contents:"
+          ls -lh web/compile/dist/
+          echo "==> pkg/ contents:"
+          ls -lh web/compile/dist/pkg/
+      # Deploying the compile demo to GitHub Pages alongside the dashboard
+      # is deferred — the `pages` concurrency group + actions/deploy-pages
+      # currently target a single artifact. Build is in CI so regressions
+      # are caught; standing up a combined-deploy job is a followup.
+      - name: Upload compile-demo artifact (for inspection)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-compile-dist
+          path: web/compile/dist
+
   deploy:
     name: Deploy to GitHub Pages
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build
+    needs: build-dashboard
     runs-on: ubuntu-latest
     permissions:
       pages: write
