@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`--color` global flag for terminal-aware color output** (refs #216):
+  `dop balance` now renders negative amounts in red and account names in blue
+  when stdout is a TTY, matching ledger-cli's `bal --force-color` color scheme.
+  The flag accepts `auto` (default), `always`, and `never`:
+  - `auto`: emit color when stdout is a TTY and `NO_COLOR` is unset
+    (per <https://no-color.org/>).
+  - `always`: force ANSI escapes even when piped or redirected.
+  - `never`: suppress all color codes.
+  Existing snapshot tests are unaffected because they capture stdout via a pipe
+  (non-TTY), so `auto` yields plain ASCII. Added `anstream` and `anstyle` as
+  workspace dependencies.
 - **Per-frontend journal writers** (`#206`). The `Frontend` trait gains a
   `write_journal(&self, hir: &HIR, writer: &mut dyn io::Write) -> io::Result<()>`
   method. Each of the three frontends implements it:

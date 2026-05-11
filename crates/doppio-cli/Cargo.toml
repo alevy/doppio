@@ -19,6 +19,8 @@ path = "src/main.rs"
 doppio = { path = "../doppio", version = "2.0.0" }
 
 # CLI-specific deps not used by the library:
+anstream = { workspace = true }
+anstyle = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 regex = { workspace = true }

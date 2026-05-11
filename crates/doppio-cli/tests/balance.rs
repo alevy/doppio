@@ -27,6 +27,24 @@ fn run(args: &[&str]) -> String {
     String::from_utf8(out.stdout).expect("non-UTF-8 stdout")
 }
 
+/// Run `dop` with the given args, returning raw bytes so we can check for
+/// ANSI escape sequences.
+fn run_bytes(args: &[&str]) -> Vec<u8> {
+    let bin = env!("CARGO_BIN_EXE_dop");
+    let out = Command::new(bin)
+        .args(args)
+        .output()
+        .expect("failed to run dop binary");
+    if !out.status.success() {
+        panic!(
+            "dop exited with {}\nstderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    out.stdout
+}
+
 fn tagged_journal() -> &'static str {
     "2024-01-01 Tagged
     ; :payroll:
@@ -386,5 +404,110 @@ fn tree_mode_multi_commodity_parent_rollup() {
     assert!(
         out.contains("EUR"),
         "EUR commodity should appear in rolled-up parent: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --color flag: ANSI color output (refs #216)
+// ---------------------------------------------------------------------------
+
+/// Journal with a negative balance (Income account) and a positive balance
+/// (Assets account) — enough to exercise both the red-negative and
+/// blue-account-name color paths.
+fn color_test_journal() -> &'static str {
+    "2024-01-01 Salary
+    Assets:Checking  $2000.00
+    Income:Salary   $-2000.00
+"
+}
+
+#[test]
+fn color_always_emits_ansi_escapes() {
+    let f = tmp_journal_file(color_test_journal());
+    let bytes = run_bytes(&[
+        "--color=always",
+        "balance",
+        f.path().to_str().unwrap(),
+        "--flat",
+    ]);
+
+    // The ANSI escape introducer ESC[ must appear at least once.
+    assert!(
+        bytes.windows(2).any(|w| w == b"\x1b["),
+        "--color=always should emit ANSI escape sequences"
+    );
+}
+
+#[test]
+fn color_always_colors_negative_amounts_red() {
+    let f = tmp_journal_file(color_test_journal());
+    let bytes = run_bytes(&[
+        "--color=always",
+        "balance",
+        f.path().to_str().unwrap(),
+        "--flat",
+    ]);
+    let output = String::from_utf8(bytes).expect("non-UTF-8 stdout");
+
+    // Red is ANSI code 31; the negative amount line must contain \x1b[31m.
+    assert!(
+        output.contains("\x1b[31m"),
+        "--color=always should render negative amounts in red (\\x1b[31m): {output}"
+    );
+}
+
+#[test]
+fn color_always_colors_account_names_blue() {
+    let f = tmp_journal_file(color_test_journal());
+    let bytes = run_bytes(&[
+        "--color=always",
+        "balance",
+        f.path().to_str().unwrap(),
+        "--flat",
+    ]);
+    let output = String::from_utf8(bytes).expect("non-UTF-8 stdout");
+
+    // Blue is ANSI code 34; account names must be wrapped.
+    assert!(
+        output.contains("\x1b[34m"),
+        "--color=always should render account names in blue (\\x1b[34m): {output}"
+    );
+}
+
+#[test]
+fn color_never_suppresses_ansi_escapes() {
+    let f = tmp_journal_file(color_test_journal());
+    let bytes = run_bytes(&[
+        "--color=never",
+        "balance",
+        f.path().to_str().unwrap(),
+        "--flat",
+    ]);
+
+    assert!(
+        !bytes.windows(2).any(|w| w == b"\x1b["),
+        "--color=never should produce plain ASCII with no ANSI escapes"
+    );
+}
+
+#[test]
+fn color_auto_with_no_color_env_suppresses_ansi() {
+    // NO_COLOR=1 with --color=auto (the default) must suppress color even if
+    // forced through an otherwise color-capable path.
+    let f = tmp_journal_file(color_test_journal());
+    let bin = env!("CARGO_BIN_EXE_dop");
+    let out = Command::new(bin)
+        .args(["balance", f.path().to_str().unwrap(), "--flat"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("failed to run dop");
+    assert!(
+        out.status.success(),
+        "dop should exit successfully: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.stdout.windows(2).any(|w| w == b"\x1b["),
+        "NO_COLOR=1 should suppress ANSI escapes in --color=auto mode"
     );
 }
