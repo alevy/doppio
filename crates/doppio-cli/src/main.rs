@@ -1,18 +1,47 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::Read as _,
+    io::{Read as _, Write as _},
     path::PathBuf,
 };
 
+use anstyle::{AnsiColor, Style};
 use clap::{Parser, Subcommand};
 use regex::Regex;
 
 mod account_path;
 
+/// How to handle ANSI color codes on the output stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum ColorChoice {
+    /// Emit color codes only when stdout is a terminal.
+    Auto,
+    /// Always emit color codes.
+    Always,
+    /// Never emit color codes.
+    Never,
+}
+
+impl From<ColorChoice> for anstream::ColorChoice {
+    fn from(c: ColorChoice) -> Self {
+        match c {
+            ColorChoice::Auto => anstream::ColorChoice::Auto,
+            ColorChoice::Always => anstream::ColorChoice::Always,
+            ColorChoice::Never => anstream::ColorChoice::Never,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// When to color output: auto (default), always, or never.
+    ///
+    /// `auto` enables color when stdout is a terminal. `always` forces color
+    /// even when piped. `never` suppresses color codes entirely.
+    #[arg(long, global = true, default_value = "auto", value_enum)]
+    color: ColorChoice,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -380,8 +409,27 @@ fn maybe_convert_amount(
     }
 }
 
+/// ANSI style for negative (red) amounts.
+const STYLE_NEGATIVE: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::Red)));
+
+/// Wrap a string in ANSI red styling when `is_negative` is true.
+///
+/// Uses `anstyle` primitives so the caller can decide at the call site
+/// whether color should be applied; the style itself is always constructed
+/// but rendered as empty strings when color is disabled by `anstream`.
+fn style_amount(s: &str, is_negative: bool) -> String {
+    if is_negative {
+        format!("{STYLE_NEGATIVE}{s}{STYLE_NEGATIVE:#}")
+    } else {
+        s.to_owned()
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    // Initialise anstream's global color choice. This affects all writes to
+    // `AutoStream`-wrapped stdout; plain `println!` is unaffected (no color).
+    anstream::ColorChoice::write_global(cli.color.into());
 
     match cli.command {
         Commands::Compile {
@@ -892,6 +940,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match format {
                 OutputFormat::Text => {
+                    // Write to an anstream-aware stdout so ANSI codes are
+                    // stripped/kept based on the --color flag and whether
+                    // stdout is a terminal.
+                    let stdout = anstream::stdout();
+                    let mut out = stdout.lock();
+
+                    // Grand-total accumulator: sum across the displayed set.
+                    // In tree mode we accumulate over top-level accounts only
+                    // (segment_count == 1); in flat mode over every row.
+                    let mut grand_total: BTreeMap<String, rust_decimal::Decimal> = BTreeMap::new();
+
                     for (account, _direct_commodities) in balances.iter() {
                         // Indentation depth: number of `:` separators in the name.
                         let indent_depth = account_path::segment_count(account) - 1;
@@ -920,22 +979,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Box::new(rolled.iter().map(|(&c, &v)| (c, v)))
                         };
 
+                        // In tree mode, accumulate grand total from top-level rows
+                        // only (the rolled-up subtree of each depth-1 account
+                        // already captures everything below it, so summing across
+                        // all depths would double-count). In flat mode, every row
+                        // is a leaf so we accumulate all of them.
+                        let is_top_level = indent_depth == 0;
+                        let should_accumulate = flat || is_top_level;
+
                         let mut commodities_iter = display_commodities;
                         if let Some((commodity, value)) = commodities_iter.next() {
+                            if should_accumulate {
+                                *grand_total.entry(commodity.to_owned()).or_default() += value;
+                            }
                             let balance = display_amount(
                                 commodity,
                                 value,
                                 commodity_format(commodity, &journal.commodities),
                             );
-                            println!("{balance:>20}  {prefix}{label}");
+                            writeln!(out, "{balance:>20}  {prefix}{label}")?;
                         }
                         for (commodity, value) in commodities_iter {
+                            if should_accumulate {
+                                *grand_total.entry(commodity.to_owned()).or_default() += value;
+                            }
                             let balance = display_amount(
                                 commodity,
                                 value,
                                 commodity_format(commodity, &journal.commodities),
                             );
-                            println!("{balance:>20}");
+                            writeln!(out, "{balance:>20}")?;
+                        }
+                    }
+
+                    // Only emit the separator and grand-total rows when there is at
+                    // least one account in the output. ledger-cli produces no output
+                    // at all when the filter matches nothing, so we mirror that.
+                    if !balances.is_empty() {
+                        // Separator line (20 dashes, matching ledger-cli's width).
+                        writeln!(out, "--------------------")?;
+
+                        // Grand-total rows: one per commodity, right-aligned to 20 chars.
+                        // Negative totals are colored red when color is enabled.
+                        // An empty journal or perfectly-balanced set still emits a
+                        // single zero-amount row (matching ledger-cli's behaviour).
+                        //
+                        // Note: color codes must be applied AFTER padding, not before,
+                        // because ANSI escape sequences add invisible bytes that would
+                        // throw off the width calculation in format!("{:>20}", ...).
+                        if grand_total.is_empty() {
+                            writeln!(out, "{:>20}", "0")?;
+                        } else {
+                            for (commodity, value) in &grand_total {
+                                let formatted = display_amount(
+                                    commodity,
+                                    *value,
+                                    commodity_format(commodity, &journal.commodities),
+                                );
+                                // Right-pad to 20 visible chars first, then wrap in color.
+                                let padded = format!("{formatted:>20}");
+                                let colored = style_amount(&padded, value.is_sign_negative());
+                                writeln!(out, "{colored}")?;
+                            }
                         }
                     }
                 }

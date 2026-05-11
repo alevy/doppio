@@ -388,3 +388,279 @@ fn tree_mode_multi_commodity_parent_rollup() {
         "EUR commodity should appear in rolled-up parent: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Grand-total row (refs #216)
+// ---------------------------------------------------------------------------
+
+/// A simple single-commodity journal that sums to zero (fully balanced).
+fn balanced_usd_journal() -> &'static str {
+    "2024-01-01 Salary
+    Assets:Checking  1000 USD
+    Income:Salary  -1000 USD
+"
+}
+
+#[test]
+fn balance_grand_total_row_separator_appears() {
+    let f = tmp_journal_file(balanced_usd_journal());
+    let out = run(&["balance", f.path().to_str().unwrap(), "--flat"]);
+    assert!(
+        out.contains("--------------------"),
+        "20-dash separator should appear in balance output: {out}"
+    );
+}
+
+#[test]
+fn balance_grand_total_row_appears_after_separator() {
+    let f = tmp_journal_file(balanced_usd_journal());
+    let out = run(&["balance", f.path().to_str().unwrap(), "--flat"]);
+    let lines: Vec<&str> = out.lines().collect();
+    let sep_idx = lines.iter().position(|l| l.starts_with("---"));
+    assert!(sep_idx.is_some(), "separator must appear: {out}");
+    let sep_idx = sep_idx.unwrap();
+    assert!(
+        sep_idx + 1 < lines.len(),
+        "there must be at least one total row after the separator: {out}"
+    );
+}
+
+#[test]
+fn balance_grand_total_correct_single_commodity() {
+    // Two Assets accounts summing to 300 USD, one Income summing to -300 USD.
+    // With a filter on Assets only the total should be 300 USD.
+    let content = "2024-01-01 Checking deposit
+    Assets:Bank:Checking  100 USD
+    Income:Salary
+
+2024-01-02 Savings deposit
+    Assets:Bank:Savings  200 USD
+    Income:Salary
+";
+    let f = tmp_journal_file(content);
+    let out = run(&[
+        "balance",
+        f.path().to_str().unwrap(),
+        "Assets",
+        "--flat",
+    ]);
+    // Total should be 300 USD.
+    assert!(
+        out.contains("300"),
+        "grand total should be 300 for filtered Assets: {out}"
+    );
+    assert!(
+        out.contains("USD"),
+        "commodity USD should appear in grand total: {out}"
+    );
+}
+
+#[test]
+fn balance_grand_total_tree_mode_uses_top_level_subtrees() {
+    // In tree mode the grand total aggregates top-level account subtrees only,
+    // avoiding double-counting of intermediate nodes.
+    let content = "2024-01-01 Salary
+    Assets:Bank:Checking  1000 USD
+    Income:Salary
+";
+    let f = tmp_journal_file(content);
+    let out = run(&["balance", f.path().to_str().unwrap()]);
+    let lines: Vec<&str> = out.lines().collect();
+    let sep_idx = lines
+        .iter()
+        .position(|l| l.starts_with("---"))
+        .expect("separator should appear");
+    // There should be exactly one total row and it should contain "0"
+    // (Assets +1000, Income -1000 → net 0).
+    let total_line = lines[sep_idx + 1];
+    assert!(
+        total_line.contains("0"),
+        "balanced journal should have 0 total: {total_line}"
+    );
+}
+
+#[test]
+fn balance_grand_total_multi_commodity() {
+    // A journal with two commodities that don't cancel: grand total should
+    // show one line per commodity.
+    let content = "2024-01-01 USD
+    Assets:Cash:USD  100 USD
+    Income:Salary
+
+2024-01-02 EUR
+    Assets:Cash:EUR  200 EUR
+    Income:Consulting
+";
+    let f = tmp_journal_file(content);
+    // Filter to Assets only so the total is nonzero.
+    let out = run(&[
+        "balance",
+        f.path().to_str().unwrap(),
+        "Assets",
+        "--flat",
+    ]);
+    assert!(
+        out.contains("USD"),
+        "USD commodity should appear in multi-commodity total: {out}"
+    );
+    assert!(
+        out.contains("EUR"),
+        "EUR commodity should appear in multi-commodity total: {out}"
+    );
+    // Both the 100 and 200 amounts should appear.
+    assert!(out.contains("100"), "100 USD should appear in total: {out}");
+    assert!(out.contains("200"), "200 EUR should appear in total: {out}");
+}
+
+#[test]
+fn balance_no_total_when_no_accounts_match() {
+    // When the pattern matches no accounts, neither a separator nor a total
+    // row should appear — matching ledger-cli's behaviour.
+    let f = tmp_journal_file(balanced_usd_journal());
+    let out = run(&[
+        "balance",
+        f.path().to_str().unwrap(),
+        "NonExistentAccount",
+        "--flat",
+    ]);
+    assert!(
+        !out.contains("--------------------"),
+        "separator must not appear when no accounts match: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --exchange missing-rate fallback
+// ---------------------------------------------------------------------------
+
+#[test]
+fn balance_exchange_missing_rate_leaves_amount_native() {
+    // When no P directive exists for a commodity-to-target pair, the amount
+    // should be left in its native commodity (fallback, no error).
+    let content = "2024-01-01 Purchase
+    Expenses:Travel  100 GBP
+    Assets:Checking
+";
+    let f = tmp_journal_file(content);
+    // No P directive for GBP -> USD, so GBP should remain.
+    let out = run(&[
+        "balance",
+        f.path().to_str().unwrap(),
+        "--flat",
+        "--exchange",
+        "USD",
+    ]);
+    assert!(
+        out.contains("GBP"),
+        "native commodity GBP should appear when no rate available: {out}"
+    );
+    assert!(
+        out.contains("100"),
+        "native amount 100 should appear: {out}"
+    );
+    // No USD should appear (since the only account has GBP with no rate).
+    assert!(
+        !out.contains("USD"),
+        "target commodity USD should not appear when no rate exists: {out}"
+    );
+}
+
+#[test]
+fn balance_exchange_partial_conversion_mixed_total() {
+    // A journal where one commodity has a rate and another doesn't.
+    // The total row should have one line for the converted commodity and one
+    // for the unconverted native commodity.
+    let content = "P 2024-01-01 EUR USD 1.10
+
+2024-01-15 EUR expense (convertible)
+    Expenses:Travel  100 EUR
+    Assets:Bank
+
+2024-01-16 GBP expense (no rate)
+    Expenses:Hotels  50 GBP
+    Assets:Bank
+";
+    let f = tmp_journal_file(content);
+    let out = run(&[
+        "balance",
+        f.path().to_str().unwrap(),
+        "Expenses",
+        "--flat",
+        "--exchange",
+        "USD",
+    ]);
+    // EUR should be converted to USD (110).
+    assert!(out.contains("USD"), "converted USD should appear: {out}");
+    assert!(out.contains("110"), "converted amount 110 should appear: {out}");
+    // GBP should remain unconverted.
+    assert!(out.contains("GBP"), "unconverted GBP should appear: {out}");
+    assert!(out.contains("50"), "unconverted amount 50 should appear: {out}");
+}
+
+// ---------------------------------------------------------------------------
+// --color flag
+// ---------------------------------------------------------------------------
+
+/// Helper: run `dop balance` and return raw stdout bytes (not UTF-8 decoded)
+/// so we can check for ANSI escape sequences.
+fn run_bytes(args: &[&str]) -> Vec<u8> {
+    let bin = env!("CARGO_BIN_EXE_dop");
+    let out = Command::new(bin)
+        .args(args)
+        .output()
+        .expect("failed to run dop binary");
+    if !out.status.success() {
+        panic!(
+            "dop exited with {}\nstderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    out.stdout
+}
+
+#[test]
+fn balance_color_always_applies_red_to_negative_total() {
+    // Force --color=always so ANSI codes appear even when stdout is not a TTY.
+    // A journal filtered to show only Income (negative amounts) should have
+    // red ANSI codes (\x1b[31m) in the total row.
+    let content = "2024-01-01 Salary
+    Assets:Checking  1000 USD
+    Income:Salary  -1000 USD
+";
+    let f = tmp_journal_file(content);
+    let bytes = run_bytes(&[
+        "--color=always",
+        "balance",
+        f.path().to_str().unwrap(),
+        "Income",
+        "--flat",
+    ]);
+    // ANSI red: ESC [ 3 1 m
+    let red_code: &[u8] = b"\x1b[31m";
+    assert!(
+        bytes.windows(red_code.len()).any(|w| w == red_code),
+        "ANSI red escape sequence should appear for negative total with --color=always"
+    );
+}
+
+#[test]
+fn balance_color_never_strips_ansi_codes() {
+    // --color=never must produce no ANSI escape sequences even for negative amounts.
+    let content = "2024-01-01 Salary
+    Assets:Checking  1000 USD
+    Income:Salary  -1000 USD
+";
+    let f = tmp_journal_file(content);
+    let bytes = run_bytes(&[
+        "--color=never",
+        "balance",
+        f.path().to_str().unwrap(),
+        "Income",
+        "--flat",
+    ]);
+    assert!(
+        !bytes.contains(&0x1b_u8),
+        "no ESC byte should appear with --color=never"
+    );
+}

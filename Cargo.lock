@@ -443,6 +443,8 @@ dependencies = [
 name = "doppio-cli"
 version = "2.2.0"
 dependencies = [
+ "anstream",
+ "anstyle",
  "chrono",
  "clap",
  "doppio",

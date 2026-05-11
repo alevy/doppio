@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Grand-total row for `dop balance`** (refs #216): after the last account row,
+  `dop balance` now emits a 20-dash separator (`--------------------`) followed by
+  a grand-total row (one line per commodity). In tree mode the total is the sum of
+  all top-level account subtrees; in flat mode it is the sum of all displayed rows.
+  Negative totals are colored red when `--color=always` or when stdout is a TTY
+  with `--color=auto`. The separator and total are suppressed when no accounts match
+  the filter, matching ledger-cli's behaviour.
+
+- **`-X` / `--exchange` flag for `dop balance`** (refs #216): converts all commodity
+  balances to a target commodity using `P` price directives. When no rate is available
+  for a (source, target) commodity pair the original amount is left unconverted and a
+  warning is printed to stderr. Uses the most-recent `P` directive on or before the
+  `--end` date (or the latest available if `--end` is not set). Matches ledger-cli's
+  `-X`/`--exchange` semantics.
+
+- **`--color={auto,always,never}` global flag**: controls ANSI color output. `auto`
+  (default) enables color when stdout is a terminal; `always` forces color codes even
+  when piped; `never` suppresses them. Currently applied to negative amounts in the
+  `dop balance` grand-total row (red).
+
 ### Changed
 
 - **`dop balance` tree mode now rolls up subtotals to parent rows** (refs #216):
