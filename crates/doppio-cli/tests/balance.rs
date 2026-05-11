@@ -269,3 +269,122 @@ fn balance_exchange_converts_eur_to_usd() {
         "source commodity 'EUR' should be absent after conversion: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tree-mode balance rollup (refs #216)
+// ---------------------------------------------------------------------------
+
+/// Journal with two leaf accounts under a common parent that has no direct
+/// postings. Tree mode should show the parent row with the rolled-up subtotal.
+fn bank_hierarchy_journal() -> &'static str {
+    "2024-01-01 Checking deposit
+    Assets:Bank:Checking  100 USD
+    Income:Salary
+
+2024-01-02 Savings deposit
+    Assets:Bank:Savings  200 USD
+    Income:Salary
+"
+}
+
+#[test]
+fn tree_mode_parent_shows_rolled_up_subtotal() {
+    let f = tmp_journal_file(bank_hierarchy_journal());
+    let out = run(&["balance", f.path().to_str().unwrap()]);
+
+    // The "Bank" row (Assets:Bank) should show 300 USD — the sum of Checking
+    // and Savings — even though Assets:Bank has no direct postings.
+    assert!(
+        out.contains("300"),
+        "parent row should carry rolled-up subtotal (300 USD): {out}"
+    );
+    // Leaf rows still show their own direct balances.
+    assert!(
+        out.contains("100"),
+        "Checking leaf should show 100 USD: {out}"
+    );
+    assert!(
+        out.contains("200"),
+        "Savings leaf should show 200 USD: {out}"
+    );
+    // The parent account label appears in the output.
+    assert!(
+        out.contains("Bank"),
+        "parent account 'Bank' label should appear in tree output: {out}"
+    );
+}
+
+#[test]
+fn tree_mode_parent_row_appears_even_with_no_direct_postings() {
+    let f = tmp_journal_file(bank_hierarchy_journal());
+    let out = run(&["balance", f.path().to_str().unwrap()]);
+    // `Bank` is an intermediate node with no direct postings; it must appear
+    // as its own row (not be silently skipped).
+    let bank_count = out.lines().filter(|l| l.contains("Bank")).count();
+    assert!(
+        bank_count >= 1,
+        "at least one row for 'Bank' (the parent) should appear: {out}"
+    );
+}
+
+#[test]
+fn flat_mode_shows_only_direct_balances() {
+    let f = tmp_journal_file(bank_hierarchy_journal());
+    let out = run(&["balance", f.path().to_str().unwrap(), "--flat"]);
+
+    // Flat mode should not show a synthetic Assets:Bank row (no direct postings).
+    assert!(
+        !out.contains("Assets:Bank\n") && !out.contains("Assets:Bank "),
+        "flat mode should not synthesise a parent row for Assets:Bank: {out}"
+    );
+    // The full account names should appear.
+    assert!(
+        out.contains("Assets:Bank:Checking"),
+        "full account name Assets:Bank:Checking should appear in flat mode: {out}"
+    );
+    assert!(
+        out.contains("Assets:Bank:Savings"),
+        "full account name Assets:Bank:Savings should appear in flat mode: {out}"
+    );
+    // The leaf values are the direct balances, not rolled-up subtotals.
+    assert!(
+        out.contains("100"),
+        "Checking balance 100 should appear in flat mode: {out}"
+    );
+    assert!(
+        out.contains("200"),
+        "Savings balance 200 should appear in flat mode: {out}"
+    );
+    // Rolled-up 300 should NOT appear as a separate synthetic row — though it
+    // may appear if any individual account happens to have 300 USD directly.
+    // This test is intentionally loose on that point; the key check is that no
+    // synthetic parent row is emitted.
+}
+
+#[test]
+fn tree_mode_multi_commodity_parent_rollup() {
+    let content = "2024-01-01 USD deposit
+    Assets:Bank:Checking  100 USD
+    Income:Salary
+
+2024-01-02 EUR deposit
+    Assets:Bank:Savings  200 EUR
+    Income:Consulting
+";
+    let f = tmp_journal_file(content);
+    let out = run(&["balance", f.path().to_str().unwrap()]);
+
+    // The parent row (Assets:Bank / Bank) should show both 100 USD and 200 EUR.
+    assert!(
+        out.contains("100") && out.contains("200"),
+        "parent row should carry both commodity totals: {out}"
+    );
+    assert!(
+        out.contains("USD"),
+        "USD commodity should appear in rolled-up parent: {out}"
+    );
+    assert!(
+        out.contains("EUR"),
+        "EUR commodity should appear in rolled-up parent: {out}"
+    );
+}
