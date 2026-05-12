@@ -10,14 +10,23 @@ import {
 import Decimal from "decimal.js";
 import { useJournalStore } from "@/store/journal";
 import { useFiltersStore } from "@/store/filters";
-import { expensesByCategory, latestMonth } from "@/lib/views/period";
+import { expensesByCategory, latestMonth, type ConversionContext } from "@/lib/views/period";
 import { formatAmount, monthLabelLong } from "@/lib/format";
 
 ChartJS.register(ArcElement, Tooltip);
 
 const journals = useJournalStore();
 const filters = useFiltersStore();
-const { begin, end, clearedOnly } = storeToRefs(filters);
+const { begin, end, clearedOnly, displayCommodity } = storeToRefs(filters);
+
+const convCtx = computed<ConversionContext | null>(() => {
+  const j = journals.journal;
+  const dc = displayCommodity.value;
+  if (!j || dc === null) return null;
+  return { toCommodity: dc, prices: j.prices, asOf: end.value };
+});
+
+const displayCommodityLabel = computed(() => displayCommodity.value ?? "$");
 
 const month = computed(() => {
   const j = journals.journal;
@@ -28,7 +37,7 @@ const categories = computed(() => {
   const j = journals.journal;
   const m = month.value;
   if (!j || !m) return [];
-  return expensesByCategory(j, m, clearedOnly.value);
+  return expensesByCategory(j, m, clearedOnly.value, convCtx.value);
 });
 
 const total = computed(() =>
@@ -48,6 +57,8 @@ const PALETTE = [
   "#bf6f8a",
   "#8a8a8a",
 ];
+
+const commodity = computed(() => displayCommodityLabel.value);
 
 const chartData = computed(() => ({
   labels: categories.value.map((c) => c.label),
@@ -70,7 +81,7 @@ const chartOptions = computed(() => ({
     tooltip: {
       callbacks: {
         label: (ctx: { label?: string; parsed: number }) =>
-          `${ctx.label ?? ""}: ${formatAmount("$", new Decimal(ctx.parsed))}`,
+          `${ctx.label ?? ""}: ${formatAmount(commodity.value, new Decimal(ctx.parsed))}`,
       },
     },
   },
@@ -90,7 +101,7 @@ const monthLabel = computed(() => (month.value ? monthLabelLong(month.value) : "
       <div class="canvas">
         <Doughnut :data="chartData" :options="chartOptions" />
         <div class="centre-label">
-          <div class="centre-amount">{{ formatAmount("$", total) }}</div>
+          <div class="centre-amount">{{ formatAmount(commodity, total) }}</div>
           <div class="centre-caption">spent</div>
         </div>
       </div>
@@ -101,7 +112,7 @@ const monthLabel = computed(() => (month.value ? monthLabelLong(month.value) : "
             :style="{ background: PALETTE[i % PALETTE.length] }"
           />
           <span class="cat-label">{{ c.label }}</span>
-          <span class="cat-amount">{{ formatAmount("$", c.total) }}</span>
+          <span class="cat-amount">{{ formatAmount(commodity, c.total) }}</span>
         </li>
       </ol>
     </div>

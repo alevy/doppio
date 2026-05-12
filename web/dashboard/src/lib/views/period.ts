@@ -6,6 +6,8 @@ import {
 } from "@/lib/dop";
 import { inferAccountType, type AccountType } from "./accountType.js";
 import { dateInRange } from "./filter.js";
+import { exchangeRateAt } from "./exchange.js";
+import type { HistoricalPrice } from "@/lib/dop";
 
 export interface MonthKey {
   year: number;
@@ -32,6 +34,21 @@ export interface NetWorthPoint {
   liabilities: Decimal;
 }
 
+/**
+ * When non-null, converts multi-commodity postings to a single display
+ * commodity using the journal's P price directives. Passed through to
+ * period functions so the same code path serves both "as recorded" (null)
+ * and "converted" (non-null) modes.
+ */
+export interface ConversionContext {
+  /** The commodity to convert into. */
+  toCommodity: string;
+  /** Available historical prices from the journal. */
+  prices: HistoricalPrice[];
+  /** Upper date cutoff for rate lookups (null = no cutoff). */
+  asOf: LocalDate | null;
+}
+
 const PRIMARY_COMMODITY = "$";
 
 function monthKey(d: LocalDate): MonthKey {
@@ -54,11 +71,31 @@ function endOfMonth(m: MonthKey): LocalDate {
   return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
 }
 
-function getCommodityValue(
+/**
+ * Extract the scalar value for a posting amount. When no conversion
+ * context is given, uses the primary commodity (USD). When a context is
+ * given, sums all commodity values after applying exchange rates; amounts
+ * for which no rate is available are excluded from the sum (the caller
+ * surfaces those separately).
+ */
+function resolveAmount(
   byCommodity: Record<string, Decimal>,
-  commodity: string,
+  ctx: ConversionContext | null,
 ): Decimal {
-  return byCommodity[commodity] ?? new Decimal(0);
+  if (ctx === null) {
+    return byCommodity[PRIMARY_COMMODITY] ?? new Decimal(0);
+  }
+  let total = new Decimal(0);
+  for (const [commodity, amount] of Object.entries(byCommodity)) {
+    if (amount.isZero()) continue;
+    const rate = exchangeRateAt(ctx.prices, commodity, ctx.toCommodity, ctx.asOf);
+    if (rate !== null) {
+      total = total.plus(amount.mul(rate));
+    }
+    // Unconvertible amounts are silently excluded here; callers that want
+    // to surface them use convertByCommodity from exchange.ts directly.
+  }
+  return total;
 }
 
 /**
@@ -89,16 +126,19 @@ function monthsInJournal(
 }
 
 /**
- * Bucket postings into per-month income / expense totals (in the
- * primary commodity, USD by convention). Income postings are flipped
- * to natural signs so income reads positive. When `clearedOnly` is
- * true, pending and uncleared transactions are excluded.
+ * Bucket postings into per-month income / expense totals. Income postings
+ * are flipped to natural signs so income reads positive. When `clearedOnly`
+ * is true, pending and uncleared transactions are excluded.
+ *
+ * When `ctx` is non-null, amounts are converted to `ctx.toCommodity`;
+ * unconvertible entries are excluded from the totals.
  */
 export function incomeExpenseByMonth(
   journal: Journal,
   begin: LocalDate | null,
   end: LocalDate | null,
   clearedOnly = false,
+  ctx: ConversionContext | null = null,
 ): IncomeExpenseBucket[] {
   const months = monthsInJournal(journal, begin, end);
   const buckets = new Map<string, IncomeExpenseBucket>();
@@ -117,7 +157,7 @@ export function incomeExpenseByMonth(
     if (!b) continue;
     for (const p of t.postings) {
       if (p.kind === "virtualUnbalanced") continue;
-      const v = getCommodityValue(p.amount.byCommodity, PRIMARY_COMMODITY);
+      const v = resolveAmount(p.amount.byCommodity, ctx);
       if (v.isZero()) continue;
       const type = inferAccountType(p.account, journal.accounts[p.account]);
       if (type === "income") {
@@ -147,6 +187,7 @@ export function expensesByCategory(
   journal: Journal,
   month: MonthKey,
   clearedOnly = false,
+  ctx: ConversionContext | null = null,
 ): CategoryBucket[] {
   const totals = new Map<string, Decimal>();
   for (const t of journal.transactions) {
@@ -155,7 +196,7 @@ export function expensesByCategory(
     for (const p of t.postings) {
       if (p.kind === "virtualUnbalanced") continue;
       if (!(p.account === "Expenses" || p.account.startsWith("Expenses:"))) continue;
-      const v = getCommodityValue(p.amount.byCommodity, PRIMARY_COMMODITY);
+      const v = resolveAmount(p.amount.byCommodity, ctx);
       if (v.isZero()) continue;
       const segments = p.account.split(":");
       const label = segments.length === 1 ? "Expenses" : segments[1]!;
@@ -172,14 +213,14 @@ export function expensesByCategory(
  * Compute month-end snapshots of net worth (assets − liabilities) for
  * every month in the journal's range, in chronological order.
  *
- * Both sides are accumulated in the primary commodity using natural
- * signs: assets are debit-normal so their sum is reported as-is;
- * liabilities are credit-normal so their internal sum is negated to
- * read as the amount you owe.
+ * Both sides are accumulated using natural signs: assets are debit-normal
+ * so their sum is reported as-is; liabilities are credit-normal so their
+ * internal sum is negated to read as the amount you owe.
  */
 export function netWorthByMonth(
   journal: Journal,
   clearedOnly = false,
+  ctx: ConversionContext | null = null,
 ): NetWorthPoint[] {
   const months = monthsInJournal(journal, null, null);
   const sorted = [...journal.transactions].sort((a, b) => compareLocalDate(a.date, b.date));
@@ -197,7 +238,7 @@ export function netWorthByMonth(
       }
       for (const p of t.postings) {
         if (p.kind === "virtualUnbalanced") continue;
-        const v = getCommodityValue(p.amount.byCommodity, PRIMARY_COMMODITY);
+        const v = resolveAmount(p.amount.byCommodity, ctx);
         if (v.isZero()) continue;
         const type = inferAccountType(p.account, journal.accounts[p.account]);
         if (type === "assets") {
@@ -221,12 +262,13 @@ export function netWorthByMonth(
 export function netWorthAsOfLatest(
   journal: Journal,
   clearedOnly = false,
+  ctx: ConversionContext | null = null,
 ): {
   netWorth: Decimal;
   assets: Decimal;
   liabilities: Decimal;
 } {
-  const series = netWorthByMonth(journal, clearedOnly);
+  const series = netWorthByMonth(journal, clearedOnly, ctx);
   if (series.length === 0) {
     return { netWorth: new Decimal(0), assets: new Decimal(0), liabilities: new Decimal(0) };
   }
@@ -240,14 +282,18 @@ export function netWorthAsOfLatest(
  * "checking-style" subset; deliberately excludes brokerage / 401k /
  * crypto so the number reflects actually-spendable balance.
  */
-export function cashOnHand(journal: Journal, clearedOnly = false): Decimal {
+export function cashOnHand(
+  journal: Journal,
+  clearedOnly = false,
+  ctx: ConversionContext | null = null,
+): Decimal {
   let total = new Decimal(0);
   for (const t of journal.transactions) {
     if (clearedOnly && t.state !== "cleared") continue;
     for (const p of t.postings) {
       if (p.kind === "virtualUnbalanced") continue;
       if (!isCashAccount(p.account)) continue;
-      const v = getCommodityValue(p.amount.byCommodity, PRIMARY_COMMODITY);
+      const v = resolveAmount(p.amount.byCommodity, ctx);
       total = total.plus(v);
     }
   }
@@ -273,8 +319,9 @@ export function periodNet(
   begin: LocalDate | null,
   end: LocalDate | null,
   clearedOnly = false,
+  ctx: ConversionContext | null = null,
 ): Decimal {
-  const buckets = incomeExpenseByMonth(journal, begin, end, clearedOnly);
+  const buckets = incomeExpenseByMonth(journal, begin, end, clearedOnly, ctx);
   return buckets.reduce(
     (acc, b) => acc.plus(b.income).minus(b.expense),
     new Decimal(0),
@@ -292,8 +339,9 @@ export function avgMonthlyExpense(
   begin: LocalDate | null,
   end: LocalDate | null,
   clearedOnly = false,
+  ctx: ConversionContext | null = null,
 ): Decimal {
-  const buckets = incomeExpenseByMonth(journal, begin, end, clearedOnly);
+  const buckets = incomeExpenseByMonth(journal, begin, end, clearedOnly, ctx);
   if (buckets.length === 0) return new Decimal(0);
   const total = buckets.reduce((acc, b) => acc.plus(b.expense), new Decimal(0));
   return total.div(buckets.length);

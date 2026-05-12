@@ -6,19 +6,28 @@ import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip } fro
 import Decimal from "decimal.js";
 import { useJournalStore } from "@/store/journal";
 import { useFiltersStore } from "@/store/filters";
-import { incomeExpenseByMonth } from "@/lib/views/period";
+import { incomeExpenseByMonth, type ConversionContext } from "@/lib/views/period";
 import { formatAmount, monthLabelShort } from "@/lib/format";
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip);
 
 const journals = useJournalStore();
 const filters = useFiltersStore();
-const { begin, end, clearedOnly } = storeToRefs(filters);
+const { begin, end, clearedOnly, displayCommodity } = storeToRefs(filters);
+
+const convCtx = computed<ConversionContext | null>(() => {
+  const j = journals.journal;
+  const dc = displayCommodity.value;
+  if (!j || dc === null) return null;
+  return { toCommodity: dc, prices: j.prices, asOf: end.value };
+});
+
+const displayCommodityLabel = computed(() => displayCommodity.value ?? "$");
 
 const buckets = computed(() => {
   const j = journals.journal;
   if (!j) return [];
-  return incomeExpenseByMonth(j, begin.value, end.value, clearedOnly.value);
+  return incomeExpenseByMonth(j, begin.value, end.value, clearedOnly.value, convCtx.value);
 });
 
 const chartData = computed(() => ({
@@ -41,6 +50,8 @@ const chartData = computed(() => ({
   ],
 }));
 
+const commodity = computed(() => displayCommodityLabel.value);
+
 const chartOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
@@ -49,7 +60,7 @@ const chartOptions = computed(() => ({
     y: {
       grid: { color: "#f0f0f0" },
       ticks: {
-        callback: (v: string | number) => formatAmount("$", new Decimal(Number(v))),
+        callback: (v: string | number) => formatAmount(commodity.value, new Decimal(Number(v))),
       },
     },
   },
@@ -61,19 +72,23 @@ const chartOptions = computed(() => ({
           const y = ctx.parsed.y;
           const lbl = ctx.dataset.label ?? "";
           if (y == null) return lbl;
-          return `${lbl}: ${formatAmount("$", new Decimal(y))}`;
+          return `${lbl}: ${formatAmount(commodity.value, new Decimal(y))}`;
         },
       },
     },
   },
 }));
+
+const hintLabel = computed(() =>
+  displayCommodity.value ? `monthly · ${displayCommodity.value}` : "monthly · USD",
+);
 </script>
 
 <template>
   <section class="card">
     <header>
       <h2>Income vs Expense</h2>
-      <span class="hint">monthly · USD</span>
+      <span class="hint">{{ hintLabel }}</span>
     </header>
     <div v-if="buckets.length === 0" class="empty">
       No activity in the selected range.

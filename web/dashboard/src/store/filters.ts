@@ -9,6 +9,10 @@ interface State {
   // If true, pending and uncleared transactions are excluded from
   // every dashboard computation.
   clearedOnly: boolean;
+  // When non-null, all commodity-aggregated views convert amounts to
+  // this commodity using the journal's P price directives. null means
+  // "as recorded" (no conversion).
+  displayCommodity: string | null;
 }
 
 export const useFiltersStore = defineStore("filters", {
@@ -16,5 +20,6 @@ export const useFiltersStore = defineStore("filters", {
     begin: null,
     end: null,
     clearedOnly: false,
+    displayCommodity: null,
   }),
 });
