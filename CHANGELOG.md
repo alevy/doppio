@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### doppio-categorize 0.1.1 - 2026-05-12
+
+- **Bump pinned `doppio` dependency from `1.0.0` to `2.0.0`.** The published
+  `doppio-categorize 0.1.0` manifest pinned `doppio = "1.0.0"`, so projects
+  depending on both `doppio = "2.x"` and `doppio-categorize = "0.1.0"`
+  resolved to two incompatible major versions of doppio in the same tree --
+  preventing the elaboration types from unifying. No code change in
+  doppio-categorize itself; the patch bump exists solely to publish the
+  current (correctly-pinned) manifest to crates.io. SemVer-correct under the
+  pre-1.0 convention (no public-API change).
+
 ## [2.3.0] - 2026-05-11
 
 ### Added
