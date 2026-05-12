@@ -14,7 +14,7 @@ import Decimal from "decimal.js";
 import { storeToRefs } from "pinia";
 import { useJournalStore } from "@/store/journal";
 import { useFiltersStore } from "@/store/filters";
-import { netWorthByMonth } from "@/lib/views/period";
+import { netWorthByMonth, type ConversionContext } from "@/lib/views/period";
 import { formatAmount, monthLabelLong, monthLabelShort } from "@/lib/format";
 
 ChartJS.register(
@@ -28,12 +28,25 @@ ChartJS.register(
 
 const journals = useJournalStore();
 const filters = useFiltersStore();
-const { clearedOnly } = storeToRefs(filters);
+const { clearedOnly, end, displayCommodity } = storeToRefs(filters);
+
+// Net-worth trend uses the as-of cutoff for all bars (true per-date
+// rate lookup across a time series is a follow-up).
+const convCtx = computed<ConversionContext | null>(() => {
+  const j = journals.journal;
+  const dc = displayCommodity.value;
+  if (!j || dc === null) return null;
+  return { toCommodity: dc, prices: j.prices, asOf: end.value };
+});
+
+const displayCommodityLabel = computed(() => displayCommodity.value ?? "$");
 
 const series = computed(() => {
   const j = journals.journal;
-  return j ? netWorthByMonth(j, clearedOnly.value) : [];
+  return j ? netWorthByMonth(j, clearedOnly.value, convCtx.value) : [];
 });
+
+const commodity = computed(() => displayCommodityLabel.value);
 
 const chartData = computed(() => ({
   labels: series.value.map((p) => monthLabelShort(p.month)),
@@ -60,7 +73,7 @@ const chartOptions = computed(() => ({
     y: {
       grid: { color: "#f0f0f0" },
       ticks: {
-        callback: (v: string | number) => formatAmount("$", new Decimal(Number(v))),
+        callback: (v: string | number) => formatAmount(commodity.value, new Decimal(Number(v))),
       },
     },
   },
@@ -75,18 +88,24 @@ const chartOptions = computed(() => ({
           return p ? monthLabelLong(p.month) : "";
         },
         label: (ctx: { parsed: { y: number | null } }) =>
-          ctx.parsed.y == null ? "" : formatAmount("$", new Decimal(ctx.parsed.y)),
+          ctx.parsed.y == null ? "" : formatAmount(commodity.value, new Decimal(ctx.parsed.y)),
       },
     },
   },
 }));
+
+const hintLabel = computed(() =>
+  displayCommodity.value
+    ? `monthly · assets − liabilities · ${displayCommodity.value}`
+    : "monthly · assets − liabilities",
+);
 </script>
 
 <template>
   <section class="card">
     <header>
       <h2>Net Worth Trend</h2>
-      <span class="hint">monthly · assets − liabilities</span>
+      <span class="hint">{{ hintLabel }}</span>
     </header>
     <div v-if="series.length === 0" class="empty">No data.</div>
     <div v-else class="canvas">

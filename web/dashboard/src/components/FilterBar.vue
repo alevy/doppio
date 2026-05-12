@@ -2,14 +2,17 @@
 import { computed } from "vue";
 import { storeToRefs } from "pinia";
 import { useFiltersStore } from "@/store/filters";
+import { useJournalStore } from "@/store/journal";
 import {
   epochDaysFromLocalDate,
   localDateFromEpochDays,
   type LocalDate,
 } from "@/lib/dop";
+import { allCommodities } from "@/lib/views/exchange";
 
 const filters = useFiltersStore();
-const { clearedOnly, begin, end } = storeToRefs(filters);
+const journals = useJournalStore();
+const { clearedOnly, begin, end, displayCommodity } = storeToRefs(filters);
 
 const beginISO = computed({
   get: () => (begin.value ? toISO(begin.value) : ""),
@@ -34,6 +37,13 @@ function fromISO(s: string): LocalDate {
     Math.round(Date.UTC(y!, (m ?? 1) - 1, d ?? 1) / 86_400_000),
   );
 }
+
+/** Sorted list of all commodity symbols in the loaded journal. */
+const commodities = computed<string[]>(() => {
+  const j = journals.journal;
+  if (!j) return [];
+  return allCommodities(j.prices, j.transactions);
+});
 </script>
 
 <template>
@@ -45,6 +55,13 @@ function fromISO(s: string): LocalDate {
     <label>
       <span class="label">End</span>
       <input v-model="endISO" type="date" />
+    </label>
+    <label>
+      <span class="label">Display as</span>
+      <select v-model="displayCommodity" class="commodity-select">
+        <option :value="null">As recorded</option>
+        <option v-for="c in commodities" :key="c" :value="c">{{ c }}</option>
+      </select>
     </label>
     <label class="toggle">
       <input v-model="clearedOnly" type="checkbox" />
@@ -87,12 +104,21 @@ label.toggle {
   color: #777;
 }
 
-input[type="date"] {
+input[type="date"],
+.commodity-select {
   padding: 0.3rem 0.5rem;
   border: 1px solid #ccc;
   border-radius: 0.25rem;
   font: inherit;
-  min-width: 9rem;
   background: #fafafa;
+}
+
+input[type="date"] {
+  min-width: 9rem;
+}
+
+.commodity-select {
+  min-width: 8rem;
+  cursor: pointer;
 }
 </style>
