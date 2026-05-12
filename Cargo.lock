@@ -484,6 +484,7 @@ version = "2.3.0"
 dependencies = [
  "console_error_panic_hook",
  "doppio",
+ "js-sys",
  "wasm-bindgen",
 ]
 

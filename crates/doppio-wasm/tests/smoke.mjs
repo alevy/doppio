@@ -117,4 +117,84 @@ console.log("Test 5: empty source compiles (empty journal)");
   console.log(`  OK — output ${result.length} bytes`);
 }
 
+console.log("Test 6: multi-file flow — opener resolves an include");
+{
+  const files = {
+    "main.ledger": `include sub/expenses.ledger\n`,
+    "sub/expenses.ledger": `\
+2024-01-15 Groceries
+    Expenses:Food    $50
+    Assets:Checking
+`,
+  };
+  const result = compile(files["main.ledger"], "ledger", {
+    basePath: "",
+    opener: (path) => {
+      const c = files[path];
+      if (c === undefined) throw new Error(`missing: ${path}`);
+      return c;
+    },
+  });
+  checkDopHeader(result);
+  // Sanity: a journal that successfully includes the expenses file should be
+  // larger than one that silently dropped the include.
+  const empty = compile(files["main.ledger"], "ledger");
+  assert(result.length > empty.length, "included content should grow the output");
+  console.log(`  OK — output ${result.length} bytes (vs ${empty.length} with no opener)`);
+}
+
+console.log("Test 7: multi-file flow — opener throws for missing include");
+{
+  assertThrows(
+    () =>
+      compile("include nope.ledger\n", "ledger", {
+        opener: (path) => {
+          throw new Error(`missing: ${path}`);
+        },
+      }),
+    "missing: nope.ledger",
+  );
+  console.log("  OK");
+}
+
+console.log("Test 8: opener returning null is reported as not-found");
+{
+  assertThrows(
+    () =>
+      compile("include nope.ledger\n", "ledger", {
+        opener: () => null,
+      }),
+    "not found",
+  );
+  console.log("  OK");
+}
+
+console.log("Test 9: basePath is honoured for nested entry files");
+{
+  const files = {
+    "sub/main.ledger": `include helper.ledger\n`,
+    "sub/helper.ledger": `\
+2024-02-01 Lunch
+    Expenses:Food    $20
+    Assets:Checking
+`,
+  };
+  const seenPaths = [];
+  const result = compile(files["sub/main.ledger"], "ledger", {
+    basePath: "sub",
+    opener: (path) => {
+      seenPaths.push(path);
+      const c = files[path];
+      if (c === undefined) throw new Error(`missing: ${path}`);
+      return c;
+    },
+  });
+  checkDopHeader(result);
+  assert(
+    seenPaths.includes("sub/helper.ledger"),
+    `expected opener to see "sub/helper.ledger", got ${JSON.stringify(seenPaths)}`,
+  );
+  console.log(`  OK — opener saw ${JSON.stringify(seenPaths)}`);
+}
+
 console.log("\nAll smoke tests passed.");
