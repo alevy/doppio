@@ -7,10 +7,7 @@
 // See ../README.md for the build / deploy / round-trip story.
 
 import { createApp, ref, computed, onMounted, onBeforeUnmount, h } from "vue";
-import initWasm, {
-  compile as wasmCompile,
-  compile_multi as wasmCompileMulti,
-} from "./pkg/doppio_wasm.js";
+import initWasm, { compile as wasmCompile } from "./pkg/doppio_wasm.js";
 
 // ── Extension → frontend table ──────────────────────────────────────────────
 //
@@ -49,6 +46,11 @@ function basenameStem(name) {
   const stripped = slash >= 0 ? name.slice(slash + 1) : name;
   const dot = stripped.lastIndexOf(".");
   return dot > 0 ? stripped.slice(0, dot) : stripped;
+}
+
+function directoryOf(path) {
+  const i = path.lastIndexOf("/");
+  return i >= 0 ? path.slice(0, i) : "";
 }
 
 function formatBytes(n) {
@@ -386,8 +388,22 @@ const App = {
         try {
           let bytes;
           if (inputMode.value === "upload") {
-            bytes = wasmCompileMulti(entryPath.value, fileMap.value, uploadFrontend.value);
-            outputFilename.value = `${basenameStem(entryPath.value)}.dop`;
+            const entry = entryPath.value;
+            const entrySource = fileMap.value[entry];
+            if (entrySource === undefined) {
+              throw new Error(`entry file "${entry}" not found in the uploaded file set`);
+            }
+            bytes = wasmCompile(entrySource, uploadFrontend.value, {
+              basePath: directoryOf(entry),
+              opener: (path) => {
+                const content = fileMap.value[path];
+                if (content === undefined) {
+                  throw new Error(`include file "${path}" not found in the uploaded file set`);
+                }
+                return content;
+              },
+            });
+            outputFilename.value = `${basenameStem(entry)}.dop`;
           } else {
             bytes = wasmCompile(source.value, frontend.value);
             outputFilename.value = `${basenameStem(filename.value)}.dop`;
