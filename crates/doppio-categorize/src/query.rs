@@ -43,7 +43,7 @@ pub struct Suggestion {
 }
 
 /// Strategy used to find candidate samples for a query.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum ScoringStrategy {
     /// v0.1 behavior. Exact match on the normalized payee. Fast and precise
     /// when the exact normalized form has been seen before; useless for
@@ -70,6 +70,33 @@ pub enum ScoringStrategy {
         exact_first: bool,
         df_threshold: u32,
     },
+    /// Like [`ScoringStrategy::Hybrid`], but when the per-known-account
+    /// bucket returns no candidates, expands the search to prefix-sibling
+    /// buckets, walking up the account tree one colon-delimited level at a
+    /// time.
+    ///
+    /// Each tier's candidates are multiplied by the corresponding entry in
+    /// `prefix_weights`:
+    ///
+    /// - `prefix_weights[0]` applies to the exact bucket (tier 0). Typically
+    ///   `1.0`.
+    /// - `prefix_weights[1]` applies to buckets that share the parent prefix
+    ///   (`Liabilities:Visa:Card1` → siblings under `Liabilities:Visa`).
+    /// - `prefix_weights[k]` applies to the k-th generalization level up the
+    ///   tree.
+    ///
+    /// The walk stops at the first tier that produces candidates, or when
+    /// `prefix_weights` is exhausted. Accounts with no `:` in their name
+    /// (single-component accounts) only have tier 0.
+    ///
+    /// An empty `prefix_weights` slice is treated as `[1.0]` (tier-0 only,
+    /// equivalent to plain `Hybrid`).
+    HierarchicalHybrid {
+        df_threshold: u32,
+        /// Score multipliers per account-tree generalization level. Length
+        /// controls how far up the tree to walk before giving up.
+        prefix_weights: Vec<f64>,
+    },
 }
 
 impl Default for ScoringStrategy {
@@ -79,6 +106,21 @@ impl Default for ScoringStrategy {
             df_threshold: 50,
         }
     }
+}
+
+/// Returns the account-tree prefixes of `account`, from longest to shortest,
+/// excluding the account itself (i.e. the leaf is not in the returned list).
+///
+/// `"Liabilities:Visa:Card1"` yields `["Liabilities:Visa", "Liabilities"]`.
+/// A single-component account (no `:`) yields an empty iterator.
+pub(crate) fn account_prefixes(account: &str) -> impl Iterator<Item = &str> {
+    // Each prefix is account[..pos] for every ':' position, right-to-left.
+    account
+        .char_indices()
+        .filter_map(|(i, c)| if c == ':' { Some(&account[..i]) } else { None })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
 }
 
 /// Tunables for the suggest algorithm.
@@ -116,27 +158,125 @@ impl Index {
     /// 5. Rank by `weight_sum / total_weight` desc.
     pub fn suggest(&self, query: &Query, config: &Config) -> Vec<Suggestion> {
         let normalized = self.normalizer.normalize(&query.payee);
-        let bucket = match self.by_known.get(&query.known_account) {
-            Some(b) => b,
-            None => return Vec::new(),
-        };
-        let candidates = self.candidates(bucket, &normalized, config.strategy);
-        if candidates.is_empty() {
-            return Vec::new();
+
+        match &config.strategy {
+            ScoringStrategy::HierarchicalHybrid {
+                df_threshold,
+                prefix_weights,
+            } => {
+                self.suggest_hierarchical(query, config, &normalized, *df_threshold, prefix_weights)
+            }
+            _ => {
+                let bucket = match self.by_known.get(&query.known_account) {
+                    Some(b) => b,
+                    None => return Vec::new(),
+                };
+                let candidates = self.candidates(bucket, &normalized, &config.strategy);
+                if candidates.is_empty() {
+                    return Vec::new();
+                }
+                self.rank_candidates(bucket, &candidates, query, config)
+            }
         }
-        self.rank_candidates(bucket, &candidates, query, config)
+    }
+
+    /// Implementation of [`ScoringStrategy::HierarchicalHybrid`] suggest.
+    ///
+    /// Tries the exact bucket first (tier 0). If empty, walks up the account
+    /// tree one colon-delimited level at a time, collecting all sibling
+    /// buckets under the prefix, running Hybrid scoring against the pooled
+    /// samples, and multiplying scores by the tier weight.
+    fn suggest_hierarchical(
+        &self,
+        query: &Query,
+        config: &Config,
+        normalized: &str,
+        df_threshold: u32,
+        prefix_weights: &[f64],
+    ) -> Vec<Suggestion> {
+        // Treat empty prefix_weights as a single-element slice so tier-0 is
+        // always attempted with weight 1.0.
+        let weights: &[f64] = if prefix_weights.is_empty() {
+            &[1.0]
+        } else {
+            prefix_weights
+        };
+
+        let hybrid_strat = ScoringStrategy::Hybrid {
+            exact_first: true,
+            df_threshold,
+        };
+
+        // Tier 0: exact bucket.
+        let tier0_weight = weights[0];
+        if let Some(bucket) = self.by_known.get(&query.known_account) {
+            let candidates = self.candidates(bucket, normalized, &hybrid_strat);
+            if !candidates.is_empty() {
+                let weighted: Vec<(usize, f64)> = candidates
+                    .into_iter()
+                    .map(|(i, s)| (i, s * tier0_weight))
+                    .collect();
+                return self.rank_candidates(bucket, &weighted, query, config);
+            }
+        }
+
+        // Tiers 1+: walk up the account tree, skipping the original bucket.
+        let original_account = &query.known_account;
+        for (tier_idx, prefix) in account_prefixes(original_account).enumerate() {
+            let tier = tier_idx + 1;
+            if tier >= weights.len() {
+                break;
+            }
+            let tier_weight = weights[tier];
+
+            // Collect all bucket keys whose account name equals `prefix` or
+            // starts with `prefix:`, excluding the original bucket.
+            let prefix_colon = format!("{}:", prefix);
+            let sibling_keys: Vec<&String> = self
+                .by_known
+                .keys()
+                .filter(|acct| {
+                    *acct != original_account
+                        && (*acct == prefix || acct.starts_with(&prefix_colon))
+                })
+                .collect();
+
+            if sibling_keys.is_empty() {
+                continue;
+            }
+
+            // Pool samples from all sibling buckets into a virtual bucket.
+            // Indices in the pooled samples are contiguous; by_payee maps are
+            // merged by remapping each contributing bucket's local indices.
+            let pool = pool_buckets(sibling_keys.iter().map(|k| &self.by_known[*k]));
+
+            if pool.samples.is_empty() {
+                continue;
+            }
+
+            let candidates = self.candidates(&pool, normalized, &hybrid_strat);
+            if !candidates.is_empty() {
+                let weighted: Vec<(usize, f64)> = candidates
+                    .into_iter()
+                    .map(|(i, s)| (i, s * tier_weight))
+                    .collect();
+                return self.rank_candidates(&pool, &weighted, query, config);
+            }
+        }
+
+        Vec::new()
     }
 
     fn candidates(
         &self,
         bucket: &KnownAccountBucket,
         normalized: &str,
-        strategy: ScoringStrategy,
+        strategy: &ScoringStrategy,
     ) -> Vec<(usize, f64)> {
         match strategy {
             ScoringStrategy::ExactMatch => exact_match_candidates(bucket, normalized),
             ScoringStrategy::TokenIdf { df_threshold } => {
-                token_idf_candidates(self, bucket, normalized, df_threshold)
+                token_idf_candidates(self, bucket, normalized, *df_threshold)
             }
             ScoringStrategy::Hybrid {
                 exact_first: _,
@@ -148,8 +288,14 @@ impl Index {
                 if !exact.is_empty() {
                     exact
                 } else {
-                    token_idf_candidates(self, bucket, normalized, df_threshold)
+                    token_idf_candidates(self, bucket, normalized, *df_threshold)
                 }
+            }
+            ScoringStrategy::HierarchicalHybrid { .. } => {
+                // This branch is handled by suggest_hierarchical, which calls
+                // candidates with Hybrid internally. Reaching here indicates a
+                // logic error in the caller.
+                unreachable!("HierarchicalHybrid is dispatched in suggest(), not candidates()")
             }
         }
     }
@@ -223,6 +369,26 @@ impl Index {
         });
         suggestions
     }
+}
+
+/// Merge an iterator of [`KnownAccountBucket`]s into a single virtual bucket.
+///
+/// Samples are appended in iteration order; each contributing bucket's
+/// `by_payee` index lists are remapped to the pooled index space.
+fn pool_buckets<'a>(buckets: impl Iterator<Item = &'a KnownAccountBucket>) -> KnownAccountBucket {
+    let mut samples = Vec::new();
+    let mut by_payee: HashMap<String, Vec<usize>> = HashMap::new();
+    for bucket in buckets {
+        let offset = samples.len();
+        samples.extend(bucket.samples.iter().cloned());
+        for (payee, idxs) in &bucket.by_payee {
+            by_payee
+                .entry(payee.clone())
+                .or_default()
+                .extend(idxs.iter().map(|&i| i + offset));
+        }
+    }
+    KnownAccountBucket { samples, by_payee }
 }
 
 fn exact_match_candidates(bucket: &KnownAccountBucket, normalized: &str) -> Vec<(usize, f64)> {
@@ -764,5 +930,360 @@ mod tests {
         let s = index.suggest(&q, &Config::default());
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].account, "Expenses:Coffee");
+    }
+
+    // ------------------------------------------------------------------
+    // account_prefixes
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn account_prefixes_three_component() {
+        let prefixes: Vec<&str> = account_prefixes("Liab:Visa:New").collect();
+        assert_eq!(prefixes, vec!["Liab:Visa", "Liab"]);
+    }
+
+    #[test]
+    fn account_prefixes_two_component() {
+        let prefixes: Vec<&str> = account_prefixes("Liabilities:Visa").collect();
+        assert_eq!(prefixes, vec!["Liabilities"]);
+    }
+
+    #[test]
+    fn account_prefixes_single_component_yields_empty() {
+        let prefixes: Vec<&str> = account_prefixes("Assets").collect();
+        assert!(prefixes.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // HierarchicalHybrid
+    // ------------------------------------------------------------------
+
+    fn hierarchical_config(weights: Vec<f64>) -> Config {
+        Config {
+            use_amount_weighting: false,
+            strategy: ScoringStrategy::HierarchicalHybrid {
+                df_threshold: 50,
+                prefix_weights: weights,
+            },
+        }
+    }
+
+    fn make_index_with_buckets(
+        buckets: Vec<(&str, Vec<(&str, Decimal, NaiveDate, Vec<&str>)>)>,
+        token_df: HashMap<String, u32>,
+        total_payees: u32,
+    ) -> Index {
+        let mut by_known = HashMap::new();
+        for (account, entries) in buckets {
+            let mut samples = Vec::new();
+            let mut by_payee: HashMap<String, Vec<usize>> = HashMap::new();
+            for (counter, amount, date, tokens) in entries {
+                let idx = samples.len();
+                // Reconstruct normalized payee from tokens for by_payee key.
+                let payee_key = tokens.join(" ");
+                samples.push(sample(counter, amount, date, &tokens));
+                by_payee.entry(payee_key).or_default().push(idx);
+            }
+            by_known.insert(
+                account.to_string(),
+                KnownAccountBucket { samples, by_payee },
+            );
+        }
+        Index {
+            by_known,
+            token_df,
+            total_payees,
+            normalizer: Box::new(DefaultNormalizer),
+        }
+    }
+
+    #[test]
+    fn hierarchical_tier0_used_when_bucket_has_candidates() {
+        // Tier-0 bucket has a match; tier-1 siblings also exist but must not
+        // be consulted.
+        let mut index = make_index_with_buckets(
+            vec![
+                (
+                    "Liabilities:Visa:Card1",
+                    vec![(
+                        "Expenses:Coffee",
+                        dec!(-7.00),
+                        d(2024, 1, 1),
+                        vec!["starbucks"],
+                    )],
+                ),
+                (
+                    "Liabilities:Visa:Card2",
+                    vec![(
+                        "Expenses:Dining",
+                        dec!(-30.00),
+                        d(2024, 1, 2),
+                        vec!["starbucks"],
+                    )],
+                ),
+            ],
+            HashMap::from([("starbucks".to_string(), 1u32)]),
+            1,
+        );
+        // Give Card1 an exact-match entry so tier-0 succeeds.
+        index
+            .by_known
+            .get_mut("Liabilities:Visa:Card1")
+            .unwrap()
+            .by_payee
+            .insert("starbucks".to_string(), vec![0]);
+
+        let q = Query {
+            date: d(2024, 2, 1),
+            payee: "starbucks".into(),
+            amount: dec!(-7.00),
+            known_account: "Liabilities:Visa:Card1".into(),
+        };
+        let s = index.suggest(&q, &hierarchical_config(vec![1.0, 0.5]));
+        assert_eq!(s.len(), 1);
+        // Tier-0 hit: Coffee, not the sibling's Dining.
+        assert_eq!(s[0].account, "Expenses:Coffee");
+    }
+
+    #[test]
+    fn hierarchical_falls_back_to_sibling_when_own_bucket_empty() {
+        // The queried account has no bucket at all. A sibling under the same
+        // parent prefix does have a matching sample.
+        let index = make_index_with_buckets(
+            vec![(
+                "Liabilities:Visa:OldCard",
+                vec![(
+                    "Expenses:Coffee",
+                    dec!(-7.58),
+                    d(2024, 1, 1),
+                    vec!["starbucks"],
+                )],
+            )],
+            HashMap::from([("starbucks".to_string(), 1u32)]),
+            1,
+        );
+
+        let q = Query {
+            date: d(2024, 2, 1),
+            payee: "starbucks".into(),
+            amount: dec!(-7.00),
+            known_account: "Liabilities:Visa:NewCard".into(),
+        };
+        let s = index.suggest(&q, &hierarchical_config(vec![1.0, 0.5, 0.25]));
+        assert!(!s.is_empty(), "should recover via sibling bucket");
+        assert_eq!(s[0].account, "Expenses:Coffee");
+    }
+
+    #[test]
+    fn hierarchical_single_tier_account_no_fallback() {
+        // A flat account (no ':') has no prefix tiers. HierarchicalHybrid with
+        // enough weights configured must still return empty when the sole
+        // bucket is absent.
+        let index = make_index_with_buckets(
+            vec![(
+                "Expenses",
+                vec![("Assets:Cash", dec!(-10.00), d(2024, 1, 1), vec!["atm"])],
+            )],
+            HashMap::from([("atm".to_string(), 1u32)]),
+            1,
+        );
+
+        let q = Query {
+            date: d(2024, 2, 1),
+            payee: "atm".into(),
+            amount: dec!(-10.00),
+            known_account: "Income".into(), // different flat account — no bucket
+        };
+        let s = index.suggest(&q, &hierarchical_config(vec![1.0, 0.5, 0.25]));
+        assert!(
+            s.is_empty(),
+            "single-tier account with no bucket should return empty"
+        );
+    }
+
+    #[test]
+    fn hierarchical_prefix_weights_shorter_than_tree_depth_stops_early() {
+        // Three-level account. prefix_weights has only 2 entries (tier-0 and
+        // tier-1). The grandparent tier-2 should never be consulted even if it
+        // has samples.
+        let index = make_index_with_buckets(
+            vec![
+                (
+                    "Liabilities",
+                    vec![(
+                        "Expenses:Grandparent",
+                        dec!(-5.00),
+                        d(2024, 1, 1),
+                        vec!["vendor"],
+                    )],
+                ),
+                (
+                    "Liabilities:Visa:OldCard",
+                    vec![(
+                        "Expenses:Sibling",
+                        dec!(-5.00),
+                        d(2024, 1, 2),
+                        vec!["other"],
+                    )],
+                ),
+            ],
+            HashMap::from([("vendor".to_string(), 1u32), ("other".to_string(), 1u32)]),
+            2,
+        );
+
+        // Query under a sibling that has no tier-1 match either (payee
+        // "vendor" only exists in grandparent).
+        let q = Query {
+            date: d(2024, 2, 1),
+            payee: "vendor".into(),
+            amount: dec!(-5.00),
+            known_account: "Liabilities:Visa:NewCard".into(),
+        };
+        // Only 2 weights: tier-0 and tier-1 (Liabilities:Visa siblings).
+        // Tier-1 sibling has "other" not "vendor", so no match there.
+        // Tier-2 (Liabilities) has "vendor" but we don't walk that far.
+        let s = index.suggest(&q, &hierarchical_config(vec![1.0, 0.5]));
+        assert!(
+            s.is_empty(),
+            "should not walk past the configured weight depth"
+        );
+    }
+
+    #[test]
+    fn hierarchical_sibling_excludes_original_bucket() {
+        // The original bucket key also starts with the parent prefix. Make
+        // sure it isn't double-counted or applied with the wrong tier weight.
+        let mut index = make_index_with_buckets(
+            vec![
+                (
+                    "Liabilities:Visa:Card1",
+                    vec![(
+                        "Expenses:OriginalSide",
+                        dec!(-10.00),
+                        d(2024, 1, 1),
+                        vec!["acme"],
+                    )],
+                ),
+                (
+                    "Liabilities:Visa:Card2",
+                    vec![(
+                        "Expenses:SiblingCounter",
+                        dec!(-10.00),
+                        d(2024, 1, 2),
+                        vec!["acme"],
+                    )],
+                ),
+            ],
+            HashMap::from([("acme".to_string(), 1u32)]),
+            1,
+        );
+        // Add the exact-match key for Card1 so tier-0 would succeed IF the
+        // bucket were populated — but we'll query from Card1 with a miss, so
+        // tier-0 is empty and tier-1 activates. The key point is Card1 itself
+        // must not appear in the tier-1 sibling pool.
+        index
+            .by_known
+            .get_mut("Liabilities:Visa:Card1")
+            .unwrap()
+            .by_payee
+            .clear(); // no exact-match key for Card1
+
+        let q = Query {
+            date: d(2024, 2, 1),
+            payee: "acme".into(),
+            amount: dec!(-10.00),
+            known_account: "Liabilities:Visa:Card1".into(),
+        };
+        let s = index.suggest(&q, &hierarchical_config(vec![1.0, 0.5]));
+        // Only Card2's sample survives (Card1 is excluded from the sibling pool).
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].account, "Expenses:SiblingCounter");
+    }
+
+    #[test]
+    fn hierarchical_tier0_hit_ranks_above_tier1_hit_equal_raw_score() {
+        // Two buckets: one is the exact account (tier-0), one is a sibling
+        // (tier-1). Both have one exact-match sample for the payee.
+        // prefix_weights = [1.0, 0.5], so tier-0 weight doubles the tier-1
+        // weight. A tier-0 hit should therefore rank above an equal-raw-score
+        // tier-1 hit.
+        //
+        // However, HierarchicalHybrid returns the tier-0 result immediately
+        // when tier-0 is non-empty. This test verifies that behavior directly:
+        // the result comes from the tier-0 bucket, not the sibling.
+        let mut index = make_index_with_buckets(
+            vec![
+                (
+                    "Liabilities:Visa:Card1",
+                    vec![(
+                        "Expenses:FromCard1",
+                        dec!(-10.00),
+                        d(2024, 1, 1),
+                        vec!["acme"],
+                    )],
+                ),
+                (
+                    "Liabilities:Visa:Card2",
+                    vec![(
+                        "Expenses:FromCard2",
+                        dec!(-10.00),
+                        d(2024, 1, 2),
+                        vec!["acme"],
+                    )],
+                ),
+            ],
+            HashMap::from([("acme".to_string(), 1u32)]),
+            1,
+        );
+        // Give Card1 an exact-match key so tier-0 succeeds.
+        index
+            .by_known
+            .get_mut("Liabilities:Visa:Card1")
+            .unwrap()
+            .by_payee
+            .insert("acme".to_string(), vec![0]);
+
+        let q = Query {
+            date: d(2024, 2, 1),
+            payee: "acme".into(),
+            amount: dec!(-10.00),
+            known_account: "Liabilities:Visa:Card1".into(),
+        };
+        let s = index.suggest(&q, &hierarchical_config(vec![1.0, 0.5]));
+        // Tier-0 found a hit; must return it without consulting tier-1.
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].account, "Expenses:FromCard1");
+    }
+
+    #[test]
+    fn hierarchical_empty_prefix_weights_behaves_as_tier0_only() {
+        // Empty prefix_weights is normalized to [1.0]: tier-0 only.
+        // A missing tier-0 bucket should return empty even with a sibling.
+        let index = make_index_with_buckets(
+            vec![(
+                "Liabilities:Visa:OldCard",
+                vec![(
+                    "Expenses:Coffee",
+                    dec!(-7.00),
+                    d(2024, 1, 1),
+                    vec!["starbucks"],
+                )],
+            )],
+            HashMap::from([("starbucks".to_string(), 1u32)]),
+            1,
+        );
+
+        let q = Query {
+            date: d(2024, 2, 1),
+            payee: "starbucks".into(),
+            amount: dec!(-7.00),
+            known_account: "Liabilities:Visa:NewCard".into(),
+        };
+        // Empty weights -> tier-0 only, no fallback walk.
+        let s = index.suggest(&q, &hierarchical_config(vec![]));
+        assert!(
+            s.is_empty(),
+            "empty prefix_weights should not walk beyond tier-0"
+        );
     }
 }

@@ -21,8 +21,9 @@
 //!   <journal-path> \
 //!   [--import-regex REGEX] \
 //!   [--no-amount-weighting] \
-//!   [--strategy exact|token-idf|hybrid] \
+//!   [--strategy exact|token-idf|hybrid|hierarchical] \
 //!   [--df-threshold N] \
+//!   [--prefix-weights 1.0,0.5,0.25,0.1] \
 //!   [--holdout 0.10] [--seed N] \
 //!   [--cold-account ACCOUNT] \
 //!   [--leave-one-account-out [MIN_TXN_COUNT]]
@@ -144,23 +145,33 @@ impl Metrics {
     }
 }
 
+const DEFAULT_PREFIX_WEIGHTS: &[f64] = &[1.0, 0.5, 0.25, 0.1];
+
 fn print_usage() {
     eprintln!(
         "usage: eval_holdout <journal-path> [--import-regex REGEX] [--no-amount-weighting] \
-         [--strategy exact|token-idf|hybrid] [--df-threshold N] \
-         [--holdout FRACTION] [--seed N] \
+         [--strategy exact|token-idf|hybrid|hierarchical] [--df-threshold N] \
+         [--prefix-weights W1,W2,...] [--holdout FRACTION] [--seed N] \
          [--cold-account ACCOUNT] \
          [--leave-one-account-out [MIN_COUNT]]"
     );
 }
 
-fn parse_strategy(name: &str, df_threshold: u32) -> Option<ScoringStrategy> {
+fn parse_strategy(
+    name: &str,
+    df_threshold: u32,
+    prefix_weights: &[f64],
+) -> Option<ScoringStrategy> {
     match name {
         "exact" => Some(ScoringStrategy::ExactMatch),
         "token-idf" => Some(ScoringStrategy::TokenIdf { df_threshold }),
         "hybrid" => Some(ScoringStrategy::Hybrid {
             exact_first: true,
             df_threshold,
+        }),
+        "hierarchical" | "hierarchical-hybrid" => Some(ScoringStrategy::HierarchicalHybrid {
+            df_threshold,
+            prefix_weights: prefix_weights.to_vec(),
         }),
         _ => None,
     }
@@ -675,6 +686,7 @@ fn main() -> ExitCode {
     let mut seed = DEFAULT_SEED;
     let mut strategy_name = String::from("hybrid");
     let mut df_threshold: u32 = 50;
+    let mut prefix_weights: Vec<f64> = DEFAULT_PREFIX_WEIGHTS.to_vec();
 
     // Mode flags — mutually exclusive.
     let mut cold_account: Option<String> = None;
@@ -698,10 +710,30 @@ fn main() -> ExitCode {
             "--strategy" => {
                 i += 1;
                 if i >= args_vec.len() {
-                    eprintln!("--strategy requires a value (exact|token-idf|hybrid)");
+                    eprintln!("--strategy requires a value (exact|token-idf|hybrid|hierarchical)");
                     return ExitCode::from(2);
                 }
                 strategy_name = args_vec[i].clone();
+            }
+            "--prefix-weights" => {
+                i += 1;
+                if i >= args_vec.len() {
+                    eprintln!(
+                        "--prefix-weights requires a comma-separated list of f64 (e.g. 1.0,0.5,0.25,0.1)"
+                    );
+                    return ExitCode::from(2);
+                }
+                prefix_weights = match args_vec[i]
+                    .split(',')
+                    .map(|s| s.trim().parse::<f64>())
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(ws) => ws,
+                    Err(_) => {
+                        eprintln!("--prefix-weights: each element must be a valid f64");
+                        return ExitCode::from(2);
+                    }
+                };
             }
             "--df-threshold" => {
                 i += 1;
@@ -799,10 +831,10 @@ fn main() -> ExitCode {
         }
     };
 
-    config.strategy = match parse_strategy(&strategy_name, df_threshold) {
+    config.strategy = match parse_strategy(&strategy_name, df_threshold, &prefix_weights) {
         Some(s) => s,
         None => {
-            eprintln!("--strategy must be one of: exact, token-idf, hybrid");
+            eprintln!("--strategy must be one of: exact, token-idf, hybrid, hierarchical");
             return ExitCode::from(2);
         }
     };

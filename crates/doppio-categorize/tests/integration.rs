@@ -502,6 +502,129 @@ fn token_idf_filters_high_df_tokens() {
 }
 
 #[test]
+fn hierarchical_hybrid_new_credit_card_recovers_via_sibling() {
+    // The motivating use case: Card1 is closed, Card2 is new. We have years of
+    // Card1 history but zero Card2 history. HierarchicalHybrid must recover
+    // the counter-account from Card1's samples.
+    let mut j = empty_journal();
+
+    // 10 Starbucks charges on Card1.
+    for day in 1..=10 {
+        j.transactions.push(txn(
+            (2024, 1, day),
+            "Starbucks",
+            vec![
+                posting("Liabilities:Visa:Card1", "Starbucks", dec!(-7.58)),
+                posting("Expenses:Coffee", "Starbucks", dec!(7.58)),
+            ],
+        ));
+    }
+
+    // 5 Comcast charges on Card1 (a different payee, to ensure the IDF
+    // token fallback also works when the sibling bucket is queried).
+    for day in 11..=15 {
+        j.transactions.push(txn(
+            (2024, 1, day),
+            "Comcast Cable",
+            vec![
+                posting("Liabilities:Visa:Card1", "Comcast Cable", dec!(-89.95)),
+                posting("Expenses:Internet", "Comcast Cable", dec!(89.95)),
+            ],
+        ));
+    }
+
+    // No transactions on Card2 at all.
+
+    let idx = Index::build(&j, DefaultNormalizer);
+
+    // Query on the new card with the same payee.
+    let q = Query {
+        date: date(2024, 6, 1),
+        payee: "Starbucks".into(),
+        amount: dec!(-7.58),
+        known_account: "Liabilities:Visa:Card2".into(),
+    };
+
+    // Plain Hybrid: Card2 has no bucket — returns empty.
+    let s_hybrid = idx.suggest(&q, &Config::default());
+    assert!(
+        s_hybrid.is_empty(),
+        "plain Hybrid should return empty for new card (no bucket)"
+    );
+
+    // HierarchicalHybrid: falls back to Card1 via parent prefix.
+    let cfg_hier = Config {
+        use_amount_weighting: true,
+        strategy: ScoringStrategy::HierarchicalHybrid {
+            df_threshold: 50,
+            prefix_weights: vec![1.0, 0.5, 0.25, 0.1],
+        },
+    };
+    let s_hier = idx.suggest(&q, &cfg_hier);
+    assert!(
+        !s_hier.is_empty(),
+        "HierarchicalHybrid must recover a suggestion from sibling Card1 bucket"
+    );
+    assert_eq!(
+        s_hier[0].account, "Expenses:Coffee",
+        "top suggestion should be Coffee (Starbucks exact match in sibling)"
+    );
+}
+
+#[test]
+fn hierarchical_hybrid_exact_bucket_not_disturbed() {
+    // When Card2 already has history, HierarchicalHybrid must use that
+    // history unchanged (no sibling contamination).
+    let mut j = empty_journal();
+
+    // Card1: Starbucks -> Coffee.
+    for day in 1..=10 {
+        j.transactions.push(txn(
+            (2024, 1, day),
+            "Starbucks",
+            vec![
+                posting("Liabilities:Visa:Card1", "Starbucks", dec!(-7.58)),
+                posting("Expenses:Coffee", "Starbucks", dec!(7.58)),
+            ],
+        ));
+    }
+
+    // Card2: Starbucks -> Gifts (different counter — e.g. buying gift cards).
+    for day in 1..=5 {
+        j.transactions.push(txn(
+            (2024, 2, day),
+            "Starbucks",
+            vec![
+                posting("Liabilities:Visa:Card2", "Starbucks", dec!(-50.00)),
+                posting("Expenses:Gifts", "Starbucks", dec!(50.00)),
+            ],
+        ));
+    }
+
+    let idx = Index::build(&j, DefaultNormalizer);
+
+    let q = Query {
+        date: date(2024, 6, 1),
+        payee: "Starbucks".into(),
+        amount: dec!(-50.00),
+        known_account: "Liabilities:Visa:Card2".into(),
+    };
+
+    let cfg_hier = Config {
+        use_amount_weighting: true,
+        strategy: ScoringStrategy::HierarchicalHybrid {
+            df_threshold: 50,
+            prefix_weights: vec![1.0, 0.5, 0.25, 0.1],
+        },
+    };
+    let s = idx.suggest(&q, &cfg_hier);
+    assert!(!s.is_empty());
+    // Card2's own bucket has Gifts; Card1's bucket has Coffee. The tier-0
+    // hit (Card2) must be used without blending in Card1.
+    assert_eq!(s[0].account, "Expenses:Gifts");
+}
+
+#[test]
 fn posting_with_no_amount_is_skipped() {
     // proto3 makes Posting.amount Option<Amount>. doppio elaboration always
     // populates Some, but a hand-built or wire-decoded fixture could carry a
