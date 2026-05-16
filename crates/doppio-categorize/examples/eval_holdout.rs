@@ -102,7 +102,8 @@ struct Hit {
     /// 1-indexed rank of the true counter-account in the suggestion list,
     /// or `None` if it was not in the returned suggestions at all.
     rank: Option<usize>,
-    /// Number of training samples in the queried bucket. 0 = cold-start.
+    /// Number of training samples in the global payee bucket for the query
+    /// payee. 0 = cold-start (no corpus history for this payee at all).
     cluster_size: usize,
     /// Confidence of the rank-1 suggestion, only set when rank == Some(1).
     confidence_at_top1: Option<f64>,
@@ -221,7 +222,7 @@ fn evaluate(
             known_account: known.account.clone(),
         };
 
-        let cluster_size = index.bucket_size(&query.payee, &query.known_account);
+        let cluster_size = index.samples_for_payee_count(&query.payee);
         let suggestions = index.suggest(&query, config);
 
         let rank = suggestions
@@ -294,7 +295,7 @@ fn print_metrics(m: &Metrics) {
         m.top3_pct()
     );
     println!(
-        "Cold-start (bucket empty):   {} / {} = {:.1}%",
+        "Cold-start (payee unknown):  {} / {} = {:.1}%",
         m.cold_start,
         m.total,
         m.cold_start_pct()
@@ -377,15 +378,9 @@ fn run_uniform_holdout(
     let acc = m.top1 as f64 / m.total as f64;
     println!();
     if acc >= 0.70 {
-        println!(
-            "Top-1 accuracy {:.1}% meets the v0.1 ship criterion (>=70%).",
-            acc * 100.0
-        );
+        println!("Top-1 accuracy {:.1}% meets the >=70% bar.", acc * 100.0);
     } else {
-        println!(
-            "Top-1 accuracy {:.1}% is BELOW the v0.1 ship criterion (>=70%).",
-            acc * 100.0
-        );
+        println!("Top-1 accuracy {:.1}% is BELOW the >=70% bar.", acc * 100.0);
     }
 
     ExitCode::from(0)

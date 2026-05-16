@@ -7,29 +7,23 @@ use std::collections::{HashMap, HashSet};
 
 use crate::normalize::Normalizer;
 
-/// A historical observation: when payee X was charged via known_account A,
-/// the counter-balance went to `counter_account` for `amount` on `date`.
+/// A historical observation: a payee was associated with a counter-account
+/// for a given amount on a given date, on the known-side account `known_account`.
 ///
-/// Internal type. Public API uses [`crate::Suggestion`].
+/// `known_account` is retained as data on each sample for caller inspection
+/// and potential future feature use, but is not consulted during scoring.
 #[derive(Debug, Clone)]
 pub(crate) struct Sample {
     pub counter_account: String,
     pub amount: Decimal,
     pub date: NaiveDate,
+    /// The known-side account this sample was indexed from. Retained for
+    /// caller inspection and potential future feature use; not consulted during
+    /// scoring.
+    #[allow(dead_code)]
+    pub known_account: String,
     /// Tokens of the normalized payee (used by the token-IDF scorer).
-    /// The full normalized string isn't stored on each sample -- exact-match
-    /// lookups go through [`KnownAccountBucket::by_payee`] which keys by
-    /// the full normalized string.
     pub payee_tokens: Vec<String>,
-}
-
-/// Per-known-account storage. Holds a flat sample list (for token-IDF
-/// scanning) plus a `(normalized_payee -> sample-indices)` map (for the
-/// exact-match fast path).
-#[derive(Debug, Default)]
-pub(crate) struct KnownAccountBucket {
-    pub samples: Vec<Sample>,
-    pub by_payee: HashMap<String, Vec<usize>>,
 }
 
 /// A built index over historical transactions, ready to answer suggest
@@ -37,7 +31,10 @@ pub(crate) struct KnownAccountBucket {
 ///
 /// Build once per journal; query many times.
 pub struct Index {
-    pub(crate) by_known: HashMap<String, KnownAccountBucket>,
+    /// Flat list of all samples across all accounts and payees.
+    pub(crate) samples: Vec<Sample>,
+    /// Normalized-payee → sample indices into `samples`.
+    pub(crate) by_payee: HashMap<String, Vec<usize>>,
     /// `token_df[t]` = number of distinct normalized payees that contain `t`.
     pub(crate) token_df: HashMap<String, u32>,
     /// Total distinct normalized payees observed.
@@ -59,7 +56,8 @@ impl Index {
     /// normalized payees in the journal -- needed by the token-IDF scoring
     /// strategy.
     pub fn build<N: Normalizer + 'static>(journal: &Journal, normalizer: N) -> Self {
-        let mut by_known: HashMap<String, KnownAccountBucket> = HashMap::new();
+        let mut samples: Vec<Sample> = Vec::new();
+        let mut by_payee: HashMap<String, Vec<usize>> = HashMap::new();
         let mut all_payees: HashSet<String> = HashSet::new();
         let mut token_df: HashMap<String, u32> = HashMap::new();
 
@@ -79,7 +77,7 @@ impl Index {
             }
         }
 
-        // Pass 2: build per-known-account sample buckets.
+        // Pass 2: build flat sample list with global by_payee index.
         for txn in &journal.transactions {
             let date = txn.date_naive();
             for (i, known) in txn.postings.iter().enumerate() {
@@ -90,8 +88,6 @@ impl Index {
                 let payee_tokens: Vec<String> =
                     normalized.split_whitespace().map(String::from).collect();
 
-                // Materialize the known posting's amounts once per posting
-                // since we iterate them for every counter posting below.
                 let known_amounts: Vec<Decimal> = known.amounts().map(|(_, d)| d).collect();
 
                 for (j, counter) in txn.postings.iter().enumerate() {
@@ -102,48 +98,38 @@ impl Index {
                         if dec.is_zero() {
                             continue;
                         }
-                        let bucket = by_known.entry(known.account.clone()).or_default();
-                        let idx = bucket.samples.len();
-                        bucket.samples.push(Sample {
+                        let idx = samples.len();
+                        samples.push(Sample {
                             counter_account: counter.account.clone(),
                             amount: dec,
                             date,
+                            known_account: known.account.clone(),
                             payee_tokens: payee_tokens.clone(),
                         });
-                        bucket
-                            .by_payee
-                            .entry(normalized.clone())
-                            .or_default()
-                            .push(idx);
+                        by_payee.entry(normalized.clone()).or_default().push(idx);
                     }
                 }
             }
         }
 
         Index {
-            by_known,
+            samples,
+            by_payee,
             token_df,
             total_payees: all_payees.len() as u32,
             normalizer: Box::new(normalizer),
         }
     }
 
-    /// Number of historical samples in the exact-match bucket for
-    /// `(normalize(raw_payee), known_account)`. Returns 0 if the payee
-    /// normalizes to a key not in the index, or if no sample for that key
-    /// has the given known_account.
+    /// Number of historical samples whose payee normalizes to the same key
+    /// as `raw_payee`. Returns 0 if the payee normalizes to a key not in the
+    /// index.
     ///
-    /// A query whose bucket has zero samples is a cold-start case for
-    /// [`crate::ScoringStrategy::ExactMatch`]; under
-    /// [`crate::ScoringStrategy::TokenIdf`] or
-    /// [`crate::ScoringStrategy::Hybrid`], some of those cases may still be
-    /// recoverable via shared rare tokens.
-    pub fn bucket_size(&self, raw_payee: &str, known_account: &str) -> usize {
+    /// The "cluster" is the global payee bucket: all samples across every
+    /// known-side account that share this normalized payee. A cluster size of
+    /// zero means no history for this payee exists anywhere in the corpus.
+    pub fn samples_for_payee_count(&self, raw_payee: &str) -> usize {
         let normalized = self.normalizer.normalize(raw_payee);
-        self.by_known
-            .get(known_account)
-            .and_then(|b| b.by_payee.get(&normalized))
-            .map(|v| v.len())
-            .unwrap_or(0)
+        self.by_payee.get(&normalized).map(|v| v.len()).unwrap_or(0)
     }
 }
