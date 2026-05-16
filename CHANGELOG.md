@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-### doppio-categorize 0.2.0
+### doppio-categorize 0.2.0 - 2026-05-16
 
 **Breaking changes** (part of #319, builds on #320).
 
