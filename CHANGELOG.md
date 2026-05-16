@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### doppio-categorize 0.2.0
+
+**Breaking changes** (part of #319, builds on #320).
+
+The `Index` storage model has been rewritten from per-known-account buckets to
+a payee-primary design. This makes the cold-account scenario (new credit card,
+no prior history) work without any special configuration: suggestions are drawn
+from the global payee pool across every known-side account in the corpus.
+
+**Architecture change**: `Index` now holds a flat `samples: Vec<Sample>` list
+and a global `by_payee: HashMap<String, Vec<usize>>` index. The per-account
+`KnownAccountBucket` structure is removed. `Sample` gains a `known_account`
+field (retained as data, not used in scoring).
+
+**API changes**:
+
+- `Index::bucket_size(raw_payee, known_account)` is replaced by
+  `Index::samples_for_payee_count(raw_payee)`. The per-known-account dimension
+  is gone; "cluster size" now means the global payee bucket size.
+- `ScoringStrategy::HierarchicalHybrid` is removed. Measurements showed that
+  the simpler payee-primary approach dominates it by ~10pp on leave-one-account-out
+  cohort top-1 (44.0% vs 34.6%) and ~9pp on aggregate (18.7% vs 9.5%),
+  with no uniform-holdout regression.
+- `Query::known_account` is retained on the struct for forward compatibility and
+  caller inspection, but `suggest` no longer consults it in scoring.
+- All other public types (`Query`, `Suggestion`, `Config`,
+  `ScoringStrategy::ExactMatch | TokenIdf | Hybrid`, `Normalizer`,
+  `DefaultNormalizer`) are unchanged.
+
+**Behavioral change**: LOAO cold-account accuracy is now non-zero. Previously,
+every held-out account returned empty suggestions (no bucket). Now payee history
+from any account in the training corpus is pooled and available.
+
 ### doppio-categorize 0.1.1 - 2026-05-12
 
 - **Bump pinned `doppio` dependency from `1.0.0` to `2.0.0`.** The published
