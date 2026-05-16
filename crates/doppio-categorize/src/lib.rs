@@ -18,8 +18,6 @@
 //! };
 //! let suggestions = index.suggest(&query, &Config::default());
 //! ```
-//!
-//! See `README.md` for the v0.2 trajectory.
 
 mod index;
 mod normalize;

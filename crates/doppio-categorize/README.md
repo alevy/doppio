@@ -29,12 +29,17 @@ let suggestions = index.suggest(&query, &Config::default());
 // -> vec![Suggestion { account: "Expenses:Coffee", confidence: 0.83, sample_count: 24, last_seen: ... }, ...]
 ```
 
+`query.known_account` is retained on `Query` for forward compatibility and
+caller inspection, but is not consulted during scoring. Suggestions are drawn
+from the global payee pool across all known-side accounts.
+
 ## Algorithm
 
 The pipeline is the same shape across all scoring strategies:
 
-1. Look up the per-known-account bucket. (Bucket missing -> empty result.)
-2. Pick candidate samples via the configured `ScoringStrategy`.
+1. Normalize the query payee.
+2. Pick candidate samples from the global pool via the configured
+   `ScoringStrategy`.
 3. Apply the **sign filter** (sample's amount sign must match
    query's -- refunds vs charges).
 4. Apply **amount-similarity weighting**: each candidate's match-score
@@ -57,6 +62,13 @@ and how their match-score is computed:
 - **`ScoringStrategy::Hybrid { df_threshold, .. }`** *(default)*: try
   `ExactMatch` first; if it returns no candidates, fall back to
   `TokenIdf`.
+
+Because the pool is global (not partitioned by known_account), a query
+from a brand-new credit card (with no prior history) automatically
+draws on payee history from any other account in the corpus. A Starbucks
+charge on a new Visa card benefits from years of Starbucks history on an
+old Visa card or on a checking account -- the payee signal crosses
+account-tree boundaries freely.
 
 ### Normalization
 
@@ -88,6 +100,16 @@ A held-out evaluation harness lives at
 6. Reports top-1 / top-3 accuracy plus stratification by
    training-cluster size.
 
+Three evaluation modes are available:
+
+- **Uniform holdout** (default): random 10% holdout.
+- **`--cold-account ACCOUNT`**: hold out all transactions for one specific
+  account; train on everything else. Measures how well the model handles a
+  cold-start account with no prior history.
+- **`--leave-one-account-out [N]`**: for each known_account with ≥ N eligible
+  transactions, hold it out entirely and train on the rest. Reports per-account
+  and aggregate LOAO accuracy.
+
 ```sh
 # Default: hybrid strategy, df_threshold=50, 10% holdout, amount weighting.
 cargo run --release --example eval_holdout -- /path/to/journal.ledger
@@ -100,40 +122,14 @@ cargo run --release --example eval_holdout -- /path/to/journal.ledger \
 cargo run --release --example eval_holdout -- /path/to/journal.ledger \
     --strategy token-idf --df-threshold 20
 
-# Different import-side regex for non-default ledger conventions.
+# Leave-one-account-out with minimum 5 transactions.
 cargo run --release --example eval_holdout -- /path/to/journal.ledger \
-    --import-regex '^Liabilities:Mercury'
+    --leave-one-account-out 5
+
+# Cold-account mode for a specific new card.
+cargo run --release --example eval_holdout -- /path/to/journal.ledger \
+    --cold-account 'Liabilities:Visa:NewCard'
 ```
-
-## Real-data results
-
-### Better Bytes nonprofit books (188 transactions, 90 eligible)
-
-| Strategy | Top-1 | Top-3 | Cold-start |
-|---|---:|---:|---:|
-| `exact` | 88.9% | 88.9% | 11.1% |
-| `token-idf` (df<50) | 83.3% | 83.3% | 11.1% |
-| **`hybrid` (default)** | **88.9%** | **88.9%** | **11.1%** |
-
-Small, consistent corpus. Pure token-IDF *hurts* slightly because
-rare tokens cross-match across vendors. Hybrid avoids the regression
-by preferring exact-match when there's a hit.
-
-### Personal household ledger (3,075 transactions, 2,960 eligible, 20% holdout)
-
-| Strategy | Top-1 | Top-3 |
-|---|---:|---:|
-| `exact` | 58.8% | 63.9% |
-| `token-idf` (df<50) | 68.1% | 78.2% |
-| **`hybrid` (default)** | **70.8%** | **78.5%** |
-
-Long-tail corpus where 70% of normalized payees appear exactly once.
-Hybrid lifts top-1 by **+12 points** over the exact-match baseline by
-recovering cold-start cases through shared rare tokens (e.g.
-"amazon" matching across `AMZN MKTP US*ABC123` /
-`AMZN MKTP US*XYZ987` variants). The cold-start *rate* (32.9%)
-doesn't change -- that's a property of the corpus and the holdout --
-but token-IDF rescues many of those formerly-empty cases.
 
 ## Companion crates
 
