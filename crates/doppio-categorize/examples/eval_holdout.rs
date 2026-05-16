@@ -35,6 +35,7 @@
 //!   <journal-path> \
 //!   [--import-regex REGEX] \
 //!   [--no-amount-weighting] \
+//!   [--normalizer default|rich] \
 //!   [--strategy exact|token-idf|hybrid] \
 //!   [--df-threshold N] \
 //!   [--holdout 0.10] [--seed N] \
@@ -54,7 +55,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use doppio::elaboration::{Journal, Transaction};
-use doppio_categorize::{Config, DefaultNormalizer, Index, Query, ScoringStrategy};
+use doppio_categorize::{Config, DefaultNormalizer, Index, Query, RichNormalizer, ScoringStrategy};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -171,6 +172,7 @@ impl Metrics {
 fn print_usage() {
     eprintln!(
         "usage: eval_holdout <journal-path> [--import-regex REGEX] [--no-amount-weighting] \
+         [--normalizer default|rich] \
          [--strategy exact|token-idf|hybrid] [--df-threshold N] \
          [--holdout FRACTION] [--seed N] \
          [--cold-account ACCOUNT] \
@@ -255,6 +257,15 @@ fn make_journal(txns: Vec<Transaction>) -> Journal {
     }
 }
 
+/// Build an [`Index`] using either the default or rich normalizer.
+fn build_index(journal: &Journal, use_rich: bool) -> Index {
+    if use_rich {
+        Index::build(journal, RichNormalizer)
+    } else {
+        Index::build(journal, DefaultNormalizer)
+    }
+}
+
 /// Print the standard per-cluster-size breakdown.
 fn print_cluster_breakdown(hits: &[Hit]) {
     println!("Top-1 accuracy by training cluster size:");
@@ -309,6 +320,7 @@ fn run_uniform_holdout(
     all_txns: Vec<Transaction>,
     import_re: &Regex,
     config: &Config,
+    use_rich: bool,
     holdout_fraction: f64,
     seed: u64,
 ) -> ExitCode {
@@ -358,7 +370,7 @@ fn run_uniform_holdout(
         }
     }
 
-    let index = Index::build(&make_journal(train_txns), DefaultNormalizer);
+    let index = build_index(&make_journal(train_txns), use_rich);
     eprintln!(
         "Index built. Evaluating {} held-out queries...\n",
         test_txns.len()
@@ -393,6 +405,7 @@ fn run_cold_account(
     all_txns: Vec<Transaction>,
     import_re: &Regex,
     config: &Config,
+    use_rich: bool,
     account: &str,
 ) -> ExitCode {
     // Partition into held-out (import side == account) vs. train (everything else).
@@ -443,7 +456,7 @@ fn run_cold_account(
         train_txns.len()
     );
 
-    let index = Index::build(&make_journal(train_txns), DefaultNormalizer);
+    let index = build_index(&make_journal(train_txns), use_rich);
     eprintln!(
         "Index built. Evaluating {} held-out queries...\n",
         test_txns.len()
@@ -470,6 +483,7 @@ fn run_loao(
     all_txns: Vec<Transaction>,
     import_re: &Regex,
     config: &Config,
+    use_rich: bool,
     min_count: usize,
 ) -> ExitCode {
     // Classify every transaction as eligible (2-posting, exactly-one-import)
@@ -568,7 +582,7 @@ fn run_loao(
             }
         }
 
-        let index = Index::build(&make_journal(train_txns), DefaultNormalizer);
+        let index = build_index(&make_journal(train_txns), use_rich);
         let hits = evaluate(&test_txns, &index, config, import_re);
 
         let n_eval = hits.len();
@@ -748,6 +762,7 @@ fn run_account_replacement(
     all_txns: Vec<Transaction>,
     import_re: &Regex,
     config: &Config,
+    use_rich: bool,
     account: &str,
     fraction: f64,
     seed: u64,
@@ -808,7 +823,7 @@ fn run_account_replacement(
     eprintln!("  Synthetic known_account for queries: '{synthetic_account}'");
     eprintln!("  Total training transactions: {}", train_txns.len());
 
-    let index = Index::build(&make_journal(train_txns), DefaultNormalizer);
+    let index = build_index(&make_journal(train_txns), use_rich);
     eprintln!(
         "Index built. Evaluating {} held-out queries...\n",
         test_txns.len()
@@ -837,6 +852,7 @@ fn run_account_replacement_cohort(
     all_txns: Vec<Transaction>,
     import_re: &Regex,
     config: &Config,
+    use_rich: bool,
     min_count: usize,
     fraction: f64,
     seed: u64,
@@ -948,7 +964,7 @@ fn run_account_replacement_cohort(
         // The remainder of the target account's txns stay in training.
         base_train.extend(target_eligible);
 
-        let index = Index::build(&make_journal(base_train), DefaultNormalizer);
+        let index = build_index(&make_journal(base_train), use_rich);
         let hits =
             evaluate_with_replacement(&test_txns, &index, config, import_re, &synthetic_account);
 
@@ -1077,6 +1093,7 @@ fn main() -> ExitCode {
     let mut seed = DEFAULT_SEED;
     let mut strategy_name = String::from("hybrid");
     let mut df_threshold: u32 = 50;
+    let mut use_rich = false;
 
     // Mode flags — mutually exclusive.
     let mut cold_account: Option<String> = None;
@@ -1098,6 +1115,21 @@ fn main() -> ExitCode {
             }
             "--no-amount-weighting" => {
                 config.use_amount_weighting = false;
+            }
+            "--normalizer" => {
+                i += 1;
+                if i >= args_vec.len() {
+                    eprintln!("--normalizer requires a value (default|rich)");
+                    return ExitCode::from(2);
+                }
+                match args_vec[i].as_str() {
+                    "default" => use_rich = false,
+                    "rich" => use_rich = true,
+                    other => {
+                        eprintln!("--normalizer must be 'default' or 'rich', got '{other}'");
+                        return ExitCode::from(2);
+                    }
+                }
             }
             "--strategy" => {
                 i += 1;
@@ -1259,6 +1291,10 @@ fn main() -> ExitCode {
     );
     eprintln!("Import regex:     {}", import_regex);
     eprintln!("Amount weighting: {}", config.use_amount_weighting);
+    eprintln!(
+        "Normalizer:       {}",
+        if use_rich { "rich" } else { "default" }
+    );
     eprintln!("Strategy:         {:?}", config.strategy);
     if mode_count == 0 {
         eprintln!("Holdout fraction: {:.2} (seed={})", holdout_fraction, seed);
@@ -1268,14 +1304,15 @@ fn main() -> ExitCode {
     let all_txns: Vec<Transaction> = std::mem::take(&mut journal.transactions);
 
     if let Some(account) = cold_account {
-        run_cold_account(all_txns, &import_re, &config, &account)
+        run_cold_account(all_txns, &import_re, &config, use_rich, &account)
     } else if let Some(min) = loao_min {
-        run_loao(all_txns, &import_re, &config, min)
+        run_loao(all_txns, &import_re, &config, use_rich, min)
     } else if let Some(account) = acct_replacement {
         run_account_replacement(
             all_txns,
             &import_re,
             &config,
+            use_rich,
             &account,
             replacement_fraction,
             seed,
@@ -1285,11 +1322,19 @@ fn main() -> ExitCode {
             all_txns,
             &import_re,
             &config,
+            use_rich,
             min,
             replacement_fraction,
             seed,
         )
     } else {
-        run_uniform_holdout(all_txns, &import_re, &config, holdout_fraction, seed)
+        run_uniform_holdout(
+            all_txns,
+            &import_re,
+            &config,
+            use_rich,
+            holdout_fraction,
+            seed,
+        )
     }
 }

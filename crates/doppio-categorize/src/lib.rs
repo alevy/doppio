@@ -7,9 +7,9 @@
 //! # Example
 //!
 //! ```ignore
-//! use doppio_categorize::{Index, Query, Config, DefaultNormalizer};
+//! use doppio_categorize::{Index, Query, Config, RichNormalizer};
 //!
-//! let index = Index::build(&journal, DefaultNormalizer);
+//! let index = Index::build(&journal, RichNormalizer);
 //! let query = Query {
 //!     date: today,
 //!     payee: "STARBUCKS #1234 SEATTLE WA".into(),
@@ -24,5 +24,5 @@ mod normalize;
 mod query;
 
 pub use index::Index;
-pub use normalize::{DefaultNormalizer, Normalizer};
+pub use normalize::{DefaultNormalizer, Normalizer, RichNormalizer};
 pub use query::{Config, Query, ScoringStrategy, Suggestion};
