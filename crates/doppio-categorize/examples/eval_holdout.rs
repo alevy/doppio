@@ -19,10 +19,9 @@
 //!    spending patterns. Holds out a random fraction `F` (default 0.10) of
 //!    that account's eligible transactions. The remaining `1-F` stay in
 //!    training. Held-out queries use `ACCOUNT + "-Replacement"` as
-//!    `known_account`, making the account unknown to the per-account bucket.
-//!    Under the v0.2 payee-primary architecture (#322) this recovers signal
-//!    from other accounts with the same payees; under v0.1 the synthetic name
-//!    misses the bucket and returns ~0%.
+//!    `known_account`. Under the v0.2 payee-primary architecture `known_account`
+//!    is not used for candidate selection, so the classifier recovers signal
+//!    from all accounts sharing the same payees.
 //!
 //! 5. **Account-replacement cohort** (`--account-replacement-cohort [N]`): for
 //!    each distinct known_account with ≥ N eligible transactions, runs the
@@ -68,8 +67,10 @@ const DEFAULT_IMPORT_REGEX: &str = r"(?i)^(Assets:.*Bank|Assets:.*Checking|Asset
 const DEFAULT_LOAO_MIN: usize = 5;
 /// Suffix appended to the original account name to form the synthetic
 /// `known_account` used in account-replacement queries.  The suffix must not
-/// match any real account in a typical ledger, so the per-account bucket
-/// lookup always misses under the v0.1 architecture — that is intentional.
+/// match any real account in a typical ledger.  Under the v0.2 payee-primary
+/// architecture `known_account` is not used in candidate selection, so the
+/// suffix has no effect on scoring — the purpose is solely to signal that this
+/// is a synthetic replacement scenario, not a warm-start query.
 const REPLACEMENT_SUFFIX: &str = "-Replacement";
 
 fn load_journal(path: &Path) -> Result<Journal, Box<dyn std::error::Error>> {
@@ -713,7 +714,7 @@ fn evaluate_with_replacement(
             known_account: synthetic_account.to_string(),
         };
 
-        let cluster_size = index.bucket_size(&query.payee, &query.known_account);
+        let cluster_size = index.samples_for_payee_count(&query.payee);
         let suggestions = index.suggest(&query, config);
 
         let rank = suggestions
@@ -740,10 +741,9 @@ fn evaluate_with_replacement(
 /// the rest stay in training alongside all other-account transactions.
 ///
 /// For each held-out transaction a `Query` is built with
-/// `known_account = account + REPLACEMENT_SUFFIX`, making the account name
-/// unknown to the per-account bucket in the v0.1 architecture.  The ground-
-/// truth counter-account used for hit/miss comparison is unchanged — it is
-/// always the real counter-posting from the journal.
+/// `known_account = account + REPLACEMENT_SUFFIX`.  The ground-truth
+/// counter-account used for hit/miss comparison is unchanged — it is always
+/// the real counter-posting from the journal.
 fn run_account_replacement(
     all_txns: Vec<Transaction>,
     import_re: &Regex,
