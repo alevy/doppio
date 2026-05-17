@@ -56,9 +56,7 @@ fn hir_builder_writes_through_all_frontends() {
     // beancount parser, which requires commodities to start with an uppercase
     // letter (symbols like "$" are not valid beancount commodities).
     let txn = Transaction::new(date(2024, 3, 10), "Market Run")
-        .with_posting(
-            Posting::new("Expenses:Groceries").with_amount((Decimal::from(75u32), "USD")),
-        )
+        .with_posting(Posting::new("Expenses:Groceries").with_amount((Decimal::from(75u32), "USD")))
         .with_posting(Posting::new("Assets:Checking"));
 
     let hir = HirBuilder::new().push_transaction(txn).build();
@@ -134,12 +132,8 @@ fn hir_builder_writes_through_all_frontends() {
 fn hir_builder_handles_prices() {
     // Use "USD" as the cash commodity so the output is valid beancount syntax.
     let txn = Transaction::new(date(2024, 6, 1), "Stock Purchase")
-        .with_posting(
-            Posting::new("Assets:Brokerage").with_amount((Decimal::from(10u32), "AAPL")),
-        )
-        .with_posting(
-            Posting::new("Assets:Cash").with_amount((Decimal::from(-1750i32), "USD")),
-        );
+        .with_posting(Posting::new("Assets:Brokerage").with_amount((Decimal::from(10u32), "AAPL")))
+        .with_posting(Posting::new("Assets:Cash").with_amount((Decimal::from(-1750i32), "USD")));
 
     let price = HistoricalPrice {
         date: date(2024, 6, 1),
