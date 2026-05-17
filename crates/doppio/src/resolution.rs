@@ -1019,6 +1019,92 @@ impl HIR {
     }
 }
 
+/// Build an [`HIR`] from externally-constructed transactions and prices.
+///
+/// [`HIR`] is the canonical input to [`crate::frontend::Frontend::write_journal`].
+/// Its internal shape (per-entry `context_id` indices, alias/commodity context
+/// table) is a resolution-stage artifact that downstream writers don't consume
+/// but that external callers can't populate sensibly. `HirBuilder` hides those
+/// internals and exposes a small, typed surface for the use case of "I have
+/// transactions in memory; serialise them as ledger / hledger / beancount source
+/// text."
+///
+/// HIRs built with `HirBuilder` are intended for the write path only. Passing
+/// a builder-produced HIR to [`crate::elaborate`] may panic because the
+/// contexts table is empty and the elaborator dereferences it by index.
+///
+/// `push_assertion` and `push_pad` are not currently provided; open an issue if
+/// your use case requires them.
+///
+/// # Example
+///
+/// ```rust
+/// use doppio::resolution::{HirBuilder, Transaction, Posting};
+/// use doppio::frontend::Frontend as _;
+/// use doppio::LedgerFrontend;
+/// use chrono::NaiveDate;
+/// use rust_decimal::Decimal;
+///
+/// let txn = Transaction::new(
+///     NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+///     "Groceries",
+/// )
+/// .with_posting(
+///     Posting::new("Expenses:Food").with_amount((Decimal::from(50u32), "USD")),
+/// )
+/// .with_posting(Posting::new("Assets:Checking"));
+///
+/// let hir = HirBuilder::new().push_transaction(txn).build();
+///
+/// let mut out = Vec::new();
+/// LedgerFrontend.write_journal(&hir, &mut out).unwrap();
+/// let text = String::from_utf8(out).unwrap();
+/// assert!(text.contains("Groceries"));
+/// ```
+#[derive(Debug, Default)]
+pub struct HirBuilder {
+    entries: Vec<ResolutionEntry>,
+    prices: Vec<HistoricalPrice>,
+}
+
+impl HirBuilder {
+    /// Creates a new, empty builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends a transaction to the builder (builder pattern).
+    pub fn push_transaction(mut self, txn: Transaction) -> Self {
+        self.entries.push(ResolutionEntry {
+            context_id: 0,
+            data: Entry::Transaction(txn),
+        });
+        self
+    }
+
+    /// Appends a historical price directive to the builder (builder pattern).
+    pub fn push_price(mut self, price: HistoricalPrice) -> Self {
+        self.prices.push(price);
+        self
+    }
+
+    /// Consumes the builder and returns a finished [`HIR`].
+    ///
+    /// The returned HIR has an empty contexts table (sufficient for the write
+    /// path) and no auto-rules.
+    pub fn build(self) -> HIR {
+        HIR {
+            entries: self.entries,
+            prices: self.prices,
+            // One empty context so context_id 0 is always a valid index,
+            // matching the invariant maintained by HIR::default().
+            contexts: vec![Context::default()],
+            global_context: GlobalContext::default(),
+            auto_rules: vec![],
+        }
+    }
+}
+
 impl TryFrom<ast::Journal> for HIR {
     type Error = ResolutionError;
 
