@@ -1,0 +1,8 @@
+{
+  "name": "doppio-web",
+  "private": true,
+  "workspaces": [
+    "dop",
+    "dashboard"
+  ]
+}

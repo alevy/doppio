@@ -1,0 +1,52 @@
+{
+  "name": "doppio-dop",
+  "version": "0.1.0",
+  "description": "Browser-side reader for the doppio .dop binary journal format. Decodes a .dop artifact into a typed Journal shape without any Rust or WASM at runtime.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "generate": "buf generate",
+    "build": "npm run generate && tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "doppio",
+    "ledger",
+    "accounting",
+    "dop",
+    "protobuf"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.2.0",
+    "decimal.js": "^10.4.3",
+    "pako": "^2.1.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.47.0",
+    "@bufbuild/protoc-gen-es": "^2.2.0",
+    "@types/node": "^25.6.0",
+    "@types/pako": "^2.0.3",
+    "tsup": "^8.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.9"
+  }
+}

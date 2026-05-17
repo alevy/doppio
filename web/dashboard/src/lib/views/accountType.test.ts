@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { inferAccountType } from "./accountType.js";
-import type { AccountProperties } from "@/lib/dop";
+import type { AccountProperties } from "doppio-dop";
 
 const noProps: undefined = undefined;
 function withType(value: string): AccountProperties {

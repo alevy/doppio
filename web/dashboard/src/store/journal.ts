@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { DopError, readDop, type Journal } from "@/lib/dop";
+import { DopError, readDop, type Journal } from "doppio-dop";
 
 interface State {
   journal: Journal | null;

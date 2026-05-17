@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import type { LocalDate } from "@/lib/dop";
+import type { LocalDate } from "doppio-dop";
 
 interface State {
   // Inclusive lower bound on transaction date.

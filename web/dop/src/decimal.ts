@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import type { Decimal as WireDecimal } from "../proto/generated/doppio_pb.js";
+import type { Decimal as WireDecimal } from "./proto/generated/doppio_pb.js";
 
 const MASK_64 = (1n << 64n) - 1n;
 
