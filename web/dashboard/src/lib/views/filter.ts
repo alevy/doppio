@@ -1,4 +1,4 @@
-import { compareLocalDate, type LocalDate } from "@/lib/dop";
+import { compareLocalDate, type LocalDate } from "doppio-dop";
 
 /**
  * Test whether a date sits inside the [begin, end] window. Either

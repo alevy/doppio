@@ -3,11 +3,11 @@ import {
   compareLocalDate,
   type Journal,
   type LocalDate,
-} from "@/lib/dop";
+} from "doppio-dop";
 import { inferAccountType, type AccountType } from "./accountType.js";
 import { dateInRange } from "./filter.js";
 import { exchangeRateAt } from "./exchange.js";
-import type { HistoricalPrice } from "@/lib/dop";
+import type { HistoricalPrice } from "doppio-dop";
 
 export interface MonthKey {
   year: number;

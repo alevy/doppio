@@ -7,7 +7,7 @@ import {
   epochDaysFromLocalDate,
   localDateFromEpochDays,
   type LocalDate,
-} from "@/lib/dop";
+} from "doppio-dop";
 import { allCommodities } from "@/lib/views/exchange";
 
 const filters = useFiltersStore();

@@ -1,7 +1,7 @@
 // Public surface of the JS-native .dop reader.
 //
 // Usage:
-//   import { readDop } from "@/lib/dop";
+//   import { readDop } from "doppio-dop";
 //   const journal = readDop(new Uint8Array(await (await fetch("/sample.dop")).arrayBuffer()));
 //
 // All decode errors throw `DopError` with a `kind` discriminator. See

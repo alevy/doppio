@@ -4,7 +4,7 @@ import { storeToRefs } from "pinia";
 import { useJournalStore } from "@/store/journal";
 import FilterBar from "@/components/FilterBar.vue";
 import DashboardView from "@/components/DashboardView.vue";
-import { compareLocalDate, localDateToString } from "@/lib/dop";
+import { compareLocalDate, localDateToString } from "doppio-dop";
 
 const journals = useJournalStore();
 const { journal, error, loading, sourceLabel } = storeToRefs(journals);

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import Decimal from "decimal.js";
-import { readDop, type Journal } from "@/lib/dop";
+import { readDop, type Journal } from "doppio-dop";
 import {
   avgMonthlyExpense,
   cashOnHand,

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import Decimal from "decimal.js";
-import type { HistoricalPrice, LocalDate } from "@/lib/dop";
+import type { HistoricalPrice, LocalDate } from "doppio-dop";
 import { exchangeRateAt } from "./exchange.js";
 
 // ---------------------------------------------------------------------------

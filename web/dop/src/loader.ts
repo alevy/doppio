@@ -10,7 +10,7 @@ import {
   type Posting as WirePosting,
   type Transaction as WireTransaction,
   type HistoricalPrice as WireHistoricalPrice,
-} from "../proto/generated/doppio_pb.js";
+} from "./proto/generated/doppio_pb.js";
 import { decimalFromWire } from "./decimal.js";
 import { localDateFromEpochDays } from "./date.js";
 import { DopError } from "./errors.js";

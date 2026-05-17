@@ -9,7 +9,7 @@
 //
 // Layer (1) wins when present. The heuristic is the safety net.
 
-import type { AccountProperties } from "@/lib/dop";
+import type { AccountProperties } from "doppio-dop";
 
 export type AccountType = "income" | "assets" | "liabilities" | "equity";
 

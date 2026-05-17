@@ -7,7 +7,8 @@ import { readDop } from "./loader.js";
 import { DopError } from "./errors.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const samplePath = resolve(here, "../../../public/sample.dop");
+// sample.dop lives in web/dashboard/public/ — resolve relative to this file's location.
+const samplePath = resolve(here, "../../dashboard/public/sample.dop");
 const sample = readFileSync(samplePath);
 const sampleBytes = new Uint8Array(sample.buffer, sample.byteOffset, sample.byteLength);
 

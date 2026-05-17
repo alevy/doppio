@@ -11,8 +11,8 @@
  */
 
 import Decimal from "decimal.js";
-import type { HistoricalPrice, LocalDate } from "@/lib/dop";
-import { compareLocalDate, epochDaysFromLocalDate } from "@/lib/dop";
+import type { HistoricalPrice, LocalDate } from "doppio-dop";
+import { compareLocalDate, epochDaysFromLocalDate } from "doppio-dop";
 
 /**
  * Convert a `LocalDate` to a comparable epoch-days number so we can do
@@ -119,7 +119,7 @@ export function commoditiesFromPrices(prices: HistoricalPrice[]): string[] {
  * across all transactions. Sorted alphabetically.
  */
 export function commoditiesFromPostings(
-  transactions: import("@/lib/dop").Transaction[],
+  transactions: import("doppio-dop").Transaction[],
 ): string[] {
   const set = new Set<string>();
   for (const t of transactions) {
@@ -139,7 +139,7 @@ export function commoditiesFromPostings(
  */
 export function allCommodities(
   prices: HistoricalPrice[],
-  transactions: import("@/lib/dop").Transaction[],
+  transactions: import("doppio-dop").Transaction[],
 ): string[] {
   const set = new Set([
     ...commoditiesFromPrices(prices),
