@@ -632,3 +632,101 @@ fn color_auto_with_no_color_env_suppresses_ansi() {
         "NO_COLOR=1 should suppress ANSI escapes in --color=auto mode"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-pattern account filtering
+// ---------------------------------------------------------------------------
+
+fn multi_account_journal() -> &'static str {
+    "2024-01-01 Salary
+    Assets:Checking  500 USD
+    Income:Salary
+
+2024-01-02 Groceries
+    Expenses:Food  50 USD
+    Assets:Checking
+
+2024-01-03 Books
+    Expenses:Books  30 USD
+    Assets:Checking
+"
+}
+
+#[test]
+fn balance_single_pattern_matches_only_that_account() {
+    let f = tmp_journal_file(multi_account_journal());
+    let out = run(&["balance", f.path().to_str().unwrap(), "Checking", "--flat"]);
+    assert!(
+        out.contains("Assets:Checking"),
+        "Checking account should appear: {out}"
+    );
+    assert!(
+        !out.contains("Expenses:Food"),
+        "Food account should be excluded: {out}"
+    );
+    assert!(
+        !out.contains("Income:Salary"),
+        "Income account should be excluded: {out}"
+    );
+}
+
+#[test]
+fn balance_multiple_patterns_match_any_account() {
+    let f = tmp_journal_file(multi_account_journal());
+    let out = run(&[
+        "balance",
+        f.path().to_str().unwrap(),
+        "Checking",
+        "Food",
+        "--flat",
+    ]);
+    assert!(
+        out.contains("Assets:Checking"),
+        "Checking account should appear: {out}"
+    );
+    assert!(
+        out.contains("Expenses:Food"),
+        "Food account should appear: {out}"
+    );
+    assert!(
+        !out.contains("Income:Salary"),
+        "Income account should be excluded by multi-pattern filter: {out}"
+    );
+}
+
+#[test]
+fn balance_no_patterns_shows_all_accounts() {
+    let f = tmp_journal_file(multi_account_journal());
+    let out = run(&["balance", f.path().to_str().unwrap(), "--flat"]);
+    assert!(
+        out.contains("Assets:Checking"),
+        "Checking should appear with no patterns: {out}"
+    );
+    assert!(
+        out.contains("Expenses:Food"),
+        "Food should appear with no patterns: {out}"
+    );
+    assert!(
+        out.contains("Income:Salary"),
+        "Income should appear with no patterns: {out}"
+    );
+}
+
+#[test]
+fn balance_invalid_pattern_exits_with_error() {
+    let f = tmp_journal_file(multi_account_journal());
+    let bin = env!("CARGO_BIN_EXE_dop");
+    let result = std::process::Command::new(bin)
+        .args(["balance", f.path().to_str().unwrap(), "[invalid", "--flat"])
+        .output()
+        .expect("failed to run dop");
+    assert!(
+        !result.status.success(),
+        "dop should exit non-zero for an invalid regex pattern"
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("invalid"),
+        "stderr should report an invalid pattern error: {stderr}"
+    );
+}
