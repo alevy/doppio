@@ -482,3 +482,77 @@ fn register_exchange_converts_eur_to_usd_and_accumulates_running_total() {
         "source commodity 'EUR' should be absent after conversion: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-pattern account filtering
+// ---------------------------------------------------------------------------
+
+fn multi_account_journal() -> &'static str {
+    "2024-01-01 Salary
+    Assets:Checking  500 USD
+    Income:Salary
+
+2024-01-02 Groceries
+    Expenses:Food  50 USD
+    Assets:Checking
+
+2024-01-03 Books
+    Expenses:Books  30 USD
+    Assets:Checking
+"
+}
+
+#[test]
+fn register_multiple_patterns_match_any_account() {
+    let f = tmp_journal_file(multi_account_journal());
+    let out = run(&["register", f.path().to_str().unwrap(), "Checking", "Food"]);
+    assert!(
+        out.contains("Assets:Checking"),
+        "Checking postings should appear: {out}"
+    );
+    assert!(
+        out.contains("Expenses:Food"),
+        "Food postings should appear: {out}"
+    );
+    assert!(
+        !out.contains("Income:Salary"),
+        "Income postings should be excluded by multi-pattern filter: {out}"
+    );
+}
+
+#[test]
+fn register_no_patterns_shows_all_accounts() {
+    let f = tmp_journal_file(multi_account_journal());
+    let out = run(&["register", f.path().to_str().unwrap()]);
+    assert!(
+        out.contains("Assets:Checking"),
+        "Checking postings should appear with no patterns: {out}"
+    );
+    assert!(
+        out.contains("Expenses:Food"),
+        "Food postings should appear with no patterns: {out}"
+    );
+    assert!(
+        out.contains("Income:Salary"),
+        "Income postings should appear with no patterns: {out}"
+    );
+}
+
+#[test]
+fn register_invalid_pattern_exits_with_error() {
+    let f = tmp_journal_file(multi_account_journal());
+    let bin = env!("CARGO_BIN_EXE_dop");
+    let result = std::process::Command::new(bin)
+        .args(["register", f.path().to_str().unwrap(), "[invalid"])
+        .output()
+        .expect("failed to run dop");
+    assert!(
+        !result.status.success(),
+        "dop should exit non-zero for an invalid regex pattern"
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("invalid"),
+        "stderr should report an invalid pattern error: {stderr}"
+    );
+}
