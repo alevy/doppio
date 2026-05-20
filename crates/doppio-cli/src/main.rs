@@ -321,8 +321,8 @@ impl JournalFilter {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let patterns = patterns
             .into_iter()
-            .flat_map(build_pattern_regex)
-            .collect::<Vec<_>>();
+            .map(build_pattern_regex)
+            .collect::<Result<Vec<_>, _>>()?;
 
         let begin_date = begin
             .map(|s| {
