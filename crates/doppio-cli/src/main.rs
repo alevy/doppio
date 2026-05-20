@@ -97,7 +97,7 @@ enum Commands {
     Balance {
         source: PathBuf,
         /// Optional case-insensitive regex filter on account names.
-        pattern: Option<String>,
+        patterns: Vec<String>,
         /// Include only transactions on or after this date (YYYY-MM-DD).
         #[arg(long)]
         begin: Option<String>,
@@ -155,7 +155,7 @@ enum Commands {
     /// Omit it to list all postings.
     Register {
         source: PathBuf,
-        pattern: Option<String>,
+        patterns: Vec<String>,
         /// Only include transactions on or after this date (YYYY-MM-DD).
         #[arg(long)]
         begin: Option<String>,
@@ -294,11 +294,8 @@ fn load_proto_journal_with_tolerance(
 /// If `pattern` is `None`, returns a regex that matches everything (`.*`).
 /// Otherwise wraps the pattern with `(?i)` for case-insensitive matching.
 /// Returns an error with a clear message if the regex is syntactically invalid.
-fn build_pattern_regex(pattern: Option<String>) -> Result<Regex, Box<dyn std::error::Error>> {
-    let raw = match pattern {
-        Some(p) => format!("(?i){}", p),
-        None => ".*".to_string(),
-    };
+fn build_pattern_regex(pattern: String) -> Result<Regex, Box<dyn std::error::Error>> {
+    let raw = format!("(?i){}", pattern);
     Regex::new(&raw).map_err(|e| format!("invalid account pattern: {e}").into())
 }
 
@@ -307,7 +304,7 @@ fn build_pattern_regex(pattern: Option<String>) -> Result<Regex, Box<dyn std::er
 const STATE_CLEARED: i32 = doppio::elaboration::TransactionState::Cleared as i32;
 
 struct JournalFilter {
-    pattern: Regex,
+    patterns: Vec<Regex>,
     begin_date: Option<chrono::NaiveDate>,
     end_date: Option<chrono::NaiveDate>,
     cleared: bool,
@@ -316,13 +313,16 @@ struct JournalFilter {
 
 impl JournalFilter {
     fn new(
-        pattern: Option<String>,
+        patterns: Vec<String>,
         begin: Option<&str>,
         end: Option<&str>,
         cleared: bool,
         tag: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let pattern = build_pattern_regex(pattern)?;
+        let patterns = patterns
+            .into_iter()
+            .flat_map(build_pattern_regex)
+            .collect::<Vec<_>>();
 
         let begin_date = begin
             .map(|s| {
@@ -340,7 +340,7 @@ impl JournalFilter {
             .transpose()?;
 
         Ok(JournalFilter {
-            pattern,
+            patterns,
             begin_date,
             end_date,
             cleared,
@@ -385,7 +385,11 @@ impl JournalFilter {
     }
 
     fn matches_account(&self, account: &str) -> bool {
-        self.pattern.is_match(account)
+        self.patterns.is_empty()
+            || self
+                .patterns
+                .iter()
+                .any(|pattern| pattern.is_match(account))
     }
 }
 
@@ -455,7 +459,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Register {
             source,
-            pattern,
+            patterns,
             begin,
             end,
             cleared,
@@ -466,7 +470,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let format = OutputFormat::parse(&format)?;
             let filter =
-                JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
+                JournalFilter::new(patterns, begin.as_deref(), end.as_deref(), cleared, tag)?;
             let journal = load_proto_journal(&source)?;
             // as_of for FX lookup: use --end if provided, else None (latest quote).
             let fx_as_of = filter.end_date;
@@ -854,7 +858,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Balance {
             source,
-            pattern,
+            patterns,
             begin,
             end,
             cleared,
@@ -869,7 +873,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let format = OutputFormat::parse(&format)?;
             let filter =
-                JournalFilter::new(pattern, begin.as_deref(), end.as_deref(), cleared, tag)?;
+                JournalFilter::new(patterns, begin.as_deref(), end.as_deref(), cleared, tag)?;
             let journal = load_proto_journal_with_tolerance(&source, tolerance)?;
             // as_of for FX lookup: use --end if provided, else None (latest quote).
             let fx_as_of = filter.end_date;
