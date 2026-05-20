@@ -91,12 +91,15 @@ enum Commands {
     ///
     /// By default, output is rendered in tree form with indentation. Pass
     /// `--flat` to revert to the classic single-line-per-account format.
-    /// `PATTERN` is a case-insensitive regular expression matched against the
-    /// account name. Plain substrings are valid regex and match as literals.
-    /// Omit it to show all accounts.
+    /// Each `PATTERN` is a case-insensitive regular expression matched against
+    /// the account name; an account is included if it matches any pattern.
+    /// Plain substrings are valid regex and match as literals.
+    /// Omit all patterns to show all accounts.
     Balance {
         source: PathBuf,
-        /// Optional case-insensitive regex filter on account names.
+        /// One or more case-insensitive regex filters on account names; an
+        /// account matches if it satisfies any of the supplied patterns.
+        /// Omit to match all accounts.
         patterns: Vec<String>,
         /// Include only transactions on or after this date (YYYY-MM-DD).
         #[arg(long)]
