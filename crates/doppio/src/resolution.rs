@@ -91,6 +91,67 @@ impl Default for HIR {
     }
 }
 
+impl HIR {
+    /// Construct an empty `HIR`. Alias for [`HIR::default()`] with a clearer
+    /// name for the "build a journal from scratch" use case.
+    ///
+    /// The returned `HIR` has one default [`Context`] in `contexts` so that
+    /// [`HIR::append_entry`] always associates new entries with a valid
+    /// context index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append an [`Entry`] to the journal.
+    ///
+    /// The entry is recorded against the most-recently-added [`Context`] in
+    /// `self.contexts` (i.e. `contexts.len() - 1`). An `HIR` built via
+    /// [`HIR::new()`] or [`HIR::default()`] always starts with one context,
+    /// so callers constructing journals externally don't need to populate
+    /// `contexts` themselves.
+    ///
+    /// # Invariant
+    ///
+    /// Every entry's `context_id` must be a valid index into
+    /// [`HIR::contexts`]. `append_entry` maintains this invariant. The only
+    /// way to violate it is to mutate `contexts` (e.g. `truncate` it below
+    /// the index of an existing entry's `context_id`); avoid doing so on an
+    /// `HIR` you plan to pass to [`crate::elaborate`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use chrono::NaiveDate;
+    /// use rust_decimal::Decimal;
+    /// use doppio::resolution::{Entry, HIR, Posting, Transaction};
+    /// use doppio::{LedgerFrontend, Frontend};
+    ///
+    /// let mut hir = HIR::new();
+    /// for (account, amount) in [
+    ///     ("Expenses:Groceries", Decimal::from(75u32)),
+    ///     ("Assets:Checking", Decimal::from(-75i32)),
+    /// ] {
+    ///     // Imagine `txn` built per-row from a CSV import; here just one txn.
+    ///     # let _ = (account, amount);
+    /// }
+    /// let txn = Transaction::new(NaiveDate::from_ymd_opt(2024, 3, 10).unwrap(), "Market Run")
+    ///     .with_posting(Posting::new("Expenses:Groceries").with_amount((Decimal::from(75u32), "USD")))
+    ///     .with_posting(Posting::new("Assets:Checking"));
+    /// hir.append_entry(Entry::Transaction(txn));
+    ///
+    /// let mut out = Vec::new();
+    /// doppio::write_journal(&LedgerFrontend, &hir, &mut out).unwrap();
+    /// assert!(String::from_utf8(out).unwrap().contains("Market Run"));
+    /// ```
+    pub fn append_entry(&mut self, entry: Entry) {
+        let context_id = self.contexts.len() - 1;
+        self.entries.push(ResolutionEntry {
+            context_id,
+            data: entry,
+        });
+    }
+}
+
 /// A body posting within a resolved automated posting rule.
 ///
 /// `amount` is `None` when the source posting was a null posting (no amount
@@ -617,7 +678,7 @@ pub(crate) struct ResolutionEntry {
 
 /// A resolved journal entry.
 #[derive(Debug)]
-pub(crate) enum Entry {
+pub enum Entry {
     /// A double-entry transaction with resolved dates and extracted metadata.
     Transaction(Transaction),
     /// A standalone balance assertion directive.
@@ -636,7 +697,7 @@ pub(crate) enum Entry {
 /// (back-dated to `date`) that posts the difference between
 /// `target_account` and `source_account`."
 #[derive(Debug)]
-pub(crate) struct PadDirective {
+pub struct PadDirective {
     /// The date the pad applies on.
     pub date: chrono::NaiveDate,
     /// The account whose balance will be brought to the next assertion.
@@ -651,7 +712,7 @@ pub(crate) struct PadDirective {
 /// in the HIR for use by the elaboration stage; enforcement is a follow-up
 /// (tracked in issue #37).
 #[derive(Debug)]
-pub(crate) struct AssertionDirective {
+pub struct AssertionDirective {
     /// The date at which the balance assertion applies.
     pub date: chrono::NaiveDate,
     /// The account whose balance is being asserted.
