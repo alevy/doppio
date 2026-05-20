@@ -289,10 +289,9 @@ fn load_proto_journal_with_tolerance(
     }
 }
 
-/// Compile an optional account-filter pattern into a [`Regex`].
+/// Compile an account-filter pattern into a case-insensitive [`Regex`].
 ///
-/// If `pattern` is `None`, returns a regex that matches everything (`.*`).
-/// Otherwise wraps the pattern with `(?i)` for case-insensitive matching.
+/// Wraps the pattern with `(?i)` for case-insensitive matching.
 /// Returns an error with a clear message if the regex is syntactically invalid.
 fn build_pattern_regex(pattern: String) -> Result<Regex, Box<dyn std::error::Error>> {
     let raw = format!("(?i){}", pattern);
