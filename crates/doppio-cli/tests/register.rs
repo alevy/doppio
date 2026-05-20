@@ -505,12 +505,7 @@ fn multi_account_journal() -> &'static str {
 #[test]
 fn register_multiple_patterns_match_any_account() {
     let f = tmp_journal_file(multi_account_journal());
-    let out = run(&[
-        "register",
-        f.path().to_str().unwrap(),
-        "Checking",
-        "Food",
-    ]);
+    let out = run(&["register", f.path().to_str().unwrap(), "Checking", "Food"]);
     assert!(
         out.contains("Assets:Checking"),
         "Checking postings should appear: {out}"
