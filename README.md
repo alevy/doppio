@@ -68,10 +68,11 @@ Parses the source file, runs it through the full compilation pipeline, and write
 ```
 dop balance my-journal.ledger
 dop balance my-journal.dop --depth 2 --begin 2024-01-01 --cleared
-dop balance my-journal.dop --pattern "^Expenses" --format json
+dop balance my-journal.dop "^Expenses" --format json
+dop balance my-journal.dop "^Expenses" "^Income" --format json
 ```
 
-Prints account balances grouped by commodity, with a grand-total footer per commodity beneath a divider. By default, output is rendered as an indented tree where parent rows show the sum of every descendant; pass `--flat` to revert to the classic single-line-per-account form. Flags: `--depth N` (truncate hierarchy), `--flat`, `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--tag KEY` (transactions tagged with `KEY`), `--pattern REGEX` (filter accounts), `-X`/`--exchange COMMODITY` (convert balances to `COMMODITY` using `P` price directives), `--format text|json|csv`.
+Prints account balances grouped by commodity, with a grand-total footer per commodity beneath a divider. By default, output is rendered as an indented tree where parent rows show the sum of every descendant; pass `--flat` to revert to the classic single-line-per-account form. Accepts one or more positional `PATTERN` arguments — case-insensitive regex filters on account names, OR-matched (an account is included if it satisfies any pattern). Flags: `--depth N` (truncate hierarchy), `--flat`, `--begin`/`--end` (date range), `--cleared` (cleared transactions only), `--tag KEY` (transactions tagged with `KEY`), `-X`/`--exchange COMMODITY` (convert balances to `COMMODITY` using `P` price directives), `--format text|json|csv`.
 
 When stdout is a terminal, balance output is colorized: negative amounts appear in red and account names in blue, matching ledger-cli's color scheme. Pass `--color=never` to suppress color or `--color=always` to force it even when piped. The `NO_COLOR` environment variable is also honoured.
 
@@ -80,9 +81,10 @@ When stdout is a terminal, balance output is colorized: negative amounts appear 
 ```
 dop register my-journal.ledger
 dop register my-journal.dop Expenses --format csv
+dop register my-journal.dop Expenses Income --format csv
 ```
 
-Lists individual postings with running totals per commodity, optionally filtered to accounts matching a regex pattern. Flags: `--begin`/`--end` (date range), `--cleared`, `--tag KEY`, `--format text|json|csv`.
+Lists individual postings with running totals per commodity, optionally filtered to accounts matching one or more case-insensitive regex patterns (OR-matched). Flags: `--begin`/`--end` (date range), `--cleared`, `--tag KEY`, `--format text|json|csv`.
 
 ### `print` -- re-emit canonical Ledger source
 
@@ -124,7 +126,7 @@ The library exposes the pipeline stages as modules, plus top-level entry points:
 |---|---|
 | `compile(source, parser)` | Full pipeline: source text -> elaborated `Journal` |
 | `eval_transaction(txn, ctx)` | Elaborate a single `resolution::Transaction` -- validate balance, infer null posting, apply aliases |
-| `write_ledger(txns, writer)` | Serialize `resolution::Transaction` values to canonical Ledger source text |
+| `Frontend::write_journal(hir, writer)` | Serialize a `resolution::HIR` to canonical source text in the frontend's format (ledger / hledger / Beancount). Build an HIR programmatically with `HIR::new()` + `HIR::append_entry(entry)`. Supersedes the deprecated `write_ledger`. |
 | `write_dop` / `read_dop` | Round-trip an `elaboration::Journal` to/from a `.dop` file (8-byte header + optional deflate + protobuf) |
 
 The `resolution::Transaction` and `resolution::Posting` builder APIs are the intended construction layer for programmatic use:
