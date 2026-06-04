@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-06-04
+
+### Added
+
+- **`HIR::append_entry` and `HIR::new` for external journal construction** (#333,
+  closes #328). `resolution::HIR` now exposes `new()` and `append_entry(Entry)`
+  on its public surface, and the `Entry`, `AssertionDirective`, and
+  `PadDirective` types are public. Downstream consumers can now construct an
+  `HIR` programmatically and feed it to `Frontend::write_journal` to emit
+  source text in any of the three frontend formats. The `ResolutionEntry`
+  wrapper stays private — `append_entry` handles the `context_id` plumbing so
+  external callers never touch it.
+
+### CLI
+
+- **`dop balance` and `dop register`: positional pattern accepts multiple
+  values** (#331). The positional `PATTERN` argument is now `PATTERNS...`; an
+  account matches if it satisfies **any** of the supplied case-insensitive
+  regex patterns. Existing single-pattern invocations (`dop balance file.ledger
+  Expenses`) continue to work unchanged. Omitting all patterns continues to
+  match every account.
+
+### Web / wasm
+
+- **`doppio-wasm` `compile(source, frontend, config?)`** accepts an optional
+  third config dict with two keys (#315, refs #311):
+  - `opener: (path: string) => string | null` — synchronous JS callback
+    invoked for each `include` directive. Throwing surfaces as a parse error;
+    returning `null`/`undefined` means "not found".
+  - `basePath: string` — directory the parser treats as the entry file's
+    base when joining relative include paths.
+  The two-argument call shape is unchanged. The transitional `compile_multi`
+  export from the interim PR #315 is folded into this unified API.
+- **`web/dop` extracted as a standalone npm-publishable package** (#329,
+  closes #327). The browser-side `.dop` reader (TypeScript) moves out of
+  `web/dashboard/src/lib/dop/` into its own `web/dop/` workspace package
+  (`doppio-dop`); the dashboard becomes a consumer via npm workspace. Proto
+  generation is owned by `doppio-dop`.
+- **Web dashboard: canonical-commodity selector** (#314, closes #312). New
+  "Display as" dropdown in the FilterBar converts all KPI / chart aggregates
+  to a single chosen commodity via the journal's `P` price directives.
+  Unconvertible commodities surface in an amber banner.
+- **CI: dual-deploy of dashboard and compile demo to GitHub Pages** (#310).
+  `/doppio/dashboard/` (Vue SPA) and `/doppio/compile/` (wasm demo) are now
+  both deployed under a single Pages artifact with a landing page at
+  `/doppio/`.
+
+### Dev infrastructure
+
+- **`shell.nix`** for Nix-based development environments (#332).
+
 ### doppio-categorize 0.2.0 - 2026-05-16
 
 **Breaking changes** (part of #319, builds on #320).
