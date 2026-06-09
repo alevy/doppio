@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Commodity aliases no longer leave phantom raw-symbol entries in the
+  compiled journal** (#336). A Ledger journal that declares `commodity USD\n
+  alias $` and then writes postings as `$100` now produces a single `USD`
+  entry in the elaborated `commodities` map; previously the alias `$` also
+  appeared as a separate entry with no link back to its canonical commodity,
+  even though the posting itself was correctly rebranded to `USD`. The same
+  fix applies to the `C N1 X = N2 Y` chain-conversion form.
+
 ## [2.4.0] - 2026-06-04
 
 ### Added

@@ -1324,10 +1324,24 @@ impl TryFrom<ast::Journal> for HIR {
                             }
                         }
                         for (commodity, scale) in scales {
+                            // Canonicalise through the active context's alias
+                            // map before keying `commodity_properties`. Without
+                            // this, a posting written as `$100` under
+                            // `commodity USD\n  alias $` would create a phantom
+                            // `$` entry in the elaborated journal's commodities
+                            // map (the elaborator rebrands the posting itself
+                            // to `USD`, so no consumer can ever see `$` — it is
+                            // orphan metadata). Same shape applies to the `C`
+                            // chain. (#336)
+                            let canonical = context
+                                .commodity_conversions
+                                .get(&commodity)
+                                .map(|(c, _)| c.clone())
+                                .unwrap_or(commodity);
                             let props = result
                                 .global_context
                                 .commodity_properties
-                                .entry(commodity)
+                                .entry(canonical)
                                 .or_default();
                             props.inferred_scale = props.inferred_scale.max(scale);
                         }
