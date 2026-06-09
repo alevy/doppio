@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-06-09
+
 ### Fixed
 
 - **Commodity aliases no longer leave phantom raw-symbol entries in the
