@@ -2171,10 +2171,21 @@ pub fn elaborate(
         for hp in value.prices {
             let (price, price_commodity) =
                 evaluator::eval_and_normalize_amount(hp.price, final_context, &state)?;
+            // Canonicalise the primary commodity through the alias map. The
+            // price expression on the RHS already routes through
+            // `eval_and_normalize_amount`, which applies the alias map to
+            // `price_commodity`; the primary commodity is a separate `String`
+            // copied straight from the AST and would otherwise leave an alias
+            // in the elaborated journal (#338).
+            let commodity = final_context
+                .commodity_conversions
+                .get(&hp.commodity)
+                .map(|(c, _)| c.clone())
+                .unwrap_or(hp.commodity);
             prices.push(crate::elaboration::HistoricalPrice {
                 date: hp.date.to_epoch_days(),
                 time: hp.time,
-                commodity: hp.commodity,
+                commodity,
                 price: Some(crate::decimal_to_proto(price)),
                 price_commodity,
             });
@@ -6966,6 +6977,36 @@ commodity USD
             journal.commodities.contains_key("USD"),
             "canonical commodity `USD` should be present"
         );
+    }
+
+    /// Same bug shape as #336/#337 at the `P` directive site: the primary
+    /// commodity of a `P` directive must be canonicalised through the alias
+    /// map; otherwise the elaborated `HistoricalPrice.commodity` retains the
+    /// raw source token and downstream price lookups against the canonical
+    /// posting commodity miss the entry. (#338)
+    #[test]
+    fn test_p_directive_primary_commodity_alias_resolved() {
+        let input = "\
+commodity USD
+  alias $
+
+P 2024-06-01 $ 1.10 EUR
+
+2024-06-02 Test
+  Assets:Wallet  $100
+  Equity:Opening
+";
+        let journal = elaborate(input);
+
+        assert_eq!(journal.prices.len(), 1);
+        let hp = &journal.prices[0];
+        assert_eq!(
+            hp.commodity, "USD",
+            "P directive primary commodity must be canonicalised through the \
+             alias map; got `{}`",
+            hp.commodity
+        );
+        assert_eq!(hp.price_commodity, "EUR");
     }
 
     /// `C` directive does not retroactively affect transactions that appeared
