@@ -11,6 +11,13 @@
   appeared as a separate entry with no link back to its canonical commodity,
   even though the posting itself was correctly rebranded to `USD`. The same
   fix applies to the `C N1 X = N2 Y` chain-conversion form.
+- **`P` directive primary commodity now canonicalised through the alias map**
+  (#338). A `P 2024-06-01 $ 1.10 EUR` under `commodity USD\n  alias $` now
+  emits `HistoricalPrice.commodity = "USD"` in the elaborated journal;
+  previously the primary commodity was copied straight from the AST while the
+  price RHS was already canonicalised, leaving `dop prices` and any downstream
+  price lookup against the canonical posting commodity unable to find the
+  entry.
 
 ## [2.4.0] - 2026-06-04
 
