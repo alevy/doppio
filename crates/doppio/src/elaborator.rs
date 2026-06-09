@@ -6930,6 +6930,44 @@ commodity BTC
         );
     }
 
+    /// Aliased postings must not leave a phantom raw-symbol entry in the
+    /// elaborated `commodities` map. The elaborator rebrands postings to the
+    /// canonical commodity, so an entry keyed by the alias is orphan metadata
+    /// with no link back to the canonical. (#336)
+    #[test]
+    fn test_alias_does_not_create_phantom_commodity_entry() {
+        let input = "\
+commodity USD
+  alias $
+
+2024-01-01 Test
+  Assets:Checking  $100
+  Equity:Opening
+";
+        let journal = elaborate(input);
+
+        // Posting itself is canonicalised — sanity check, since the bug
+        // sits one level deeper than this.
+        let checking = journal.transactions[0]
+            .postings
+            .iter()
+            .find(|p| p.account == "Assets:Checking")
+            .unwrap();
+        assert_eq!(checking.amount_in("USD"), Some(dec!(100)));
+
+        // The commodities map must not contain the alias key.
+        assert!(
+            !journal.commodities.contains_key("$"),
+            "alias `$` should not appear as a separate commodity in the \
+             elaborated journal; commodities keys = {:?}",
+            journal.commodities.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            journal.commodities.contains_key("USD"),
+            "canonical commodity `USD` should be present"
+        );
+    }
+
     /// `C` directive does not retroactively affect transactions that appeared
     /// before it in the source file (context-versioning invariant).
     #[test]
